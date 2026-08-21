@@ -1488,16 +1488,27 @@ def discogs_bulk(request):
             messages.append(f"Searched {done} recording{'' if done == 1 else 's'}.")
 
     elif action == "confirm_exact":
-        # Confirm every EXACT-confidence suggestion on the current page.
-        # Deliberately STILL no API calls here, unlike the single-row
-        # discogs_confirm (which now also fetches full details in the
-        # same click -- see the comment there): this can act on up to a
-        # pageful of rows at once, and turning that into one API call per
-        # row would make an instant click take as long as a batch search.
-        # Use the "Fetch details" bulk action afterward to catch these up.
+        # Confirm every EXACT-confidence suggestion on the current page,
+        # AND fetch each one's per-track detail in the same click.
+        #
+        # This used to skip the detail fetch to stay instant, leaving
+        # those rows showing release-level stand-ins (the "rel" tag) with
+        # no songwriter credits until someone remembered to run the
+        # catch-up step. In practice that follow-up got forgotten and
+        # 124 rows sat half-populated, which is a worse outcome than a
+        # slower click. Confirming and enriching are now one operation,
+        # so no path through the UI can leave a linked row incomplete.
+        #
+        # Cost is bounded and predictable: at most one pageful (25) at
+        # roughly a second each. On an API failure partway through, the
+        # confirms already made stand and the rest are reported as still
+        # needing detail -- recoverable via the "Fetch details" action,
+        # which stays for exactly that case.
         ids = request.POST.getlist("match_id")
         confirmed = 0
+        enriched = 0
         skipped_ties = 0
+        detail_error = None
         for match in DiscogsMatch.objects.filter(id__in=ids, status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"):
             exact_candidates = [c for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT]
             if not exact_candidates:
@@ -1530,7 +1541,27 @@ def discogs_bulk(request):
                 match.save()
                 match.candidates.all().delete()
                 confirmed += 1
-        message = f"Confirmed {confirmed} exact match{'' if confirmed == 1 else 'es'}."
+
+            # Enrich immediately, outside the transaction above -- the
+            # confirm is already durable, so a network failure here can
+            # never roll back a decision that was correctly made.
+            if detail_error is None:
+                detail_error = _try_fetch_detail(match)
+                if detail_error is None:
+                    enriched += 1
+            # Once the API has failed once, stop trying: a rate limit or
+            # a dead connection will fail identically for every
+            # remaining row, and hammering it just makes the request
+            # longer. Those rows stay confirmed, just not yet enriched.
+
+        message = f"Confirmed {confirmed} exact match{'' if confirmed == 1 else 'es'}"
+        message += f", with full details fetched for {enriched}." if enriched else "."
+        if detail_error:
+            pending = confirmed - enriched
+            message += (
+                f" Detail fetch stopped after {enriched} ({detail_error}) -- "
+                f"{pending} still need it; use \"Fetch details\" to finish."
+            )
         if skipped_ties:
             message += f" Skipped {skipped_ties} with more than one exact match -- needs a manual pick."
         messages.append(message)

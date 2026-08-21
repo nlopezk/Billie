@@ -99,8 +99,8 @@ many rows at once and re-rendering honestly beats patching N rows.
             <input type="hidden" name="querystring" value="{{ querystring }}">
             {% for match_id in page_exact_ids %}<input type="hidden" name="match_id" value="{{ match_id }}">{% endfor %}
             <button type="submit" class="discogs-btn"
-                title="Confirms only suggestions where BOTH label and catalog number matched exactly. No API calls -- instant.">
-                Confirm {{ page_exact_ids|length }} exact match{{ page_exact_ids|length|pluralize:"es" }} on this page
+                title="Confirms only suggestions where BOTH label and catalog number matched exactly, and where the title relates to our song or artist. Also fetches each one's songwriters and per-track details, so roughly a second per match.">
+                Confirm &amp; fetch {{ page_exact_ids|length }} exact match{{ page_exact_ids|length|pluralize:"es" }} on this page
             </button>
         </form>
         {% endif %}

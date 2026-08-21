@@ -779,6 +779,17 @@ class DiscogsWorkflowTests(TestCase):
         data.update(overrides)
         return DiscogsCandidate.objects.create(**data)
 
+    def _release_payload(self):
+        # What /releases/{id} returns for this recording, for the detail
+        # fetch that confirming now triggers.
+        return {
+            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
+            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
+            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
+            "tracklist": [{"position": "A", "title": "Pink Champagne",
+                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
+        }
+
     def test_queue_creates_a_match_row_for_every_recording(self):
         # A recording created later (e.g. a debut typed into the entry
         # form) gets picked up automatically -- no signal, no extra step.
@@ -1004,17 +1015,57 @@ class DiscogsWorkflowTests(TestCase):
             confidence=DiscogsMatch.WEAK, rank=0,
         )
 
-        self.client.post(reverse("charts:discogs_bulk"), {
-            "action": "confirm_exact",
-            "match_id": [exact_match.id, weak_match.id],
-            "querystring": "",
-        })
+        with mock.patch.object(discogs_api, "_request", return_value=self._release_payload()):
+            self.client.post(reverse("charts:discogs_bulk"), {
+                "action": "confirm_exact",
+                "match_id": [exact_match.id, weak_match.id],
+                "querystring": "",
+            })
 
         exact_match.refresh_from_db()
         weak_match.refresh_from_db()
         self.assertEqual(exact_match.status, DiscogsMatch.CONFIRMED)
         self.assertEqual(weak_match.status, DiscogsMatch.SUGGESTED)  # untouched
         self.assertIsNone(weak_match.discogs_release_id)
+
+    def test_bulk_confirm_also_fetches_details_so_no_row_is_left_incomplete(self):
+        # Bulk-confirm used to skip the detail fetch to stay instant,
+        # which left rows showing release-level stand-ins with no
+        # songwriters until someone remembered a follow-up step. It
+        # doesn't any more -- confirming and enriching are one operation.
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+        self._candidate(confidence=DiscogsMatch.EXACT)
+
+        with mock.patch.object(discogs_api, "_request", return_value=self._release_payload()):
+            response = self.client.post(reverse("charts:discogs_bulk"), {
+                "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
+            }, follow=True)
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
+        self.assertFalse(self.match.needs_detail)
+        self.assertTrue(self.match.has_track_detail)
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
+        self.assertContains(response, "full details fetched for 1")
+
+    def test_bulk_confirm_keeps_the_confirm_when_the_detail_fetch_fails(self):
+        # A network failure must not roll back a decision that was
+        # correctly made -- the row stays confirmed, just not yet
+        # enriched, and the message says so.
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+        self._candidate(confidence=DiscogsMatch.EXACT)
+
+        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("rate limited")):
+            response = self.client.post(reverse("charts:discogs_bulk"), {
+                "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
+            }, follow=True)
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)  # decision stands
+        self.assertTrue(self.match.needs_detail)                     # recoverable
+        self.assertContains(response, "still need it")
 
     def test_bulk_confirm_skips_a_genuine_tie_between_two_exact_candidates(self):
         # Two DIFFERENT Discogs releases (different ids -- e.g. a US and

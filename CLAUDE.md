@@ -160,18 +160,20 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     a B-side matches on song, a retitled recording matches on artist, a re-billed act
     matches on song. Verified against the real data: **zero** of the existing 123
     comparable linked matches get demoted, and the Bozo case does.
-  - **Confirming and detail-fetching are decoupled at the BULK level, not the
-    single-row level** (revised 2026-08-21 — originally both were always separate,
-    which turned out to just be an extra click for the common one-row-at-a-time case).
-    A single-row confirm (`discogs_confirm`) or manual entry (`discogs_manual`) now
-    fetches full details in the same click — one more API call, same cost as the
-    "Search Discogs" click that got it there, via the shared `_try_fetch_detail()`
-    helper. If that fetch fails, the confirm still stands; only the detail fetch stays
-    pending (`needs_detail`), retryable via the same per-row button. The BULK
-    "confirm exact matches" action (`discogs_bulk`'s `confirm_exact`) stays
-    detail-free/instant on purpose — it can act on up to a pageful of rows at once, and
-    turning that into one API call per row would make an instant click take as long as
-    a batch search. Use "Fetch details" (also bulk) to catch those up afterward.
+  - **Establishing a link ALWAYS fetches its per-track detail, on every path**
+    (settled 2026-08-21 after two revisions — worth reading, since the earlier designs
+    look reasonable and were wrong). Single-row confirm (`discogs_confirm`), manual
+    entry (`discogs_manual`), and the BULK "confirm exact matches"
+    (`discogs_bulk`'s `confirm_exact`) all call the shared `_try_fetch_detail()`.
+    The bulk one originally skipped it to keep the click instant, which seemed like
+    the right performance trade — but in practice the "catch up later" step got
+    forgotten and **124 rows sat half-populated**, showing release-level stand-ins
+    (the `rel` tag) with no songwriter credits at all. A slower click is a much better
+    outcome than a data model with a quietly-incomplete state in it, so now no path
+    through the UI can leave a linked row unenriched. Cost is bounded: at most one
+    pageful (25) at ~1s each. On an API failure the confirm still stands and only the
+    enrichment is pending (`needs_detail`) — the "Fetch details" action and
+    `--details` flag remain for exactly that recovery case, not as a routine step.
   - **Granularity note worth remembering:** a `Recording` is one SIDE of a disc, a
     Discogs *Release* is the whole disc — so A and B sides legitimately share a
     `discogs_release_id`. Songwriter credits are per-TRACK, so `_find_track()` matches
