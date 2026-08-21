@@ -1016,49 +1016,6 @@ DISCOGS_AUDIT_SORTS = {
 }
 
 
-def _loose_text_match(ours, theirs, threshold=0.5):
-    """
-    Do two bits of text refer to the same thing, allowing for the
-    formatting differences that are normal between a 1940s Billboard
-    listing and a Discogs entry?
-
-    Deliberately forgiving. Checked two ways, either of which counts as
-    agreement:
-
-      1. Whole-string containment, punctuation ignored -- "Blue Light
-         Boogie" vs "Blue Light Boogie (Part I & II)".
-      2. Word overlap: at least `threshold` of the SHORTER side's words
-         also appear in the longer one. This is what handles reordered
-         and expanded credits, which containment alone can't:
-         "Louis Armstrong - Ella Fitzgerald" vs "Ella Fitzgerald, Louis
-         Armstrong", or "Andy Kirk - The Jubalaires" vs "Andy Kirk And
-         His Orchestra, The Jubalaires". Measuring against the shorter
-         side is what makes an expansion (extra words on one side) free
-         rather than penalized.
-
-    Tuned against the real data: a stricter containment-only version
-    flagged 94 of 331 linked matches, nearly all of them false alarms
-    like the two above. An audit view that cries wolf on a quarter of
-    its rows is one nobody reads, which defeats the point. Genuinely
-    different acts still fail -- "Louis Jordan" vs "Jazz Gillum" share
-    no words at all.
-    """
-    if not (ours or "").strip() or not (theirs or "").strip():
-        return True  # nothing cached to compare against isn't a disagreement
-
-    flat_a = re.sub(r"[^a-z0-9]", "", ours.lower())
-    flat_b = re.sub(r"[^a-z0-9]", "", theirs.lower())
-    if flat_a and flat_b and (flat_a in flat_b or flat_b in flat_a):
-        return True
-
-    words_a = set(re.findall(r"[a-z0-9]+", ours.lower()))
-    words_b = set(re.findall(r"[a-z0-9]+", theirs.lower()))
-    if not words_a or not words_b:
-        return True
-    shorter = words_a if len(words_a) <= len(words_b) else words_b
-    return len(words_a & words_b) / len(shorter) >= threshold
-
-
 def discogs_audit(request):
     """
     Side-by-side audit of every LINKED match: our own transcribed data
@@ -1124,10 +1081,10 @@ def discogs_audit(request):
         # against blank -- blank compares as "no disagreement", which
         # would quietly under-report problems on 124 of the current 399
         # linked rows. Comparing against the combined release title is
-        # forgiving in the right direction: _loose_text_match's word
+        # forgiving in the right direction: loose_text_match's word
         # overlap matches either side's song against "Side A / Side B".
-        song_ok = _loose_text_match(recording.song.title, match.display_title)
-        artist_ok = _loose_text_match(recording.credit_text, match.display_artist)
+        song_ok = discogs_api.loose_text_match(recording.song.title, match.display_title)
+        artist_ok = discogs_api.loose_text_match(recording.credit_text, match.display_artist)
         flags = {
             "catalog": catalog_ok, "label": label_ok,
             "song": song_ok, "artist": artist_ok,

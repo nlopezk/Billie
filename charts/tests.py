@@ -15,7 +15,6 @@ from django.utils import timezone
 
 from . import discogs as discogs_api
 from .models import Chart, ChartEntry, DiscogsCandidate, DiscogsMatch, Label, Recording, Song
-from .views import _loose_text_match
 
 
 class RecordingsMatrixTests(TestCase):
@@ -223,7 +222,7 @@ class EntryCreateDuplicateCheckTests(TestCase):
 
 class DiscogsAgreementTests(TestCase):
     """
-    catalog_numbers_agree / labels_agree / _loose_text_match -- the
+    catalog_numbers_agree / labels_agree / loose_text_match -- the
     "do these two refer to the same thing" rules shared by match scoring
     and the audit view. Every case below came from a real disagreement
     the audit flagged against the actual database; they're here so the
@@ -273,7 +272,7 @@ class DiscogsAgreementTests(TestCase):
         # Nothing cached to compare against isn't evidence of a problem.
         self.assertTrue(discogs_api.catalog_numbers_agree("355", ""))
         self.assertTrue(discogs_api.labels_agree("Decca", ""))
-        self.assertTrue(_loose_text_match("Some Song", ""))
+        self.assertTrue(discogs_api.loose_text_match("Some Song", ""))
 
     def test_loose_text_match_tolerates_expanded_and_reordered_credits(self):
         for ours, theirs in [
@@ -284,12 +283,12 @@ class DiscogsAgreementTests(TestCase):
             ("White Cliffs of Dover", "The White Cliffs Of Dover"),
             ("Salt Pork, W. VA.", "Salt Pork, West Virginia"),
         ]:
-            self.assertTrue(_loose_text_match(ours, theirs), msg=f"{ours!r} vs {theirs!r}")
+            self.assertTrue(discogs_api.loose_text_match(ours, theirs), msg=f"{ours!r} vs {theirs!r}")
 
     def test_loose_text_match_still_catches_a_different_act_or_song(self):
-        self.assertFalse(_loose_text_match("Louis Jordan", "Jazz Gillum"))
-        self.assertFalse(_loose_text_match("Bycicle Bounce", "Jumpin' In A Julep Joint"))
-        self.assertFalse(_loose_text_match("Don't Get Around Much Anymore", "Never No Lament"))
+        self.assertFalse(discogs_api.loose_text_match("Louis Jordan", "Jazz Gillum"))
+        self.assertFalse(discogs_api.loose_text_match("Bycicle Bounce", "Jumpin' In A Julep Joint"))
+        self.assertFalse(discogs_api.loose_text_match("Don't Get Around Much Anymore", "Never No Lament"))
 
 
 class DiscogsConfidenceTests(TestCase):
@@ -338,6 +337,53 @@ class DiscogsConfidenceTests(TestCase):
         result = {"catno": "20-2806", "label": ["Universal", "Capitol", "EMI"]}
         self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
 
+    # --- the text veto on an otherwise-EXACT catalog+label score -------
+    # Labels reuse catalog numbers across series and decades, so
+    # catalog+label alone is not proof. This is the real case that
+    # motivated it: Capitol 253 is a Tex Ritter 78, Capitol H-253 is a
+    # Bozo The Clown 10" LP. Scoring that EXACT let it through the
+    # bulk-confirm button unattended.
+
+    def test_unrelated_title_demotes_an_otherwise_exact_match(self):
+        result = {
+            "catno": "20-2806", "label": ["Capitol"],
+            "title": "Bozo The Clown - Bozo's Circus Band",
+        }
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.STRONG)
+
+    def test_matching_song_alone_keeps_it_exact(self):
+        # Differently-billed act, right song -- still exact.
+        result = {
+            "catno": "20-2806", "label": ["Capitol"],
+            "title": "Some Other Billing - Bouquet Of Roses / Texarkana Baby",
+        }
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+    def test_matching_artist_alone_keeps_it_exact(self):
+        # Retitled recording, right artist -- still exact. Real pattern:
+        # Duke Ellington's "Never No Lament" was later retitled "Don't
+        # Get Around Much Anymore"; same record.
+        result = {
+            "catno": "20-2806", "label": ["Capitol"],
+            "title": "Eddy Arnold - Some Alternate Title / Another Side",
+        }
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+    def test_missing_title_does_not_demote(self):
+        # Nothing to judge on isn't evidence of a problem -- the veto
+        # only fires on positive evidence of unrelatedness.
+        result = {"catno": "20-2806", "label": ["Capitol"], "title": ""}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+    def test_veto_does_not_promote_a_weak_match(self):
+        # The veto only ever demotes. A result whose catalog doesn't
+        # match stays WEAK even if the title is a perfect textual match.
+        result = {
+            "catno": "99-9999", "label": ["Capitol"],
+            "title": "Eddy Arnold - Bouquet Of Roses",
+        }
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.WEAK)
+
 
 class DiscogsSearchTests(TestCase):
     """The two-tier search, and that it never picks a winner on its own."""
@@ -376,10 +422,12 @@ class DiscogsSearchTests(TestCase):
         self.assertIn("release_title", request.call_args[0][1])
 
     def test_candidates_come_back_best_confidence_first(self):
+        # Titles have to actually name the recording, or the text veto in
+        # _score_confidence correctly refuses to call any of them EXACT.
         payload = {"results": [
-            {"id": 1, "title": "A weak one", "catno": "999", "label": ["Nope"]},
-            {"id": 2, "title": "An exact one", "catno": "355", "label": ["Specialty"]},
-            {"id": 3, "title": "A strong one", "catno": "355", "label": ["Nope"]},
+            {"id": 1, "title": "Joe Liggins - Pink Champagne", "catno": "999", "label": ["Nope"]},
+            {"id": 2, "title": "Joe Liggins - Pink Champagne", "catno": "355", "label": ["Specialty"]},
+            {"id": 3, "title": "Joe Liggins - Pink Champagne", "catno": "355", "label": ["Nope"]},
         ]}
         with mock.patch.object(discogs_api, "_request", return_value=payload):
             candidates = discogs_api.search_candidates(self.recording)

@@ -202,10 +202,102 @@ def labels_agree(ours, theirs):
     return a == b or a.endswith(b) or b.endswith(a) or a.startswith(b) or b.startswith(a)
 
 
+def loose_text_match(ours, theirs, threshold=0.5):
+    """
+    Do two bits of text refer to the same thing, allowing for the
+    formatting differences that are normal between a 1940s Billboard
+    listing and a Discogs entry?
+
+    Deliberately forgiving. Checked two ways, either of which counts as
+    agreement:
+
+      1. Whole-string containment, punctuation ignored -- "Blue Light
+         Boogie" vs "Blue Light Boogie (Part I & II)".
+      2. Word overlap: at least `threshold` of the SHORTER side's words
+         also appear in the longer one. This is what handles reordered
+         and expanded credits, which containment alone can't:
+         "Louis Armstrong - Ella Fitzgerald" vs "Ella Fitzgerald, Louis
+         Armstrong", or "Andy Kirk - The Jubalaires" vs "Andy Kirk And
+         His Orchestra, The Jubalaires". Measuring against the shorter
+         side is what makes an expansion (extra words on one side) free
+         rather than penalized.
+
+    Tuned against the real data: a stricter containment-only version
+    flagged 94 of 331 linked matches, nearly all of them false alarms
+    like the two above. An audit view that cries wolf on a quarter of
+    its rows is one nobody reads, which defeats the point. Genuinely
+    different acts still fail -- "Louis Jordan" vs "Jazz Gillum" share
+    no words at all.
+
+    Lives here rather than in views because match scoring
+    (_score_confidence) needs it too, and all the "do these agree" rules
+    belong in one place so scoring and auditing can't drift apart.
+    """
+    if not (ours or "").strip() or not (theirs or "").strip():
+        return True  # nothing cached to compare against isn't a disagreement
+
+    flat_a = re.sub(r"[^a-z0-9]", "", ours.lower())
+    flat_b = re.sub(r"[^a-z0-9]", "", theirs.lower())
+    if flat_a and flat_b and (flat_a in flat_b or flat_b in flat_a):
+        return True
+
+    words_a = set(re.findall(r"[a-z0-9]+", ours.lower()))
+    words_b = set(re.findall(r"[a-z0-9]+", theirs.lower()))
+    if not words_a or not words_b:
+        return True
+    shorter = words_a if len(words_a) <= len(words_b) else words_b
+    return len(words_a & words_b) / len(shorter) >= threshold
+
+
+def text_plausibly_relates(recording, result_title):
+    """
+    Is there ANY textual connection between our recording and a search
+    result's combined "Artist - Side A / Side B" title?
+
+    Used to veto an otherwise-EXACT catalog+label score. The bar is
+    deliberately low -- either the song OR the artist relating is enough,
+    because:
+      * a B-side's own title appears in the combined title alongside the
+        A-side's, so matching on song works for both sides;
+      * a retitled recording still matches on artist (Duke Ellington's
+        "Never No Lament" was later retitled "Don't Get Around Much
+        Anymore" -- same record, and the artist carries it);
+      * a differently-billed act still matches on song.
+    Only when NEITHER connects is the result treated as unrelated.
+
+    That asymmetry is the point: this can only ever DEMOTE a score, so
+    being generous here means a real match is never demoted by accident,
+    while a genuine collision (Capitol reusing catalog number 253 for
+    both Tex Ritter and Bozo The Clown) has nothing in common at all and
+    still gets caught.
+    """
+    if not result_title:
+        return True  # nothing to judge on isn't evidence of a problem
+    return (
+        loose_text_match(recording.song.title, result_title)
+        or loose_text_match(recording.credit_text, result_title)
+    )
+
+
 def _score_confidence(recording, result):
     """
     How much to trust one search result, given what we already know about
     the recording from the magazine. See DiscogsMatch.CONFIDENCE_CHOICES.
+
+    Label + catalog number are the primary signal (they're close to
+    unique, and they're what's actually printed on the record). But they
+    are NOT sufficient on their own: labels reuse catalog numbers across
+    series and decades. Capitol 253 is a Tex Ritter 78; Capitol H-253 is
+    a Bozo The Clown 10" LP -- same label, same digits, completely
+    different record. Scoring that EXACT let it through the bulk-confirm
+    button unattended, which is exactly the case bulk-confirm shouldn't
+    be trusted with.
+
+    So a catalog+label agreement is downgraded to STRONG when the
+    result's title has no textual connection to our song OR artist at
+    all (see text_plausibly_relates). It stays a plausible candidate --
+    the catalog really does match -- but it needs a human to look at it
+    rather than being swept up in a batch.
     """
     from .models import DiscogsMatch
 
@@ -224,6 +316,11 @@ def _score_confidence(recording, result):
     label_matches = any(labels_agree(recording.label.name, name) for name in labels)
 
     if catno_matches and label_matches:
+        # The text veto. Only applied to what would otherwise be EXACT:
+        # STRONG and WEAK already mean "a human needs to look", so
+        # demoting those further would change nothing useful.
+        if not text_plausibly_relates(recording, result.get("title", "")):
+            return DiscogsMatch.STRONG
         return DiscogsMatch.EXACT
     if catno_matches:
         return DiscogsMatch.STRONG

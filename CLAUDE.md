@@ -149,6 +149,17 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     with a shortlist; a human picks. Same "don't silently guess" rule as the entry
     form's tie-picker and duplicate-recording check. Bulk-confirm exists but only acts
     on `EXACT` candidates (label AND catalog number both matched, normalized).
+  - **`EXACT` requires label + catalog AND a plausible text link** (added 2026-08-21).
+    Label/catalog are the primary signal, but not sufficient alone: labels reuse
+    catalog numbers across series and decades. The case that forced this — Capitol 253
+    is a Tex Ritter 78, Capitol **H-253** is a *Bozo The Clown* 10" LP. Same label,
+    same digits, scored `EXACT`, and sailed through bulk-confirm unattended. Now
+    `discogs.text_plausibly_relates()` demotes such a result to `STRONG` when the
+    search result's title relates to *neither* our song *nor* our artist. The bar is
+    deliberately low (either one relating is enough) because it can only ever demote —
+    a B-side matches on song, a retitled recording matches on artist, a re-billed act
+    matches on song. Verified against the real data: **zero** of the existing 123
+    comparable linked matches get demoted, and the Bozo case does.
   - **Confirming and detail-fetching are decoupled at the BULK level, not the
     single-row level** (revised 2026-08-21 — originally both were always separate,
     which turned out to just be an extra click for the common one-row-at-a-time case).
