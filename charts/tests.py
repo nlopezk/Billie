@@ -497,25 +497,87 @@ class DiscogsWorkflowTests(TestCase):
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
 
-    def test_confirming_copies_the_candidate_and_makes_no_api_call(self):
+    def test_confirming_copies_the_candidate_and_also_fetches_full_details(self):
+        # A single-row confirm finishes the job in one click -- unlike
+        # the BULK "confirm exact matches" action (see
+        # test_bulk_confirm_only_touches_exact_matches... and
+        # discogs_bulk's confirm_exact, which stays detail-free on
+        # purpose), a single confirm is exactly one more API call, same
+        # cost as the "Search Discogs" click that got it here.
         candidate = self._candidate()
         self.match.status = DiscogsMatch.SUGGESTED
         self.match.save()
 
-        # If confirming tried to reach the API this would raise.
-        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("must not call the API")):
+        release = {
+            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
+            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
+            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
+            "tracklist": [{"position": "A", "title": "Pink Champagne",
+                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
+        }
+        with mock.patch.object(discogs_api, "_request", return_value=release) as request:
             self.client.post(
                 reverse("charts:discogs_confirm", args=[self.recording.id]),
                 {"candidate_id": candidate.id},
             )
+        request.assert_called_once()  # confirm + detail = exactly one API call, not zero and not two
 
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
         self.assertEqual(self.match.discogs_release_id, 42)
         self.assertEqual(self.match.matched_catalog_number, "355")
-        # Shortlist cleared, and detail still pending (that's a separate step).
-        self.assertEqual(self.match.candidates.count(), 0)
-        self.assertTrue(self.match.needs_detail)
+        self.assertEqual(self.match.candidates.count(), 0)  # shortlist cleared
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
+        self.assertFalse(self.match.needs_detail)  # fetched already, not pending
+
+    def test_confirming_still_stands_even_if_the_detail_fetch_fails(self):
+        # The confirm itself (candidate -> match) must not be undone by a
+        # rate limit or a dropped connection on the SECOND call -- only
+        # the detail fetch is left pending, retryable via the same
+        # per-row button as always.
+        candidate = self._candidate()
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+
+        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("rate limited")):
+            response = self.client.post(
+                reverse("charts:discogs_confirm", args=[self.recording.id]),
+                {"candidate_id": candidate.id},
+            )
+
+        self.assertContains(response, "rate limited")
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)  # confirm stands
+        self.assertEqual(self.match.discogs_release_id, 42)
+        self.assertTrue(self.match.needs_detail)  # detail fetch still pending, can retry
+
+    def test_manual_release_entry_also_fetches_full_details(self):
+        release = {
+            "id": 12345, "title": "x", "artists": [], "labels": [{"name": "L", "catno": "C"}],
+            "formats": [], "year": 1950, "country": "US", "genres": [], "styles": [],
+            "tracklist": [], "extraartists": [{"name": "A Writer", "role": "Written-By"}],
+        }
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            self.client.post(
+                reverse("charts:discogs_manual", args=[self.recording.id]),
+                {"discogs_ref": "https://www.discogs.com/release/12345"},
+            )
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.songwriters, "A Writer")
+        self.assertFalse(self.match.needs_detail)
+
+    def test_manual_master_entry_does_not_attempt_a_detail_fetch(self):
+        # No release id -- nothing for /releases/{id} to fetch, so this
+        # must not even try (a doomed API call would just show an error
+        # for something that was never going to work).
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("must not call the API")):
+            self.client.post(
+                reverse("charts:discogs_manual", args=[self.recording.id]),
+                {"discogs_ref": "https://www.discogs.com/master/999"},
+            )
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+        self.assertEqual(self.match.discogs_master_id, 999)
 
     def test_fetch_detail_fills_in_credits(self):
         self.match.status = DiscogsMatch.CONFIRMED
@@ -537,11 +599,18 @@ class DiscogsWorkflowTests(TestCase):
         self.assertFalse(self.match.needs_detail)
 
     def test_manual_entry_accepts_a_url_or_a_bare_id(self):
+        # A release reference triggers the same auto-detail-fetch as
+        # discogs_confirm (see test_manual_release_entry_also_fetches_
+        # full_details for that behavior specifically) -- mocked here
+        # since it's incidental to what THIS test is actually checking
+        # (parsing), and must never hit the real network either way.
+        release = {"id": 12345, "title": "x", "labels": [{"name": "L", "catno": "C"}], "formats": []}
         for reference in ["12345", "https://www.discogs.com/release/12345", "release/12345-Some-Slug"]:
-            self.client.post(
-                reverse("charts:discogs_manual", args=[self.recording.id]),
-                {"discogs_ref": reference},
-            )
+            with mock.patch.object(discogs_api, "_request", return_value=release):
+                self.client.post(
+                    reverse("charts:discogs_manual", args=[self.recording.id]),
+                    {"discogs_ref": reference},
+                )
             self.match.refresh_from_db()
             self.assertEqual(self.match.discogs_release_id, 12345, msg=f"failed for {reference!r}")
             self.assertIsNone(self.match.discogs_master_id, msg=f"failed for {reference!r}")

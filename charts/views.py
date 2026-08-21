@@ -1109,17 +1109,54 @@ def discogs_search(request, recording_id):
     return _render_discogs_row(request, match)
 
 
+def _try_fetch_detail(match):
+    """
+    Fetch and apply full release detail (songwriters, producers, genres)
+    for a match that already has a discogs_release_id, if it's missing
+    them. One API call. Never raises -- returns an error string on
+    failure (the caller shows it as a note; the match stays exactly as
+    confirmed either way, just with needs_detail still True so the
+    per-row "Fetch full details" button remains as a retry) or None on
+    success/nothing-to-do.
+
+    Shared by discogs_confirm and discogs_manual (auto-fetch right after
+    a SINGLE-row confirm -- see the big comment above discogs_confirm for
+    why single-row is the case this is safe/wanted for) and by
+    discogs_fetch_detail itself (the explicit retry button).
+    """
+    if not match.needs_detail:
+        return None
+    try:
+        detail = discogs_api.fetch_release_detail(match.discogs_release_id, match.recording)
+    except discogs_api.DiscogsError as exc:
+        return str(exc)
+    for field, value in detail.items():
+        setattr(match, field, value)
+    match.save()
+    return None
+
+
 def discogs_confirm(request, recording_id):
     # HTMX target of a candidate's "This one" button.
+    #
+    # Confirming AND fetching full details happen in this one click --
+    # deliberately, unlike the page's BULK "confirm exact matches"
+    # button, which stays confirm-only/instant (see discogs_bulk) because
+    # it can act on many rows at once and turning that into N sequential
+    # API calls would make an instant click take N seconds. A single row
+    # has no such problem: "Search Discogs" already makes one live call
+    # per click, so one more call here to finish the job in the same
+    # click is a better default than making every match need a second,
+    # easy-to-forget button press. If the detail fetch itself fails
+    # (rate limit, connection), the confirm still stands -- only the
+    # detail fetch is retried, via the same per-row button as always.
     match = get_object_or_404(DiscogsMatch, recording_id=recording_id)
     candidate = get_object_or_404(DiscogsCandidate, pk=request.POST.get("candidate_id"), match=match)
 
     with transaction.atomic():
-        # Copy the candidate's already-cached summary across. No API call
-        # here on purpose -- see the section comment above: confirming is
-        # a human decision and should be instant, while the expensive
-        # detail fetch is a separate step (raw_data stays null, which is
-        # what `needs_detail` keys off).
+        # Copy the candidate's already-cached summary across first --
+        # this part is genuinely free (no API call), so it happens
+        # regardless of how the detail fetch below goes.
         match.discogs_release_id = candidate.discogs_release_id
         match.discogs_master_id = candidate.discogs_master_id
         match.matched_title = candidate.title
@@ -1134,7 +1171,10 @@ def discogs_confirm(request, recording_id):
         match.save()
         match.candidates.all().delete()
 
-    return _render_discogs_row(request, match)
+    error = _try_fetch_detail(match)
+    return render(request, "charts/_discogs_row.html", {
+        "match": match, "error": error, "querystring": request.POST.get("querystring", ""),
+    })
 
 
 def _parse_discogs_reference(raw):
@@ -1170,14 +1210,17 @@ def _parse_discogs_reference(raw):
 def discogs_manual(request, recording_id):
     # HTMX target of the "paste a Discogs release/master URL or ID" box,
     # for when the search genuinely can't find it but you've found it
-    # yourself on discogs.com.
+    # yourself on discogs.com. Same "finish the job in one click" as
+    # discogs_confirm above: a release reference gets its full details
+    # fetched right here too. A master-only reference can't (see
+    # needs_detail on DiscogsMatch) -- _try_fetch_detail is a no-op then.
     match, _ = DiscogsMatch.objects.get_or_create(recording_id=recording_id)
     raw = (request.POST.get("discogs_ref") or "").strip()
 
-    release_id, master_id, error = _parse_discogs_reference(raw)
-    if error:
+    release_id, master_id, parse_error = _parse_discogs_reference(raw)
+    if parse_error:
         return render(request, "charts/_discogs_row.html", {
-            "match": match, "error": error,
+            "match": match, "error": parse_error,
             "querystring": request.POST.get("querystring", ""),
         })
 
@@ -1188,7 +1231,7 @@ def discogs_manual(request, recording_id):
         match.confidence = ""
         # Deliberately cleared: whatever summary was cached described a
         # DIFFERENT release, and leaving it would show misleading data
-        # next to the new ID until the detail fetch runs.
+        # next to the new ID until the detail fetch below runs (or fails).
         match.matched_title = match.matched_artist = match.matched_label = ""
         match.matched_catalog_number = match.matched_country = match.matched_format = ""
         match.matched_year = None
@@ -1196,7 +1239,10 @@ def discogs_manual(request, recording_id):
         match.save()
         match.candidates.all().delete()
 
-    return _render_discogs_row(request, match)
+    fetch_error = _try_fetch_detail(match)
+    return render(request, "charts/_discogs_row.html", {
+        "match": match, "error": fetch_error, "querystring": request.POST.get("querystring", ""),
+    })
 
 
 def discogs_set_status(request, recording_id):
@@ -1225,26 +1271,22 @@ def discogs_set_status(request, recording_id):
 
 
 def discogs_fetch_detail(request, recording_id):
-    # HTMX target of a confirmed row's "fetch full details" button. This
-    # is the expensive per-release call that fills in songwriters,
-    # producers, genres and the raw JSON blob.
+    # HTMX target of a linked row's "fetch full details" button -- the
+    # explicit retry/catch-up path for whatever _try_fetch_detail's
+    # automatic attempt (in discogs_confirm/discogs_manual) didn't cover:
+    # it failed the first time, or this match came from the BULK confirm
+    # action (which stays detail-free on purpose, see discogs_bulk), or
+    # from before this auto-fetch behavior existed at all.
     match = get_object_or_404(DiscogsMatch, recording_id=recording_id)
     if not match.discogs_release_id:
         return render(request, "charts/_discogs_row.html", {
             "match": match, "error": "No release ID on this match yet.",
             "querystring": request.POST.get("querystring", ""),
         })
-    try:
-        detail = discogs_api.fetch_release_detail(match.discogs_release_id, match.recording)
-    except discogs_api.DiscogsError as exc:
-        return render(request, "charts/_discogs_row.html", {
-            "match": match, "error": str(exc), "querystring": request.POST.get("querystring", ""),
-        })
-
-    for field, value in detail.items():
-        setattr(match, field, value)
-    match.save()
-    return _render_discogs_row(request, match)
+    error = _try_fetch_detail(match)
+    return render(request, "charts/_discogs_row.html", {
+        "match": match, "error": error, "querystring": request.POST.get("querystring", ""),
+    })
 
 
 def discogs_bulk(request):
@@ -1280,8 +1322,12 @@ def discogs_bulk(request):
 
     elif action == "confirm_exact":
         # Confirm every EXACT-confidence suggestion on the current page.
-        # No API calls -- summaries are already cached, and detail fetch
-        # is a separate step (see discogs_confirm).
+        # Deliberately STILL no API calls here, unlike the single-row
+        # discogs_confirm (which now also fetches full details in the
+        # same click -- see the comment there): this can act on up to a
+        # pageful of rows at once, and turning that into one API call per
+        # row would make an instant click take as long as a batch search.
+        # Use the "Fetch details" bulk action afterward to catch these up.
         ids = request.POST.getlist("match_id")
         confirmed = 0
         for match in DiscogsMatch.objects.filter(id__in=ids, status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"):

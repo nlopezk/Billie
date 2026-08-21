@@ -149,11 +149,18 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     with a shortlist; a human picks. Same "don't silently guess" rule as the entry
     form's tie-picker and duplicate-recording check. Bulk-confirm exists but only acts
     on `EXACT` candidates (label AND catalog number both matched, normalized).
-  - **Confirming is decoupled from detail-fetching** on purpose: confirming copies
-    already-cached summary data (instant, no API call), while the expensive per-release
-    fetch that fills in songwriters/producers is a separate batched step. `needs_detail`
-    marks the gap. That's why bulk-confirming 25 rows is instant rather than 25
-    sequential API calls.
+  - **Confirming and detail-fetching are decoupled at the BULK level, not the
+    single-row level** (revised 2026-08-21 — originally both were always separate,
+    which turned out to just be an extra click for the common one-row-at-a-time case).
+    A single-row confirm (`discogs_confirm`) or manual entry (`discogs_manual`) now
+    fetches full details in the same click — one more API call, same cost as the
+    "Search Discogs" click that got it there, via the shared `_try_fetch_detail()`
+    helper. If that fetch fails, the confirm still stands; only the detail fetch stays
+    pending (`needs_detail`), retryable via the same per-row button. The BULK
+    "confirm exact matches" action (`discogs_bulk`'s `confirm_exact`) stays
+    detail-free/instant on purpose — it can act on up to a pageful of rows at once, and
+    turning that into one API call per row would make an instant click take as long as
+    a batch search. Use "Fetch details" (also bulk) to catch those up afterward.
   - **Granularity note worth remembering:** a `Recording` is one SIDE of a disc, a
     Discogs *Release* is the whole disc — so A and B sides legitimately share a
     `discogs_release_id`. Songwriter credits are per-TRACK, so `_find_track()` matches
