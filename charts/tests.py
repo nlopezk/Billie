@@ -6,11 +6,12 @@
 # below, which each target a real way the aggregate could silently
 # produce a number nobody ever printed anywhere).
 
-from datetime import date
+from datetime import date, timedelta
 from unittest import mock
 
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from . import discogs as discogs_api
 from .models import Chart, ChartEntry, DiscogsCandidate, DiscogsMatch, Label, Recording, Song
@@ -574,6 +575,85 @@ class DiscogsReferenceMixinTests(TestCase):
         candidate = DiscogsCandidate.objects.create(match=match, discogs_master_id=99, title="x", rank=0)
         self.assertEqual(candidate.reference_type, "Master")
         self.assertEqual(candidate.reference_id, 99)
+
+
+class DiscogsAuditTests(TestCase):
+    """The linked-matches audit view."""
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Coral")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="75126", side="A",
+            song=Song.objects.create(title="Jealous Heart"), credit_text="Kenny Roberts",
+        )
+        self.match = DiscogsMatch.objects.create(
+            recording=self.recording, status=DiscogsMatch.MANUAL,
+            discogs_release_id=42, linked_at=timezone.now(),
+            matched_track_title="Jealous Heart", matched_track_artist="Kenny Roberts",
+            matched_label="Coral", matched_catalog_number="64021",   # deliberate mismatch
+        )
+
+    def test_lists_only_linked_matches(self):
+        # An unlinked recording must not appear -- this page is about
+        # auditing decisions already made.
+        Recording.objects.create(
+            label=self.label, catalog_number="999", side="A",
+            song=Song.objects.create(title="Unlinked"), credit_text="Nobody",
+        )
+        response = self.client.get(reverse("charts:discogs_audit"))
+        titles = [r["recording"].song.title for r in response.context["page"]]
+        self.assertEqual(titles, ["Jealous Heart"])
+
+    def test_flags_a_real_catalog_disagreement(self):
+        response = self.client.get(reverse("charts:discogs_audit"))
+        row = response.context["page"][0]
+        self.assertTrue(row["has_mismatch"])
+        self.assertFalse(row["flags"]["catalog"])
+        self.assertTrue(row["flags"]["song"])
+        self.assertTrue(row["flags"]["artist"])
+
+    def test_mismatches_filter_narrows_to_problem_rows(self):
+        clean = Recording.objects.create(
+            label=self.label, catalog_number="500", side="A",
+            song=Song.objects.create(title="Fine Song"), credit_text="Fine Artist",
+        )
+        DiscogsMatch.objects.create(
+            recording=clean, status=DiscogsMatch.CONFIRMED, discogs_release_id=7,
+            linked_at=timezone.now(),
+            matched_track_title="Fine Song", matched_track_artist="Fine Artist",
+            matched_label="Coral", matched_catalog_number="500",
+        )
+        all_rows = self.client.get(reverse("charts:discogs_audit"))
+        self.assertEqual(len(all_rows.context["page"]), 2)
+
+        only_bad = self.client.get(reverse("charts:discogs_audit"), {"mismatches": "1"})
+        self.assertEqual(len(only_bad.context["page"]), 1)
+        self.assertEqual(only_bad.context["page"][0]["recording"].song.title, "Jealous Heart")
+
+    def test_sorted_newest_link_first_by_default(self):
+        older = Recording.objects.create(
+            label=self.label, catalog_number="111", side="A",
+            song=Song.objects.create(title="Older Link"), credit_text="X",
+        )
+        DiscogsMatch.objects.create(
+            recording=older, status=DiscogsMatch.CONFIRMED, discogs_release_id=8,
+            linked_at=timezone.now() - timedelta(days=1),
+        )
+        response = self.client.get(reverse("charts:discogs_audit"))
+        titles = [r["recording"].song.title for r in response.context["page"]]
+        self.assertEqual(titles[0], "Jealous Heart")  # linked just now, so first
+
+    def test_fix_link_targets_a_filter_that_actually_shows_the_row(self):
+        # Regression: the 'fix' link used to point at the queue WITHOUT
+        # status=all. Every row here is confirmed/manual, which the
+        # queue's default 'todo' filter excludes -- so the link landed on
+        # an empty page and read as doing nothing.
+        audit = self.client.get(reverse("charts:discogs_audit"))
+        self.assertContains(audit, "status=all&amp;q=75126")
+
+        # And following it really does show the row.
+        queue = self.client.get(reverse("charts:discogs_queue"), {"status": "all", "q": "75126"})
+        self.assertContains(queue, f'id="discogs-row-{self.recording.id}"')
 
 
 class DiscogsWorkflowTests(TestCase):

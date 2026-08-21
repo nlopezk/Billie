@@ -103,8 +103,16 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
                 <td class="audit-actions">
                     <a href="{{ row.match.discogs_url }}" target="_blank" rel="noopener"
                        title="Open {{ row.match.reference_type }} {{ row.match.reference_id }} on discogs.com">&nearr;</a>
-                    <a href="{% url 'charts:discogs_queue' %}?q={{ row.recording.catalog_number|urlencode }}"
-                       title="Find this in the review queue to change or reset it">fix</a>
+                    {% comment %}
+                    status=all is REQUIRED here, not optional: every row
+                    on this page is confirmed or manual by definition,
+                    and the queue's default "todo" filter excludes
+                    exactly those (they're settled). Without it the link
+                    lands on an empty queue -- which reads as the link
+                    being broken. The #anchor jumps straight to the row.
+                    {% endcomment %}
+                    <a href="{% url 'charts:discogs_queue' %}?status=all&amp;q={{ row.recording.catalog_number|urlencode }}#discogs-row-{{ row.recording.id }}"
+                       title="Open this in the review queue to change or reset it">fix</a>
                 </td>
             </tr>
             {% if row.match.note %}
