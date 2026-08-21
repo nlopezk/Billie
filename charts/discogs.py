@@ -144,12 +144,62 @@ def normalize_catalog_number(value):
 
 
 def normalize_label(value):
-    # Discogs often carries the fuller legal label name ("Decca Records")
-    # where the magazine printed the short one ("Decca"). Lowercased,
-    # punctuation-stripped, with a trailing "records" removed so those
-    # two compare equal.
-    text = re.sub(r"[^a-z0-9 ]", "", (value or "").lower()).strip()
-    return re.sub(r"\s+records$", "", text).strip()
+    # Discogs often carries the fuller legal label name ("Decca Records",
+    # "Philo Recordings") where the magazine printed the short one
+    # ("Decca", "Philo"), and appends a "(2)"/"(3)" disambiguator when
+    # several distinct labels share a name ("Cadet (2)", "Bluebird (3)").
+    # None of that is a real difference for our purposes, so it's all
+    # stripped before comparing.
+    text = (value or "").lower()
+    text = re.sub(r"\s*\(\d+\)", "", text)                  # "cadet (2)" -> "cadet"
+    text = re.sub(r"[^a-z0-9 ]", "", text).strip()
+    text = re.sub(r"\s+(records|recordings|record)$", "", text)
+    # Spaces go last, after the suffix rule above has had its chance to
+    # use them -- "De Luxe" and "DeLuxe" are the same label, and Discogs
+    # is not consistent about which it writes.
+    return re.sub(r"\s+", "", text)
+
+
+def catalog_numbers_agree(ours, theirs):
+    """
+    Do two catalog numbers refer to the same release?
+
+    Exact match on the normalized forms first. Failing that, compare the
+    longest run of DIGITS in each: Discogs routinely carries a label
+    prefix letter or padding our transcription doesn't ("B-10879" for
+    Bluebird 10879, "K-603" for Keynote 603, "06627" for Okeh 6627,
+    "500 CG1" for Gilt-Edge 500). The digits are the part that actually
+    identifies the release; the decoration around them varies by
+    cataloguer.
+
+    Genuinely different numbers still disagree -- 2963 vs 2966 is a real
+    difference and stays flagged.
+    """
+    a, b = normalize_catalog_number(ours), normalize_catalog_number(theirs)
+    if not a or not b:
+        return True   # nothing to compare against isn't a disagreement
+    if a == b:
+        return True
+    digits_a = max(re.findall(r"\d+", a) or [""], key=len)
+    digits_b = max(re.findall(r"\d+", b) or [""], key=len)
+    if not digits_a or not digits_b:
+        return False
+    return int(digits_a) == int(digits_b)   # int() drops leading-zero padding
+
+
+def labels_agree(ours, theirs):
+    """
+    Do two label names refer to the same label?
+
+    Normalized equality, then containment either way -- Discogs often
+    carries a parent or successor name where the magazine printed the
+    imprint ("RCA Victor" for Victor, "The Hit Record" for Hit). A real
+    difference (Decca vs Bluebird) shares nothing and still disagrees.
+    """
+    a, b = normalize_label(ours), normalize_label(theirs)
+    if not a or not b:
+        return True
+    return a == b or a.endswith(b) or b.endswith(a) or a.startswith(b) or b.startswith(a)
 
 
 def _score_confidence(recording, result):
@@ -159,17 +209,19 @@ def _score_confidence(recording, result):
     """
     from .models import DiscogsMatch
 
-    ours_catno = normalize_catalog_number(recording.catalog_number)
-    theirs_catno = normalize_catalog_number(result.get("catno", ""))
-    catno_matches = bool(ours_catno) and ours_catno == theirs_catno
+    # Same agreement rules the audit view uses (views.discogs_audit), so
+    # "this scored EXACT" and "the audit says these agree" can't drift
+    # apart and contradict each other.
+    catno_matches = bool(normalize_catalog_number(recording.catalog_number)) and catalog_numbers_agree(
+        recording.catalog_number, result.get("catno", "")
+    )
 
-    ours_label = normalize_label(recording.label.name)
     # A Discogs result's `label` is a LIST -- a release can carry several
     # (imprint, parent company, distributor). Any one matching is enough.
     labels = result.get("label") or []
     if isinstance(labels, str):
         labels = [labels]
-    label_matches = any(normalize_label(name) == ours_label for name in labels)
+    label_matches = any(labels_agree(recording.label.name, name) for name in labels)
 
     if catno_matches and label_matches:
         return DiscogsMatch.EXACT

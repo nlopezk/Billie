@@ -176,6 +176,28 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .credit-label { color: var(--muted); }
         .discogs-note { display: block; font-size: 0.75rem; color: var(--new); margin-top: 0.2rem; }
         .ambiguous-tie-note { font-size: 0.75rem; color: var(--new); margin: 0 0 0.3rem; }
+
+        /* Discogs audit (discogs_audit.html) -- ours vs Discogs, side by side */
+        .audit-table { font-size: 0.8rem; }
+        .audit-table td { vertical-align: top; }
+        .audit-table td.wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+        /* A faint tint separating the two halves, so which side you're
+           reading is obvious without tracking back to the header. */
+        .audit-table .side-ours { background: rgba(128,128,128,0.05); }
+        .audit-table .side-theirs { background: rgba(106,79,191,0.06); }
+        .audit-table thead th.side-ours, .audit-table thead th.side-theirs { text-align: left; font-size: 0.75rem; }
+        /* The actual point of the page: a value that disagrees with ours. */
+        .audit-table td.mismatch {
+            background: rgba(178,59,59,0.18);
+            color: var(--down);
+            font-weight: 600;
+        }
+        .audit-table tr.has-mismatch td:first-child { border-left: 3px solid var(--down); }
+        .audit-table .linked-at { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.75rem; }
+        .audit-table .audit-actions { white-space: nowrap; font-size: 0.75rem; }
+        .audit-table .audit-actions a { margin-right: 0.3rem; }
+        .audit-table tr.note-row td { border-top: none; padding-top: 0; }
+        .checkbox-label { flex-direction: row !important; align-items: center; gap: 0.35rem !important; }
         .manual-entry { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
         .manual-entry input { flex: 1; font-size: 0.8rem; min-width: 8rem; }
         /* HTMX shows/hides these automatically around an in-flight request

@@ -1,0 +1,138 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/discogs_audit.html
+
+Side-by-side audit of every LINKED Discogs match: our own transcribed
+data on the left, what Discogs says on the right, newest link first.
+
+Answers the opposite question from the review queue: not "what still
+needs deciding" but "I linked something wrong recently -- which one".
+Read-only, no HTMX, no API calls; fixing a bad link happens back in the
+queue, which every row links through to.
+
+Disagreeing values get a highlight. The comparison is deliberately
+forgiving (see views._loose_text_match) -- "Louis Jordan" vs "Louis
+Jordan And His Tympany Five" is an agreement, not a problem -- because
+an audit view that cries wolf on hundreds of rows is one nobody reads.
+{% endcomment %}
+{% block title %}Discogs audit{% endblock %}
+{% block extra_head %}
+<style>body { max-width: 1600px; }</style>
+{% endblock %}
+{% block content %}
+    <h1>Discogs audit</h1>
+    <p class="subtitle">
+        What's linked so far, ours vs Discogs, most recently linked first
+        &middot; <a href="{% url 'charts:discogs_queue' %}">&larr; back to the review queue</a>
+    </p>
+
+    <form class="matrix-filters" method="get" action="{% url 'charts:discogs_audit' %}">
+        {% comment %} Carry the current sort through, so filtering doesn't reset it. {% endcomment %}
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="dir" value="{{ dir }}">
+        <label>
+            Status
+            <select name="status" onchange="this.form.submit()">
+                <option value="all" {% if status == "all" %}selected{% endif %}>All linked</option>
+                <option value="confirmed" {% if status == "confirmed" %}selected{% endif %}>Confirmed only</option>
+                <option value="manual" {% if status == "manual" %}selected{% endif %}>Manually entered only</option>
+            </select>
+        </label>
+        <label class="search-label">
+            Search
+            <input type="search" name="q" value="{{ q }}" placeholder="ours or Discogs: song, artist, label, catalog #...">
+        </label>
+        <label class="checkbox-label">
+            <input type="checkbox" name="mismatches" value="1" {% if only_mismatches %}checked{% endif %} onchange="this.form.submit()">
+            Only rows with a disagreement
+        </label>
+        <button type="submit" class="discogs-btn">Filter</button>
+    </form>
+
+    <p class="matrix-summary">
+        Showing {{ shown_count }} of {{ total_linked }} linked
+        &middot; <strong>{{ mismatch_count }}</strong> with a disagreement worth a look
+    </p>
+
+    <div class="table-wrap">
+    <table class="audit-table">
+        <colgroup>
+            <col style="width: 8.5rem;">
+            <col style="width: 12rem;"><col style="width: 10rem;"><col style="width: 9rem;">
+            <col style="width: 12rem;"><col style="width: 10rem;"><col style="width: 9rem;">
+            <col style="width: 4rem;">
+        </colgroup>
+        <thead>
+            <tr>
+                <th rowspan="2"><a class="sort-link" href="{{ columns.linked.href }}">Linked<span class="sort-arrow">{{ columns.linked.arrow }}</span></a></th>
+                <th colspan="3" class="side-ours">Ours (as transcribed)</th>
+                <th colspan="3" class="side-theirs">Discogs</th>
+                <th rowspan="2"></th>
+            </tr>
+            <tr>
+                <th class="side-ours"><a class="sort-link" href="{{ columns.song.href }}">Song<span class="sort-arrow">{{ columns.song.arrow }}</span></a></th>
+                <th class="side-ours"><a class="sort-link" href="{{ columns.artist.href }}">Artist<span class="sort-arrow">{{ columns.artist.arrow }}</span></a></th>
+                <th class="side-ours"><a class="sort-link" href="{{ columns.catalog.href }}">Label / cat #<span class="sort-arrow">{{ columns.catalog.arrow }}</span></a></th>
+                <th class="side-theirs">Song</th>
+                <th class="side-theirs">Artist</th>
+                <th class="side-theirs">Label / cat #</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in page %}
+            <tr class="{% if row.has_mismatch %}has-mismatch{% endif %}">
+                <td class="linked-at">
+                    {{ row.match.linked_at|date:"y-m-d H:i" }}
+                    <span class="status-badge status-{{ row.match.status }}">{{ row.match.get_status_display|truncatewords:1 }}</span>
+                </td>
+
+                <td class="wrap side-ours">{{ row.recording.song.title }}</td>
+                <td class="wrap side-ours">{{ row.recording.credit_text }}</td>
+                <td class="wrap side-ours">{{ row.recording.catalog_display }}</td>
+
+                <td class="wrap side-theirs {% if not row.flags.song %}mismatch{% endif %}">
+                    {{ row.match.matched_track_title|default:"—" }}
+                </td>
+                <td class="wrap side-theirs {% if not row.flags.artist %}mismatch{% endif %}">
+                    {{ row.match.matched_track_artist|default:"—" }}
+                </td>
+                <td class="wrap side-theirs {% if not row.flags.label or not row.flags.catalog %}mismatch{% endif %}">
+                    {{ row.match.matched_label|default:"—" }} {{ row.match.matched_catalog_number }}
+                </td>
+
+                <td class="audit-actions">
+                    <a href="{{ row.match.discogs_url }}" target="_blank" rel="noopener"
+                       title="Open {{ row.match.reference_type }} {{ row.match.reference_id }} on discogs.com">&nearr;</a>
+                    <a href="{% url 'charts:discogs_queue' %}?q={{ row.recording.catalog_number|urlencode }}"
+                       title="Find this in the review queue to change or reset it">fix</a>
+                </td>
+            </tr>
+            {% if row.match.note %}
+            <tr class="note-row {% if row.has_mismatch %}has-mismatch{% endif %}">
+                <td></td>
+                <td colspan="7"><span class="discogs-note">{{ row.match.note }}</span></td>
+            </tr>
+            {% endif %}
+            {% empty %}
+            <tr><td colspan="8" style="color: var(--muted); text-align:center;">Nothing linked matches these filters.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    {% if page.has_other_pages %}
+    <div class="nav-bar" style="margin-top:1rem;">
+        <div>
+            {% if page.has_previous %}
+                <a class="button" href="?{{ base_querystring }}&page={{ page.previous_page_number }}">&larr; previous</a>
+            {% endif %}
+        </div>
+        <span class="muted">page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <div>
+            {% if page.has_next %}
+                <a class="button" href="?{{ base_querystring }}&page={{ page.next_page_number }}">next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+{% endblock %}

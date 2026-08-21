@@ -1006,6 +1006,178 @@ def _discogs_progress():
     }
 
 
+# Sort options for the linked-matches audit view. Same (field, label)
+# shape as RECORDINGS_MATRIX_SORTS.
+DISCOGS_AUDIT_SORTS = {
+    "linked": ("linked_at", "Linked"),
+    "song": ("recording__song__title", "Song"),
+    "artist": ("recording__credit_text", "Artist"),
+    "catalog": ("recording__catalog_number", "Catalog #"),
+}
+
+
+def _loose_text_match(ours, theirs, threshold=0.5):
+    """
+    Do two bits of text refer to the same thing, allowing for the
+    formatting differences that are normal between a 1940s Billboard
+    listing and a Discogs entry?
+
+    Deliberately forgiving. Checked two ways, either of which counts as
+    agreement:
+
+      1. Whole-string containment, punctuation ignored -- "Blue Light
+         Boogie" vs "Blue Light Boogie (Part I & II)".
+      2. Word overlap: at least `threshold` of the SHORTER side's words
+         also appear in the longer one. This is what handles reordered
+         and expanded credits, which containment alone can't:
+         "Louis Armstrong - Ella Fitzgerald" vs "Ella Fitzgerald, Louis
+         Armstrong", or "Andy Kirk - The Jubalaires" vs "Andy Kirk And
+         His Orchestra, The Jubalaires". Measuring against the shorter
+         side is what makes an expansion (extra words on one side) free
+         rather than penalized.
+
+    Tuned against the real data: a stricter containment-only version
+    flagged 94 of 331 linked matches, nearly all of them false alarms
+    like the two above. An audit view that cries wolf on a quarter of
+    its rows is one nobody reads, which defeats the point. Genuinely
+    different acts still fail -- "Louis Jordan" vs "Jazz Gillum" share
+    no words at all.
+    """
+    if not (ours or "").strip() or not (theirs or "").strip():
+        return True  # nothing cached to compare against isn't a disagreement
+
+    flat_a = re.sub(r"[^a-z0-9]", "", ours.lower())
+    flat_b = re.sub(r"[^a-z0-9]", "", theirs.lower())
+    if flat_a and flat_b and (flat_a in flat_b or flat_b in flat_a):
+        return True
+
+    words_a = set(re.findall(r"[a-z0-9]+", ours.lower()))
+    words_b = set(re.findall(r"[a-z0-9]+", theirs.lower()))
+    if not words_a or not words_b:
+        return True
+    shorter = words_a if len(words_a) <= len(words_b) else words_b
+    return len(words_a & words_b) / len(shorter) >= threshold
+
+
+def discogs_audit(request):
+    """
+    Side-by-side audit of every LINKED match: our own transcribed data
+    against what Discogs says, newest link first.
+
+    Exists because the review queue answers "what still needs a
+    decision", which is the opposite question from "I linked something
+    wrong a few minutes ago -- which one was it". Sorting by linked_at
+    descending (see that field's comment for why updated_at can't do
+    this job) puts the most recent decisions at the top, and the
+    mismatch flags make a wrong one stand out without reading all 331
+    rows.
+
+    Read-only: it never writes anything and makes no API call. Fixing a
+    bad link happens back in the queue, which every row links to.
+    """
+    status = request.GET.get("status", "all")
+    q = request.GET.get("q", "").strip()
+    only_mismatches = request.GET.get("mismatches") == "1"
+    sort = request.GET.get("sort", "linked")
+    direction = request.GET.get("dir", "desc")
+    if sort not in DISCOGS_AUDIT_SORTS:
+        sort = "linked"
+
+    matches = (
+        DiscogsMatch.objects
+        .filter(status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL])
+        .select_related("recording", "recording__song", "recording__label")
+    )
+    if status in (DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL):
+        matches = matches.filter(status=status)
+    if q:
+        for word in q.split():
+            matches = matches.filter(
+                Q(recording__song__title__icontains=word)
+                | Q(recording__credit_text__icontains=word)
+                | Q(recording__label__name__icontains=word)
+                | Q(recording__catalog_number__icontains=word)
+                | Q(matched_track_title__icontains=word)
+                | Q(matched_track_artist__icontains=word)
+            )
+
+    order_field, _ = DISCOGS_AUDIT_SORTS[sort]
+    if direction == "desc":
+        order_field = "-" + order_field
+    matches = matches.order_by(order_field, "recording__song__title")
+
+    # Comparison flags are computed per row in Python rather than in the
+    # query: they need the same normalization rules the matcher itself
+    # uses (charts.discogs.normalize_catalog_number / normalize_label),
+    # so that what's flagged here agrees with how the match was scored in
+    # the first place. Not expressible as a SQL comparison.
+    rows = []
+    for match in matches:
+        recording = match.recording
+        catalog_ok = discogs_api.catalog_numbers_agree(
+            recording.catalog_number, match.matched_catalog_number
+        )
+        label_ok = discogs_api.labels_agree(recording.label.name, match.matched_label)
+        song_ok = _loose_text_match(recording.song.title, match.matched_track_title)
+        artist_ok = _loose_text_match(recording.credit_text, match.matched_track_artist)
+        flags = {
+            "catalog": catalog_ok, "label": label_ok,
+            "song": song_ok, "artist": artist_ok,
+        }
+        has_mismatch = not all(flags.values())
+        if only_mismatches and not has_mismatch:
+            continue
+        rows.append({"match": match, "recording": recording, "flags": flags, "has_mismatch": has_mismatch})
+
+    # Counted BEFORE pagination so the header reports the real total, not
+    # just what's on this page.
+    mismatch_count = sum(1 for r in rows if r["has_mismatch"])
+
+    paginator = Paginator(rows, 50)
+    page = paginator.get_page(request.GET.get("page"))
+
+    # Sort links have to carry the current filters, same reasoning as the
+    # recordings matrix's column headers.
+    columns = {}
+    for key, (_, label) in DISCOGS_AUDIT_SORTS.items():
+        is_active = key == sort
+        next_dir = "desc" if (is_active and direction == "asc") else "asc"
+        params = {
+            "status": status if status != "all" else "", "q": q,
+            "mismatches": "1" if only_mismatches else "",
+            "sort": key, "dir": next_dir,
+        }
+        columns[key] = {
+            "label": label,
+            "href": "?" + urlencode({k: v for k, v in params.items() if v}),
+            "is_active": is_active,
+            "arrow": ("▲" if direction == "asc" else "▼") if is_active else "",
+        }
+
+    context = {
+        "page": page,
+        "columns": columns,
+        "status": status,
+        "q": q,
+        # Passed through so the filter form can carry the current sort as
+        # hidden fields -- filtering shouldn't silently reset your sort.
+        "sort": sort,
+        "dir": direction,
+        "only_mismatches": only_mismatches,
+        "total_linked": DiscogsMatch.objects.filter(
+            status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL]
+        ).count(),
+        "shown_count": len(rows),
+        "mismatch_count": mismatch_count,
+        "base_querystring": urlencode({k: v for k, v in {
+            "status": status if status != "all" else "", "q": q,
+            "mismatches": "1" if only_mismatches else "",
+            "sort": sort, "dir": direction,
+        }.items() if v}),
+    }
+    return render(request, "charts/discogs_audit.html", context)
+
+
 def discogs_queue(request):
     _ensure_discogs_matches()
 
@@ -1186,6 +1358,7 @@ def discogs_confirm(request, recording_id):
         match.matched_format = candidate.format
         match.confidence = candidate.confidence
         match.status = DiscogsMatch.CONFIRMED
+        match.linked_at = timezone.now()
         match.save()
         match.candidates.all().delete()
 
@@ -1246,6 +1419,7 @@ def discogs_manual(request, recording_id):
         match.discogs_release_id = release_id
         match.discogs_master_id = master_id
         match.status = DiscogsMatch.MANUAL
+        match.linked_at = timezone.now()
         match.confidence = ""
         # Deliberately cleared: whatever summary was cached described a
         # DIFFERENT release, and leaving it would show misleading data
@@ -1277,6 +1451,7 @@ def discogs_set_status(request, recording_id):
                 # about it, so the row goes back to looking untouched.
                 match.discogs_release_id = match.discogs_master_id = None
                 match.confidence = ""
+                match.linked_at = None
                 match.matched_title = match.matched_artist = match.matched_label = ""
                 match.matched_track_title = match.matched_track_artist = ""
                 match.matched_catalog_number = match.matched_country = match.matched_format = ""
@@ -1379,6 +1554,7 @@ def discogs_bulk(request):
                 match.matched_format = exact.format
                 match.confidence = exact.confidence
                 match.status = DiscogsMatch.CONFIRMED
+                match.linked_at = timezone.now()
                 match.save()
                 match.candidates.all().delete()
                 confirmed += 1

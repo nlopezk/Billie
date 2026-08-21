@@ -168,6 +168,22 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     release-level credits.
   - The recordings matrix has a **Discogs column** showing link state — entirely from
     cached data, no API call, so the matrix still works offline.
+  - **`/discogs/audit/`** (added 2026-08-21) is the read-only side-by-side check of
+    what's already linked: our transcribed data vs Discogs', newest link first, with
+    disagreements highlighted. Answers the opposite question from the queue ("which of
+    the ones I just linked did I get wrong?" rather than "what still needs deciding").
+    Sorted by `DiscogsMatch.linked_at`, a field that exists precisely because
+    `updated_at` is `auto_now` and gets bumped by any later edit — see that field's
+    comment. Migration `0006` backfills it from `updated_at` for pre-existing links.
+  - **"Do these agree?" is defined once and shared**: `catalog_numbers_agree()` and
+    `labels_agree()` in `charts/discogs.py`, plus `_loose_text_match()` in views, are
+    used by BOTH match scoring and the audit view, so what scores `EXACT` and what the
+    audit calls agreement can't drift apart. All three are deliberately forgiving, and
+    that tuning is load-bearing: against the real 331 linked matches, a naive
+    exact-string version flagged 94 (mostly `Cadet (2)` vs `Cadet`, `RCA Victor` vs
+    `Victor`, `B-10879` vs `10879`, reordered credits) — noise at that rate makes the
+    audit useless. Current rules flag 7. The tests in `DiscogsAgreementTests` are all
+    real cases from that data; don't tighten these without re-checking the flag count.
   - `python manage.py discogs_match` does the same searching in bulk from a terminal
     (where a long-running process is normal); the web section is for interactive review
     and small batches. Neither ever confirms anything.

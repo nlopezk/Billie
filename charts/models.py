@@ -267,6 +267,14 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
     note = models.CharField(max_length=500, blank=True)
 
     searched_at = models.DateTimeField(null=True, blank=True)   # last time candidates were fetched
+    # When the CURRENT link was established (confirmed or manually
+    # entered). Distinct from updated_at, which is auto_now and so gets
+    # bumped by ANY later save -- adding a note, re-fetching details,
+    # a schema backfill. That makes updated_at useless for "show me what
+    # I linked most recently, so I can check the one I think I got
+    # wrong", which is exactly what the audit view sorts by.
+    # Re-linking updates it; resetting clears it back to null.
+    linked_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

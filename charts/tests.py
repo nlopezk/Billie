@@ -14,6 +14,7 @@ from django.urls import reverse
 
 from . import discogs as discogs_api
 from .models import Chart, ChartEntry, DiscogsCandidate, DiscogsMatch, Label, Recording, Song
+from .views import _loose_text_match
 
 
 class RecordingsMatrixTests(TestCase):
@@ -217,6 +218,77 @@ class EntryCreateDuplicateCheckTests(TestCase):
 # no internet. What's worth testing here is OUR logic -- the confidence
 # scoring, the two-tier search, the per-track credit extraction, and the
 # review workflow's state transitions -- not Discogs' behaviour.
+
+
+class DiscogsAgreementTests(TestCase):
+    """
+    catalog_numbers_agree / labels_agree / _loose_text_match -- the
+    "do these two refer to the same thing" rules shared by match scoring
+    and the audit view. Every case below came from a real disagreement
+    the audit flagged against the actual database; they're here so the
+    tuning doesn't silently regress.
+    """
+
+    def test_catalog_numbers_agree_across_cataloguing_conventions(self):
+        for ours, theirs in [
+            ("20-2806", "20 2806"),      # punctuation
+            ("10879", "B-10879"),        # Discogs label-prefix letter
+            ("6627", "06627"),           # leading-zero padding
+            ("603", "K-603"),            # prefix letter again
+            ("500", "500 CG1"),          # trailing matrix suffix
+            ("11547", "B-11547"),
+        ]:
+            self.assertTrue(
+                discogs_api.catalog_numbers_agree(ours, theirs),
+                msg=f"{ours!r} should agree with {theirs!r}",
+            )
+
+    def test_genuinely_different_catalog_numbers_disagree(self):
+        # The whole point -- these must still be caught.
+        self.assertFalse(discogs_api.catalog_numbers_agree("2966", "AMO 2963"))
+        self.assertFalse(discogs_api.catalog_numbers_agree("8638", "B-9042"))
+        self.assertFalse(discogs_api.catalog_numbers_agree("75126", "64021"))
+
+    def test_labels_agree_across_naming_conventions(self):
+        for ours, theirs in [
+            ("Capitol", "Capitol Records"),
+            ("Cadet", "Cadet (2)"),              # Discogs same-name disambiguator
+            ("Bluebird", "Bluebird (3)"),
+            ("Philo", "Philo Recordings"),
+            ("Victor", "RCA Victor"),            # parent/successor name
+            ("Hit", "The Hit Record"),
+            ("De Luxe", "DeLuxe (2)"),           # spacing
+        ]:
+            self.assertTrue(
+                discogs_api.labels_agree(ours, theirs),
+                msg=f"{ours!r} should agree with {theirs!r}",
+            )
+
+    def test_genuinely_different_labels_disagree(self):
+        self.assertFalse(discogs_api.labels_agree("Decca", "Bluebird"))
+        self.assertFalse(discogs_api.labels_agree("Capitol", "Savoy"))
+
+    def test_missing_values_are_not_treated_as_disagreement(self):
+        # Nothing cached to compare against isn't evidence of a problem.
+        self.assertTrue(discogs_api.catalog_numbers_agree("355", ""))
+        self.assertTrue(discogs_api.labels_agree("Decca", ""))
+        self.assertTrue(_loose_text_match("Some Song", ""))
+
+    def test_loose_text_match_tolerates_expanded_and_reordered_credits(self):
+        for ours, theirs in [
+            ("Louis Jordan", "Louis Jordan And His Tympany Five"),
+            ("Blue Light Boogie", "Blue Light Boogie (Part I & II)"),
+            ("Louis Armstrong - Ella Fitzgerald", "Ella Fitzgerald, Louis Armstrong"),
+            ("Andy Kirk - The Jubalaires", "Andy Kirk And His Orchestra, The Jubalaires"),
+            ("White Cliffs of Dover", "The White Cliffs Of Dover"),
+            ("Salt Pork, W. VA.", "Salt Pork, West Virginia"),
+        ]:
+            self.assertTrue(_loose_text_match(ours, theirs), msg=f"{ours!r} vs {theirs!r}")
+
+    def test_loose_text_match_still_catches_a_different_act_or_song(self):
+        self.assertFalse(_loose_text_match("Louis Jordan", "Jazz Gillum"))
+        self.assertFalse(_loose_text_match("Bycicle Bounce", "Jumpin' In A Julep Joint"))
+        self.assertFalse(_loose_text_match("Don't Get Around Much Anymore", "Never No Lament"))
 
 
 class DiscogsConfidenceTests(TestCase):

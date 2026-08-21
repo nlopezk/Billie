@@ -31,6 +31,9 @@ urlpatterns = [
     # --- Discogs review section (the only network-touching part) ---
     # /discogs/                                -- the review queue
     path("discogs/", views.discogs_queue, name="discogs_queue"),
+    # /discogs/audit/                          -- side-by-side audit of what's
+    # already linked (ours vs Discogs), newest link first. Read-only.
+    path("discogs/audit/", views.discogs_audit, name="discogs_audit"),
     # Page-level batch actions (search N / confirm exact / fetch details):
     path("discogs/bulk/", views.discogs_bulk, name="discogs_bulk"),
     # Per-recording HTMX row actions:

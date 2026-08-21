@@ -150,7 +150,7 @@ class DiscogsMatchAdmin(admin.ModelAdmin):
         # Clears the link and every cached field, so the recording goes
         # back to looking untouched and can be re-searched cleanly.
         updated = queryset.update(
-            status=DiscogsMatch.UNMATCHED, confidence="",
+            status=DiscogsMatch.UNMATCHED, confidence="", linked_at=None,
             discogs_release_id=None, discogs_master_id=None,
             matched_title="", matched_artist="", matched_label="",
             matched_track_title="", matched_track_artist="",
