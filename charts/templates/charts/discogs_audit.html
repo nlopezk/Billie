@@ -54,6 +54,25 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
         &middot; <strong>{{ mismatch_count }}</strong> with a disagreement worth a look
     </p>
 
+    {% if needs_detail_count %}
+    {% comment %}
+    Bulk-confirming is instant because it skips the per-release detail
+    fetch (see views.discogs_bulk). Those rows fall back to release-level
+    Artist/Song, marked "rel" in the table. This is the prompt to go get
+    the real per-side values -- and the songwriter/producer credits,
+    which have no release-level fallback at all.
+    {% endcomment %}
+    <div class="discogs-message" style="border-color: var(--new); color: var(--new);">
+        <strong>{{ needs_detail_count }}</strong> linked
+        match{{ needs_detail_count|pluralize:"es" }} {{ needs_detail_count|pluralize:"has,have" }}
+        no per-track detail yet &mdash; their Artist/Song below are the whole release's,
+        marked <span class="release-level-tag">rel</span>, and they have no songwriter credits.
+        Fetch them from the <a href="{% url 'charts:discogs_queue' %}">review queue</a>
+        ("Fetch details for next N"), or run
+        <code>python manage.py discogs_match --details</code> to do them all in one go.
+    </div>
+    {% endif %}
+
     <div class="table-wrap">
     <table class="audit-table">
         <colgroup>
@@ -90,11 +109,21 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
                 <td class="wrap side-ours">{{ row.recording.credit_text }}</td>
                 <td class="wrap side-ours">{{ row.recording.catalog_display }}</td>
 
-                <td class="wrap side-theirs {% if not row.flags.song %}mismatch{% endif %}">
-                    {{ row.match.matched_track_title|default:"—" }}
+                {% comment %}
+                display_title/display_artist fall back to the RELEASE's
+                combined values when the per-track detail hasn't been
+                fetched (bulk-confirm skips it). The .release-level class
+                marks that visually, so a combined "Side A / Side B"
+                string is never mistaken for this side's own title.
+                {% endcomment %}
+                <td class="wrap side-theirs {% if not row.flags.song %}mismatch{% endif %} {% if not row.match.has_track_detail %}release-level{% endif %}">
+                    {{ row.match.display_title|default:"—" }}
                 </td>
-                <td class="wrap side-theirs {% if not row.flags.artist %}mismatch{% endif %}">
-                    {{ row.match.matched_track_artist|default:"—" }}
+                <td class="wrap side-theirs {% if not row.flags.artist %}mismatch{% endif %} {% if not row.match.has_track_detail %}release-level{% endif %}">
+                    {{ row.match.display_artist|default:"—" }}
+                    {% if not row.match.has_track_detail and row.match.display_artist %}
+                        <span class="release-level-tag" title="Release-level value -- the per-track detail for this side hasn't been fetched yet">rel</span>
+                    {% endif %}
                 </td>
                 <td class="wrap side-theirs {% if not row.flags.label or not row.flags.catalog %}mismatch{% endif %}">
                     {{ row.match.matched_label|default:"—" }} {{ row.match.matched_catalog_number }}

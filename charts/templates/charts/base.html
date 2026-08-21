@@ -197,6 +197,15 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .audit-table .audit-actions { white-space: nowrap; font-size: 0.75rem; }
         .audit-table .audit-actions a { margin-right: 0.3rem; }
         .audit-table tr.note-row td { border-top: none; padding-top: 0; }
+        /* A release-level stand-in, not this side's own value -- dimmed
+           and tagged so it's never mistaken for the precise thing. */
+        .audit-table td.release-level { font-style: italic; opacity: 0.75; }
+        .release-level-tag {
+            display: inline-block; font-size: 0.6rem; line-height: 1; vertical-align: middle;
+            border: 1px solid var(--new); color: var(--new);
+            border-radius: 3px; padding: 0.1rem 0.2rem; margin-left: 0.2rem;
+            font-style: normal;
+        }
         .checkbox-label { flex-direction: row !important; align-items: center; gap: 0.35rem !important; }
         .manual-entry { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
         .manual-entry input { flex: 1; font-size: 0.8rem; min-width: 8rem; }

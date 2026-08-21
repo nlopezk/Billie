@@ -1118,8 +1118,16 @@ def discogs_audit(request):
             recording.catalog_number, match.matched_catalog_number
         )
         label_ok = discogs_api.labels_agree(recording.label.name, match.matched_label)
-        song_ok = _loose_text_match(recording.song.title, match.matched_track_title)
-        artist_ok = _loose_text_match(recording.credit_text, match.matched_track_artist)
+        # display_title/display_artist rather than the matched_track_*
+        # fields directly, so a bulk-confirmed match (no detail fetched
+        # yet) is compared against its release-level values instead of
+        # against blank -- blank compares as "no disagreement", which
+        # would quietly under-report problems on 124 of the current 399
+        # linked rows. Comparing against the combined release title is
+        # forgiving in the right direction: _loose_text_match's word
+        # overlap matches either side's song against "Side A / Side B".
+        song_ok = _loose_text_match(recording.song.title, match.display_title)
+        artist_ok = _loose_text_match(recording.credit_text, match.display_artist)
         flags = {
             "catalog": catalog_ok, "label": label_ok,
             "song": song_ok, "artist": artist_ok,
@@ -1169,6 +1177,13 @@ def discogs_audit(request):
         ).count(),
         "shown_count": len(rows),
         "mismatch_count": mismatch_count,
+        # Linked but never detail-fetched (bulk-confirm skips that step),
+        # so their Artist/Song are release-level stand-ins. Surfaced as a
+        # prompt rather than left as a silently-degraded display.
+        "needs_detail_count": DiscogsMatch.objects.filter(
+            status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL],
+            raw_data__isnull=True, discogs_release_id__isnull=False,
+        ).count(),
         "base_querystring": urlencode({k: v for k, v in {
             "status": status if status != "all" else "", "q": q,
             "mismatches": "1" if only_mismatches else "",

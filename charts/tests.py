@@ -643,6 +643,60 @@ class DiscogsAuditTests(TestCase):
         titles = [r["recording"].song.title for r in response.context["page"]]
         self.assertEqual(titles[0], "Jealous Heart")  # linked just now, so first
 
+    def test_falls_back_to_release_level_values_when_detail_not_fetched(self):
+        # A bulk-confirmed match has no per-track detail (that step is
+        # skipped on purpose), which used to render as blank Artist/Song
+        # cells. It should show the release-level values it DOES have,
+        # flagged as not-track-level so they read honestly.
+        bulk = Recording.objects.create(
+            label=self.label, catalog_number="8633", side="A",
+            song=Song.objects.create(title="See See Rider Blues"), credit_text="Bea Booze",
+        )
+        match = DiscogsMatch.objects.create(
+            recording=bulk, status=DiscogsMatch.CONFIRMED, discogs_release_id=99,
+            linked_at=timezone.now(),
+            matched_title="Bea Booze - See See Rider Blues / Catchin' As Catch Can",
+            matched_artist="Bea Booze",
+            # matched_track_* deliberately blank -- never detail-fetched
+        )
+        self.assertFalse(match.has_track_detail)
+        self.assertEqual(match.display_artist, "Bea Booze")
+        self.assertIn("See See Rider Blues", match.display_title)
+
+        response = self.client.get(reverse("charts:discogs_audit"))
+        self.assertContains(response, "Bea Booze")
+        self.assertContains(response, "release-level")   # the visual marker
+        self.assertContains(response, "no per-track detail yet")  # the prompt
+
+    def test_track_level_values_win_over_release_level_when_present(self):
+        self.match.matched_track_title = "Jealous Heart"
+        self.match.matched_track_artist = "Kenny Roberts"
+        self.match.matched_title = "SOMETHING / ELSE"
+        self.match.matched_artist = "Combined Credit"
+        self.match.save()
+        self.assertTrue(self.match.has_track_detail)
+        self.assertEqual(self.match.display_title, "Jealous Heart")
+        self.assertEqual(self.match.display_artist, "Kenny Roberts")
+
+    def test_release_level_fallback_is_still_compared_not_skipped(self):
+        # Blank compares as "no disagreement", so falling back to blank
+        # would quietly under-report problems. A bulk-confirmed match
+        # whose release title has nothing to do with our song must still
+        # be flagged.
+        wrong = Recording.objects.create(
+            label=self.label, catalog_number="8633", side="A",
+            song=Song.objects.create(title="Totally Different Song"), credit_text="Someone Else",
+        )
+        DiscogsMatch.objects.create(
+            recording=wrong, status=DiscogsMatch.CONFIRMED, discogs_release_id=99,
+            linked_at=timezone.now(),
+            matched_title="Bea Booze - See See Rider Blues / Catchin' As Catch Can",
+            matched_artist="Bea Booze",
+        )
+        response = self.client.get(reverse("charts:discogs_audit"), {"mismatches": "1"})
+        flagged = [r["recording"].song.title for r in response.context["page"]]
+        self.assertIn("Totally Different Song", flagged)
+
     def test_fix_link_targets_a_filter_that_actually_shows_the_row(self):
         # Regression: the 'fix' link used to point at the queue WITHOUT
         # status=all. Every row here is confirmed/manual, which the

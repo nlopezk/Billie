@@ -304,6 +304,36 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
         # fetch, so it deliberately never shows as needing it.
         return self.is_linked and bool(self.discogs_release_id) and self.raw_data is None
 
+    # --- display fallbacks -------------------------------------------
+    # Track-level values only exist once the per-release detail fetch has
+    # run (see needs_detail). Bulk-confirmed matches deliberately skip
+    # that step, so they'd otherwise show blank Artist/Song cells even
+    # though we DO hold the release-level equivalents from the search
+    # result. These fall back to those rather than rendering nothing.
+    #
+    # Deliberately NOT parsed/guessed at: the release title is a combined
+    # "Artist - Side A / Side B" string, and picking which half belongs
+    # to this recording's side by splitting on " / " would be a guess
+    # (song titles contain slashes; A/B order isn't guaranteed). The real
+    # per-side answer is one API call away -- that's what fetching
+    # details is for. Showing the honest combined value, marked as such
+    # via has_track_detail below, beats inventing a precise-looking one.
+
+    @property
+    def has_track_detail(self):
+        # True when the values below are this recording's OWN side,
+        # rather than the whole release standing in for it. Drives the
+        # audit view's "release-level, not fetched yet" marker.
+        return bool(self.matched_track_title or self.matched_track_artist)
+
+    @property
+    def display_title(self):
+        return self.matched_track_title or self.matched_title
+
+    @property
+    def display_artist(self):
+        return self.matched_track_artist or self.matched_artist
+
     @property
     def has_ambiguous_exact_tie(self):
         # More than one candidate scored EXACT -- the same catalog+label

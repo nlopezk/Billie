@@ -59,8 +59,15 @@ you're part-way through reviewing) stays exactly where it was.
                 side) -- an act credited on the release as a whole can
                 still be entirely absent from this particular side.
                 {% endcomment %}
-                {% if match.matched_track_artist %}<div class="credit-line"><span class="credit-label">Artist</span> {{ match.matched_track_artist }}</div>{% endif %}
-                {% if match.matched_track_title %}<div class="credit-line"><span class="credit-label">Song</span> {{ match.matched_track_title }}</div>{% endif %}
+                {% comment %}
+                Falls back to the release's own values when the per-track
+                detail hasn't been fetched (bulk-confirm skips it), tagged
+                "rel" so a combined "Side A / Side B" title isn't mistaken
+                for this side's. The "Fetch full details" button below is
+                what replaces them with the real per-side values.
+                {% endcomment %}
+                {% if match.display_artist %}<div class="credit-line"><span class="credit-label">Artist</span> {{ match.display_artist }}{% if not match.has_track_detail %}<span class="release-level-tag">rel</span>{% endif %}</div>{% endif %}
+                {% if match.display_title %}<div class="credit-line"><span class="credit-label">Song</span> {{ match.display_title }}{% if not match.has_track_detail %}<span class="release-level-tag">rel</span>{% endif %}</div>{% endif %}
                 {% if match.songwriters %}<div class="credit-line"><span class="credit-label">Written by</span> {{ match.songwriters }}</div>{% endif %}
                 {% if match.producers %}<div class="credit-line"><span class="credit-label">Produced by</span> {{ match.producers }}</div>{% endif %}
                 {% if match.genres %}<div class="credit-line"><span class="credit-label">Genre</span> {{ match.genres|join:", " }}{% if match.styles %} &middot; {{ match.styles|join:", " }}{% endif %}</div>{% endif %}
