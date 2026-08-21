@@ -1,0 +1,78 @@
+{% comment %}
+One row of the entry table. Used both for the rows entry_week seeds on
+initial render and for a fresh row appended by "+ Add row" (ties, or
+extra debuts beyond the seeded count).
+
+The last-week-# input carries an explicit, sequential tabindex (1, 2,
+3, ... down the rows) so Tab jumps straight from one row's last-week #
+to the NEXT row's, for fast entry of the 85-95% typical week that's just
+carryovers -- "1 [Tab] 3 [Tab] [Tab] 5 [Tab] 6 ...", not a detour through
+that row's own position/search/wks-on/anomaly-note fields first. Every
+other field on the page is left with NO tabindex (the default, "0"),
+which the browser visits only AFTER every explicitly-numbered field --
+so they're still fully keyboard-reachable (Tab keeps going after the
+last row), just never landed on in the middle of typing last-week
+numbers. Position doesn't need its own tabindex: it's pre-filled from
+the seeded row count and rarely needs touching.
+
+No printed_peak_position input -- the owner has never seen a peak
+position printed on the actual pages being transcribed, so there's
+nothing to type against. The model field stays (ChartEntry.printed_peak_position);
+this is purely a "don't render a control with nothing to fill in" call,
+easy to reverse if a later chart era does print it.
+{% endcomment %}
+<tr data-row="{{ row.index }}">
+    <td class="col-pos">
+        <input type="number" name="position_{{ row.index }}" value="{{ row.position }}" min="1" required>
+    </td>
+    <td class="col-entry">
+        <div class="entry-inputs">
+            <input type="number" name="last_week_position_{{ row.index }}" placeholder="last wk #"
+                value="{{ row.last_week_position|default_if_none:'' }}"
+                tabindex="{{ row.index|add:1 }}"
+                hx-post="{% url 'charts:entry_resolve' chart.id %}"
+                hx-vals='{"week": "{{ week_date_str }}", "row": "{{ row.index }}"}'
+                hx-target="#resolved-{{ row.index }}" hx-swap="outerHTML"
+                hx-trigger="change, keyup[key=='Enter']">
+            <input type="text" class="search-box" name="search_{{ row.index }}" placeholder="or search for a debut/re-entry..."
+                hx-post="{% url 'charts:entry_search' chart.id %}"
+                hx-vals='{"week": "{{ week_date_str }}", "row": "{{ row.index }}"}'
+                hx-target="#search-results-{{ row.index }}" hx-swap="innerHTML"
+                hx-trigger="keyup changed delay:300ms">
+        </div>
+        <div id="search-results-{{ row.index }}" class="search-results-box"></div>
+        <div id="create-form-{{ row.index }}"></div>
+        {% include "charts/_entry_resolved.html" with row=row.index recording=row.recording weeks_hint=row.weeks_hint peak_hint=row.peak_hint %}
+    </td>
+    <td class="col-narrow">
+        <input type="number" name="printed_weeks_on_chart_{{ row.index }}" placeholder="optional" min="1"
+            value="{{ row.printed_weeks_on_chart|default_if_none:'' }}">
+        {% comment %}
+        "prior: N wks" -- what this row's recording has already racked up
+        in CONSECUTIVE prior weeks per the database, purely for comparing
+        against whatever's typed to the left. Computed here on the
+        server's initial render (edit-a-saved-week seeds it directly);
+        for a brand-new week it starts empty and this exact span gets
+        replaced via an hx-swap-oob="true" update from
+        _entry_resolved.html the moment the row resolves to a recording
+        -- see the comment there. Never auto-fills the input itself, per
+        CLAUDE.md's "Derived fields as a typo detector".
+        {% endcomment %}
+        <span id="wks-hint-{{ row.index }}" class="wks-hint">{% if row.weeks_hint %}prior: {{ row.weeks_hint }} wk{{ row.weeks_hint|pluralize }}{% endif %}</span>
+    </td>
+    <td class="col-note">
+        <input type="text" name="printed_anomaly_note_{{ row.index }}" placeholder="rare, optional"
+            value="{{ row.printed_anomaly_note|default_if_none:'' }}">
+    </td>
+    <td class="col-delete">
+        {% comment %}
+        Pure client-side removal -- no server round-trip needed, this row's
+        fields just won't be in the submission anymore. The save view
+        discovers which row indices are present from the submitted POST
+        keys rather than assuming a contiguous 0..total_rows-1 range, so a
+        gap left by a deleted row in the middle is fine.
+        {% endcomment %}
+        <button type="button" class="delete-row-btn" title="Remove this row"
+            onclick="this.closest('tr').remove()">&times;</button>
+    </td>
+</tr>

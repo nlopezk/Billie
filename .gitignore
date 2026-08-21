@@ -1,0 +1,40 @@
+# billboard.db USED TO be excluded here on the theory that it's just a
+# regeneration of Bb Charts fixed.xlsx via import_workbook, so committing
+# it would be redundant. That stopped being true the moment any post-
+# import edit happened (admin edits, real entry-form weeks, alias
+# cleanup, etc.) -- import_workbook also refuses to run against a
+# non-empty ChartEntry table, so there is no other way to reconstruct
+# that. It's tracked now specifically so a bad edit/bug can be recovered
+# with `git checkout <commit> -- billboard.db` instead of being
+# permanently lost. (docs/schema.sql is still the versioned record of
+# its SHAPE; this is the versioned record of its CONTENTS.)
+db.sqlite3
+
+# Local secrets -- e.g. a Discogs API token for any future management
+# command that looks recordings up there. Never committed regardless of
+# which var-loading approach ends up used.
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Django
+staticfiles/
+media/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# The original workbook is large and is the owner's own working file, not
+# something the schema depends on being in version control -- keep it out
+# unless you decide otherwise.
+*.xlsx

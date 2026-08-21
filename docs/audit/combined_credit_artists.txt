@@ -1,0 +1,50 @@
+# Combined-credit artists to review
+
+# Each of these imported as ONE canonical Artist, exactly as it existed in the old
+# workbook -- per the decision to not auto-split combined credits at import time
+# (some are genuine collaborations that SHOULD split into multiple RecordingCredit
+# rows; others are duo/group act names that should stay as one Artist -- see the
+# chat history around 2026-08-12 for the full reasoning and examples of each).
+#
+# Work through these at your own pace via the admin: open the artist, check its
+# Recording(s), and either leave it as one Artist (real act name) or add a second
+# RecordingCredit row on the recording and point it at the correct second Artist
+# (creating that Artist first if it does not already exist standalone).
+#
+# id | canonical_name | recordings_using_this_credit
+
+2 | "Ivory" Joe Hunter - Johnny Moore's 3 Blazers | 1 recording(s)
+11 | Andy Kirk - The Jubalaires | 2 recording(s)
+34 | Bill Samuels - Cats 'n' Jammers | 1 recording(s)
+39 | Bing Crosby - Andrews Sisters | 2 recording(s)
+46 | Brother Bones and His Shadows | 1 recording(s)
+350 | Bud Messner - Bill Franklin | 1 recording(s)
+57 | Captain Stubby And The Buccaneers | 2 recording(s)
+92 | Do, Ray and Me | 1 recording(s)
+116 | Ella Fritzgerald - Delta Boys | 1 recording(s)
+117 | Ella Fritzgerald - Louis Jordan | 1 recording(s)
+120 | Elton Britt - Rosalie Allen | 1 recording(s)
+123 | Ernest Tubb - Andrews Sisters | 2 recording(s)
+124 | Ernest Tubb - Red Foley | 2 recording(s)
+160 | Helen Humes - Bill Doggett Octet | 1 recording(s)
+162 | Homer & Jethro | 3 recording(s)
+165 | Ink Spots and Ella Fitzgerald | 3 recording(s)
+172 | James - Sinatra | 2 recording(s)
+179 | Jimmie Lunceford - The Delta Rhythm Boys | 1 recording(s)
+191 | Joe Swift - Johnny Otis | 1 recording(s)
+203 | Julia Lee And Her Boy Friends | 10 recording(s)
+208 | King Cole Trio - Nellie Lutcher | 1 recording(s)
+211 | Lawrence Welk - Red Foley | 2 recording(s)
+215 | Lester Young and His Kansas City Seven | 1 recording(s)
+220 | Lionel Hampton - Dinah Washington | 2 recording(s)
+222 | Little Esther - Johnny Otis | 1 recording(s)
+226 | Lonzo and Oscar | 1 recording(s)
+228 | Louis Armstrong - Ella Fritzgerald | 1 recording(s)
+230 | Louis Jordan - Ella Fritzgerald | 2 recording(s)
+236 | Margaret Whiting - Jimmy Wakely | 6 recording(s)
+252 | Paul Gayten - Annie Laurie | 1 recording(s)
+253 | Paul Whiteman - Billie Holiday | 1 recording(s)
+264 | Red Foley - Roy Ross | 2 recording(s)
+334 | Tommy Dorsey - Frank Sinatra | 1 recording(s)
+336 | Toni Harper - E. Beal Sextet | 1 recording(s)
+343 | Wiley and Gene | 1 recording(s)

@@ -1,0 +1,96 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% block title %}{% if is_edit %}Edit{% else %}Enter{% endif %} {{ chart }}{% if week_date %} &mdash; {{ week_date }}{% endif %}{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% comment %} This page's table needs more room than the base 900px layout. {% endcomment %}
+<style>body { max-width: 1500px; }</style>
+{% endblock %}
+{% block content %}
+
+<h1>{% if is_edit %}Edit a saved week{% else %}Enter a week{% endif %}: {{ chart }}</h1>
+
+{% if week_date is None %}
+    {% comment %}
+    Brand-new chart, nothing on file yet -- no sensible date to guess, so
+    just ask for a starting week instead of showing the full entry table.
+    Not a case any of the 5 real charts hit today, but the schema allows
+    adding a 6th chart later.
+    {% endcomment %}
+    <p class="subtitle">This chart has no entries yet -- pick a starting week.</p>
+    <form method="get" action="">
+        <input type="date" name="week" required>
+        <button type="submit">Start</button>
+    </form>
+{% else %}
+    <p class="subtitle">
+        Week ending {{ week_date|date:"F j, Y" }}
+        &middot; last week was {{ previous_week_date|date:"F j, Y" }}
+        {% if is_edit %}
+            &middot; editing what's already saved for this week
+            &middot; <a href="{% url 'charts:chart_week' chart.id week_date_str %}">&larr; back to browse</a>
+        {% else %}
+            &middot; <a href="{% url 'charts:entry_week' chart.id %}">change week</a>
+        {% endif %}
+    </p>
+
+    {% if errors %}
+    <div class="entry-errors">
+        <strong>Nothing was saved -- fix these and try again:</strong>
+        <ul>
+            {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <datalist id="known-labels">
+        {% for l in labels %}<option value="{{ l.name }}">{% endfor %}
+    </datalist>
+    <datalist id="known-artists">
+        {% for a in artists %}<option value="{{ a.canonical_name }}">{% endfor %}
+    </datalist>
+    <datalist id="known-songs">
+        {% for s in songs %}<option value="{{ s.title }}">{% endfor %}
+    </datalist>
+
+    <form method="post" action="{% if is_edit %}{% url 'charts:entry_week_edit' chart.id week_date_str %}{% else %}{% url 'charts:entry_week' chart.id %}{% endif %}">
+        {% csrf_token %}
+        <input type="hidden" name="week_date" value="{{ week_date_str }}">
+        <input type="hidden" id="total_rows" name="total_rows" value="{{ next_index }}">
+
+        <table class="entry-table">
+            <colgroup>
+                <col style="width: 4.75rem;">
+                <col>
+                <col style="width: 6.5rem;">
+                <col style="width: 11rem;">
+                <col style="width: 3rem;">
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Pos</th>
+                    <th>Recording (type last week's # to resolve, or search for a debut)</th>
+                    <th>Wks on</th>
+                    <th>Anomaly note</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="entry-rows">
+                {% for row in rows %}
+                    {% include "charts/_entry_row.html" %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="entry-actions">
+            <button type="button" id="add-row-btn"
+                hx-get="{% url 'charts:entry_add_row' chart.id %}"
+                hx-vals='js:{"next_index": document.getElementById("total_rows").value, "week": "{{ week_date_str }}"}'
+                hx-target="#entry-rows" hx-swap="beforeend">
+                + Add row
+            </button>
+            <button type="submit" class="save-week-button">{% if is_edit %}Save changes{% else %}Save week{% endif %}</button>
+        </div>
+    </form>
+{% endif %}
+{% endblock %}

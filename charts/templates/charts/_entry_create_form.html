@@ -1,0 +1,49 @@
+{% comment %}
+Inline "this has never charted before" sub-form: creates Song/Artist/
+Label (get_or_create -- reuses an exact-name match rather than
+duplicating) and the Recording itself, then returns the same shared
+_entry_resolved fragment every other resolution path uses.
+
+Song and Artist get the same list="known-*" datalist treatment as Label
+already had -- typing suggests existing entries so you can pick one
+instead of accidentally typing a near-duplicate (e.g. a cover version of
+a song already on file, or an artist already entered under a slightly
+different spelling). A datalist only SUGGESTS, it doesn't force a match
+-- typing something genuinely new is still just typing.
+
+hx-include="closest .inline-create" is what pulls every field in this
+box into the entry_create POST -- the button itself only carries row/week
+via hx-vals, not the actual data fields.
+
+The close (&times;) button is pure client-side removal, same pattern as
+the delete-row-btn in _entry_row.html -- no server round-trip, nothing
+was created, it just empties #create-form-{{ row }} back out. The
+search results above it (and its own "+ create new recording" link,
+_entry_search_results.html) live in a SEPARATE div and are untouched, so
+closing this and reopening it (or searching again) both still work.
+{% endcomment %}
+<div class="inline-create">
+    <div class="inline-create-header">
+        <p class="inline-create-title">New recording (never charted before):</p>
+        <button type="button" class="inline-create-close" title="Cancel -- close without creating anything"
+            onclick="this.closest('.inline-create').remove()">&times;</button>
+    </div>
+    <div class="inline-create-row">
+        <input type="text" name="new_song_{{ row }}" placeholder="Song title" list="known-songs" value="{{ prefill_song }}" required>
+        <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
+        <input type="text" name="new_credit_text_{{ row }}" placeholder="Credit as printed on the chart (optional)"
+            title="How this release is actually billed on the page, if it differs from the canonical artist name -- e.g. artist is the canonical &quot;Bing Crosby&quot;, but this release is credited &quot;Bing Crosby - Andrews Sisters&quot;. Leave blank to just use the artist name above.">
+    </div>
+    <div class="inline-create-row">
+        <input type="text" name="new_label_{{ row }}" placeholder="Label" list="known-labels" required>
+        <input type="text" name="new_catalog_{{ row }}" placeholder="Catalog #" required>
+        <input type="text" name="new_side_{{ row }}" placeholder="Side" maxlength="4" title="A, B, or AB for a song listed as spanning both sides (e.g. &quot;Parts I and II&quot;)" style="width: 3.5rem; flex: none;">
+    </div>
+    <button type="button" class="create-submit-btn"
+        hx-post="{% url 'charts:entry_create' chart.id %}"
+        hx-include="closest .inline-create"
+        hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}"}'
+        hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+        Create &amp; use
+    </button>
+</div>

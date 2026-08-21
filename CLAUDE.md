@@ -1,0 +1,281 @@
+# Billboard Chart Database — Project Instructions
+
+## What this project is
+
+A **fully local** database of historical Billboard charts, filled in manually from scanned
+magazine issues, plus a local web tool that makes that manual entry fast and error-resistant.
+
+Currently 6 charts (country and R&B singles, retail, radio, and others). Core relational
+shape: **chart → chart entry (one row per position per week) → recording → artist**.
+
+## Project status (updated 2026-08-20)
+
+Where things actually stand right now, so a fresh session doesn't have to re-derive it:
+
+- **Django project is scaffolded, migrated, and imported.** `django-admin startproject
+  config .` + a single app, `charts` (holds every model — chart, chart_era, chart_entry,
+  recording, recording_credit, song, artist, artist_alias, label). `manage.py` lives at
+  the repo root. Database file is `billboard.db` (named to match the schema-regeneration
+  command below, not the Django default `db.sqlite3`). `charts/admin.py` registers every
+  model with `autocomplete_fields`/`search_fields` per the Stack section's rationale, plus
+  inlines for `ArtistAlias`, `RecordingCredit`, and `ChartEra`. `docs/schema.sql` is
+  regenerated and current. A local superuser exists (`admin`); `python manage.py
+  runserver` + `/admin/` is the interface for browsing/editing everything right now — the
+  dedicated weekly entry form (see below) doesn't exist yet.
+- **Data is imported.** `charts/management/commands/import_workbook.py` is the one-time
+  import command (`python manage.py import_workbook`) — reads `Bb Charts fixed.xlsx`,
+  refuses to run against a non-empty `ChartEntry` table so it can't double-import. Current
+  counts: 5 `Chart` / 12 `ChartEra` / **10,750 `ChartEntry`** / 1,161 `Recording` / 350
+  `Artist` / 967 `Song` / 77 `Label`. The 6 confirmed reissue pairs have `reissue_of` set;
+  the 4 accepted Savoy 731A anomaly rows have `printed_anomaly_note` set. Combined-credit
+  artists (e.g. "Bing Crosby - Andrews Sisters") were imported as single canonical
+  `Artist` rows unsplit, by design — see `docs/audit/combined_credit_artists.txt` for the
+  standing checklist of which ones may need splitting into real `RecordingCredit` rows,
+  worked through by hand at your own pace, never automatically.
+- **A real schema bug was caught and fixed during the import**, worth knowing about:
+  `ChartEntry`'s original `UNIQUE(chart, week_date, position)` constraint (straight from
+  this file's own earlier example SQL) rejected every legitimate printed tie, because it
+  assumed only one recording could ever hold a position. Fixed to
+  `UNIQUE(chart, week_date, position, recording)` in migration `0002` — see that section
+  below for the corrected constraint and reasoning.
+- **Not built yet:** the weekly entry form (the actual point of the project — see that
+  section below), and the `combined_credit_artists.txt` splitting work.
+- **Data source:** `Bb Charts fixed.xlsx` (workbook: 5 chart sheets — Country JOCKEYS/
+  JUKEBOX/RETAIL, R&B JUKEBOX/RETAIL — plus Recordings/Songs/Artists/Labels master
+  sheets). This is the owner's own hand-transcribed work going back years, not a
+  secondhand dataset — migrating it into the new schema is the agreed plan (see
+  Non-negotiable #1: this is a one-time format change, not a substitute for future manual
+  entry). ~10,750 real chart-position rows across the five charts.
+- **Audit completed and resolved.** `docs/audit/` holds the trail:
+  - `same_recording_repeated.csv` — the real defect class (identical recording listed
+    twice in one chart-week). 5 found; 3 were data-entry mistakes and have been fixed in
+    the workbook; 2 are genuine Billboard printing anomalies (Savoy 731 / "Double Crossing
+    Blues" / Little Esther, printed twice the same week under inconsistent catalog numbers
+    and artist billing) and are being kept as-is, intentionally, per Non-negotiable #4.
+  - `position_skip_review.csv` — chart-position ties. **Competition/skip ranking
+    (tie holders share a position, the next entry jumps to position + tie count) is the
+    normal convention in this data.** Dense ranking (+1 after a tie) is a documented
+    exception, concentrated almost entirely in Country JUKEBOX and R&B JUKEBOX, 1944–1949
+    — 257 such cases, currently accepted as correct pending the owner spot-checking
+    further against the magazines.
+  - `other_issues.csv` — 4 smaller findings, all resolved (a duplicate legacy `rec_num` in
+    the old workbook, explained as a genuine reissue rather than a data error; one
+    case-mismatched `rec_id` join, fixed; one typo, fixed; 73 non-breaking-space
+    inconsistencies, fixed).
+  - Along the way, confirmed a real pattern worth keeping in mind for the `Recording`
+    model: several songs have more than one physical release on file for the same
+    artist. Sourced examples: Elton Britt's "Someday" (Bluebird 33-0521B → RCA Victor
+    20-1864A, a straight reissue) vs. Lionel Hampton's "Flying Home" (Victor 1940 vs.
+    Decca 1942, a genuinely different recording). The schema below distinguishes these
+    with `Recording.reissue_of`.
+- **Schema designed, not yet migrated.** Full draft: `docs/models_draft.py`. Key decisions
+  baked into it (see the file's comments for the reasoning):
+  - `Chart` + `ChartEra` (chart renames over time, e.g. "Most-Played Juke Box Folk
+    Records" → "...Hillbilly Records" → "...Country & Western Records", are the same
+    chart lineage, not separate charts).
+  - `Recording` ↔ `Artist` via a `RecordingCredit` join table with `credit_order`,
+    replacing the old workbook's `" - "`-delimited free-text Artist field.
+  - `Recording.reissue_of` (self-FK) for the same-recording-different-issue case above.
+  - `ChartEntry.printed_anomaly_note` to carry forward the 2 accepted printing anomalies
+    without the UNIQUE constraint silently rejecting or deduping them.
+  - Position-in-range and publication-weekday checks live in `ChartEntry.clean()`, not a
+    SQL CHECK constraint, because SQLite can't reference another table from one.
+  - `Recording.side` is `max_length=4`, not 1 — widened in migration `0003` to allow
+    `'AB'` for a song listed as spanning both sides (e.g. a "Parts I and II" release
+    catalogued as one listing), not just single-letter `'A'`/`'B'`.
+- **The weekly entry form is built** (`charts/urls.py`, `charts/views.py`, `charts/forms.py`,
+  `charts/templates/charts/entry_week.html` + `_entry_*.html` partials). At `/<chart_id>/entry/`.
+  Implements every point in "The weekly entry form" section below: seeded from the
+  previous week's row count, last-week number resolves a recording via HTMX (vendored
+  locally at `charts/static/charts/htmx.min.js` — downloaded once, served from disk, no
+  runtime internet dependency), ties last week correctly show a disambiguation picker
+  instead of silently guessing, search covers existing recordings (song/artist/label/
+  catalog #, combinable — "Capitol 304" finds a Capitol release cataloged 304), a
+  brand-new recording can be created inline (get_or_create — re-submitting doesn't
+  duplicate), rows can be deleted client-side (no server round-trip), and the whole
+  week saves atomically via `full_clean()` + `transaction.atomic()`, re-rendering with
+  everything preserved if any row fails. A computed "prior N weeks" hint shows next to
+  the weeks-on-chart input for comparison, never auto-filled, per "Derived fields as a
+  typo detector" below — no peak-position field or hint, since the owner has never
+  seen that printed on an actual page (the `printed_peak_position` model field stays,
+  just unused/hidden in the form; trivial to bring back).
+- **Editing an already-saved week is also built** — `/<chart_id>/<week_date>/edit/`
+  (linked from the chart browser as "edit this week"). Same page and the same
+  resolve/search/create/delete machinery as a new week, just seeded from what's
+  actually on file instead of from last week's count, and saved by REPLACING that
+  week's rows (delete + recreate, atomically) instead of adding to them. Safe because
+  nothing else in the schema has a foreign key pointing at `ChartEntry`.
+- **Also added along the way:** a read-only chart **browser** (`/`, `/<chart_id>/`,
+  `/<chart_id>/<week_date>/`) for paging through what's already on file week by week —
+  separate from the entry form, never writes anything on its own. And a read-only
+  **admin change log** (`/admin/` → Log entries, `LogEntry` registered in
+  `charts/admin.py`) — tracks admin-made additions/changes/deletions only, not
+  programmatic ones (e.g. neither the import command's rows nor the entry/edit forms'
+  writes are logged, since none of them go through `ModelAdmin`); see `README.md`'s
+  "Auditing changes" section for the full explanation of what it does and doesn't catch.
+- **A read-only recordings matrix, added 2026-08-20** — `/recordings/`
+  (`views.recordings_matrix`, linked from `chart_list.html` and `chart_week.html`). ONE
+  page covering all 5 charts (an earlier same-day version was one matrix per chart —
+  replaced same day once it became clear that didn't scale to "just show me everything").
+  One row per (chart, recording) pair a recording has actually charted on — never merged
+  across charts, since peak/weeks/first/last are only well-defined within a single chart
+  (see the big comment in `views._recordings_matrix_query`) — with filters across the top
+  for genre (`Chart.category`), a specific chart, and free-text search (song/artist/label/
+  catalog #, same word-AND/field-OR matching as the entry form's search), all combinable,
+  plus sortable columns via `?sort=&dir=`. Genre + chart + search all live-filter via HTMX
+  as you type/select — no page reload — by re-requesting the SAME url+view (`HX-Request`
+  header present → render just `_recordings_matrix_results.html`; absent → full page),
+  with `hx-push-url` keeping the address bar in sync so a filtered view stays bookmarkable/
+  shareable. Weeks charted counts *distinct week_date*, not raw `ChartEntry` rows,
+  specifically so the 2 accepted same-week printed-anomaly rows don't inflate it — this,
+  the per-(chart, recording) scoping, and the filters each have tests in `charts/tests.py`
+  (the rest of the app's test coverage claimed by the "Next step" bullet below does not
+  currently exist in that file — worth checking next session, since it may have been lost
+  rather than never written).
+- **Next step when resuming:** use the entry form for a real week and see what breaks
+  or feels wrong in practice — it's tested (resolve/tie/search/create/delete/edit/save
+  all verified via Django's test client, happy path and error/rollback path) but not
+  yet used for a real week end to end by the owner.
+
+## Non-negotiables
+
+Read these before proposing any change in direction.
+
+1. **Data entry stays manual.** The point of this project is that the owner learns the charts
+   week by week while entering them. Never propose scraping, bulk-importing from Wikipedia /
+   Whitburn / secondhand datasets, or OCR-ing the magazines into the database. The tool's job
+   is to *reduce typing and prevent mistakes*, not to replace the human.
+2. **Everything runs locally.** SQLite on disk, local dev server. No cloud database, no hosted
+   service, no telemetry, no API calls that need an internet connection at runtime.
+3. **Comment code thoroughly.** The owner is using this project to learn. Every non-obvious
+   line gets an inline comment explaining *why*, not just *what*. When you present code in
+   chat, explain what each block does in prose as well. Verbose is correct here.
+4. **The magazine is the source of truth.** When printed values and computed values disagree,
+   surface the conflict — never silently overwrite what the magazine printed.
+
+## Stack
+
+- **Python 3.11+**
+- **Django** — chosen deliberately over Flask/FastAPI/Streamlit because:
+  - Django admin gives a complete browsable/editable view of every table for free
+    (the "base looker"), with no code beyond declaring the models.
+  - `autocomplete_fields` turns every foreign key into a search-as-you-type widget,
+    which removes manual ID matching entirely.
+  - Migrations keep the schema versioned as the model evolves.
+- **SQLite** — single file, portable, zero setup, correct for a single-user local app.
+- Plain Django templates. Add **HTMX** only where a partial page update genuinely helps
+  (autocomplete dropdowns, inline row validation). No SPA, no build step.
+
+## Current schema
+
+@docs/schema.sql
+
+Regenerate that file after any migration so these instructions never drift. The `sqlite3`
+CLI isn't on PATH in this environment, so use Python's `sqlite3` module instead of the
+`.schema` shell command:
+
+```bash
+python -c "
+import sqlite3
+conn = sqlite3.connect('billboard.db')
+rows = conn.execute(\"SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name\").fetchall()
+open('docs/schema.sql', 'w', encoding='utf-8').write(''.join(sql.strip() + ';\n' for (sql,) in rows))
+"
+```
+
+(If the `sqlite3` CLI is ever available, `sqlite3 billboard.db .schema > docs/schema.sql`
+does the same thing.)
+
+## The weekly entry form — the heart of the project
+
+This is the one screen worth optimizing hard. Design principle:
+
+> On a typical week, 85–95% of a chart's positions are carryovers from the previous week.
+> The form must never ask the user to re-identify a record it can already infer.
+
+Required behavior for the chart-week entry screen:
+
+1. **Seeded from the previous week.** Given a chart and a week date, load the previous
+   week's entries into memory before rendering.
+2. **Last-week number resolves the recording.** The user types only the "last week" position
+   printed in the magazine; the form resolves it to a `recording_id`:
+
+   ```sql
+   -- Given chart_id, the PREVIOUS week's date, and the last-week number typed by the user
+   SELECT recording_id
+   FROM chart_entry
+   WHERE chart_id  = :chart_id
+     AND week_date = :previous_week_date
+     AND position  = :last_week_position;
+   ```
+
+   Show the resolved title + artist back to the user immediately so a mistyped number is
+   caught on the spot.
+3. **Search only for debuts and re-entries.** The recording/artist autocomplete is used for
+   the handful of rows per week that aren't carryovers, not for all 100.
+4. **Keyboard-first.** Tab moves between fields, Enter commits a row. No mouse required to
+   enter a full chart week.
+5. **Save the whole week atomically.** One transaction per chart-week, so a partial save
+   never leaves a half-entered chart in the database.
+
+## Derived fields as a typo detector
+
+`weeks_on_chart` and `peak_position` are computable:
+
+- `weeks_on = previous week's weeks_on + 1`
+- `peak = MIN(previous peak, this week's position)`
+
+Still capture what the magazine printed, then **flag mismatches** in the UI rather than
+auto-correcting. A mismatch means one of two things, both worth knowing: a typo by the user,
+or a genuine printing error by Billboard (more common than you'd expect). Store the printed
+values; keep the computed values available for comparison.
+
+## Artist and recording identity
+
+Billboard credits the same act inconsistently across decades
+("Conway Twitty" / "Conway Twitty & Loretta Lynn" / "Conway Twitty and the Twitty Birds").
+
+- The recording stores the **credit exactly as printed**, plus a foreign key to a canonical artist.
+- A separate **alias table** holds every observed spelling, and the autocomplete searches it.
+- Never auto-merge two artists. Suggest a possible duplicate and let the user decide.
+
+## Constraints belong in the schema
+
+Push integrity down to the database so bad data can't be written in the first place:
+
+```sql
+-- Catches an exact duplicate row (same recording, same position, same week --
+-- a real accidental double-save) at insert time, WITHOUT blocking a genuine
+-- printed tie (two DIFFERENT recordings sharing one position in the same
+-- week). The audit found competition/skip-ranking ties are the normal
+-- convention in this data (1,499 tie groups) -- an earlier version of this
+-- constraint that omitted `recording` rejected every one of them. See
+-- docs/audit/position_skip_review.csv.
+UNIQUE (chart_id, week_date, position, recording_id)
+```
+
+Also enforce: position within the chart's declared size, week dates aligned to the chart's
+publication day, and foreign keys ON (SQLite needs `PRAGMA foreign_keys = ON` per connection).
+
+## Conventions
+
+- Dates are stored as ISO `YYYY-MM-DD`, always the **week-ending date** printed on the issue.
+- Migrations are never edited after being applied — add a new one instead.
+- Every schema change is followed by regenerating `docs/schema.sql`.
+- Tests for the resolution logic (`last_week → recording_id`) and the derived-field
+  comparison are worth writing; UI tests are not.
+
+## Commands
+
+```bash
+python manage.py runserver          # start the local server
+python manage.py makemigrations     # after editing models.py
+python manage.py migrate            # apply schema changes
+python manage.py test               # run the test suite
+```
+
+## When in doubt
+
+Ask before changing the data model. The database already contains hand-entered weeks that
+represent real hours of work — schema changes must come with a migration that preserves
+every existing row.

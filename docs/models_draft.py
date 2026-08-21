@@ -1,0 +1,228 @@
+# Design draft for billboard/models.py -- AGREED but NOT YET APPLIED.
+#
+# Status as of this draft: the Django project has not been scaffolded yet
+# (no `django-admin startproject` run, Django not installed). This file is
+# the target to drop into the app once that happens. Once real migrations
+# exist, regenerate docs/schema.sql per CLAUDE.md and this file can be
+# retired (or kept as a dated design record -- your call at that point).
+#
+# Core relational shape: chart -> chart_entry -> recording -> artist,
+# with a chart_era table so a chart's printed name can change over the
+# decades without treating renames as separate charts, and a
+# recording_credit join table so a recording can list more than one
+# artist (the old workbook's " - "-delimited Artist string is replaced
+# by one row per credited artist, with billing order preserved).
+
+from django.db import models
+from django.core.exceptions import ValidationError
+
+
+class Label(models.Model):
+    # A record label ("Decca", "Capitol", ...). Flat lookup table, no
+    # history needed -- labels don't get renamed the way charts do.
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Artist(models.Model):
+    # The CANONICAL artist. What's actually credited on a given release
+    # goes on RecordingCredit / Recording.credit_text instead -- this row
+    # is the thing autocomplete resolves to and the thing aliases point at.
+    canonical_name = models.CharField(max_length=200)
+
+    def __str__(self):
+        return self.canonical_name
+
+
+class ArtistAlias(models.Model):
+    # Every spelling of this artist ever seen in print points here, e.g.
+    # "Conway Twitty", "Conway Twitty & Loretta Lynn" -> canonical Conway
+    # Twitty (for the solo alias) plus a *separate* Artist row for the duo
+    # if the duo is credited often enough to deserve its own canonical
+    # entry (that's a judgment call the UI leaves to you -- see the
+    # "never auto-merge" rule in CLAUDE.md).
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="aliases")
+    alias_text = models.CharField(max_length=200, unique=True)  # unique globally: one alias -> one artist
+
+    def __str__(self):
+        return self.alias_text
+
+
+class Song(models.Model):
+    # Canonical song title. Kept separate from Recording because the same
+    # song is re-recorded by multiple artists across chart history.
+    title = models.CharField(max_length=300)
+
+    def __str__(self):
+        return self.title
+
+
+class Recording(models.Model):
+    # One row per physical release: a specific label + catalog number +
+    # side. This is the thing a chart position actually points at.
+    label = models.ForeignKey(Label, on_delete=models.PROTECT, related_name="recordings")
+    catalog_number = models.CharField(max_length=30)  # CharField: numbers like "20-2700" aren't integers
+    # 'A' / 'B' normally, blank if unknown/not applicable, or 'AB' for a
+    # song listed as spanning both sides (e.g. a "Parts I and II" release
+    # catalogued as one listing rather than two separate A/B recordings).
+    side = models.CharField(max_length=4, blank=True)
+    song = models.ForeignKey(Song, on_delete=models.PROTECT, related_name="recordings")
+
+    # The credit EXACTLY as printed on the chart, e.g. "Bing Crosby -
+    # Andrews Sisters". Non-negotiable #4: the magazine is the source of
+    # truth, so this raw text is never derived/regenerated from
+    # RecordingCredit -- it's what you typed from the page, kept verbatim.
+    credit_text = models.CharField(max_length=300)
+
+    # If this release is a straight reissue of an earlier release (same
+    # performance/masters, repackaged under a new label/catalog number --
+    # e.g. Bluebird 33-0521B reissued as RCA Victor 20-1864A), point at
+    # that original Recording row. Left null for original issues and for
+    # genuinely separate recordings that just happen to share the same
+    # Song and Artist (different session/arrangement, e.g. Lionel
+    # Hampton's 1940 Victor small-group "Flying Home" vs. his 1942 Decca
+    # big-band version) -- those need no special marker, since two
+    # independent Recording rows sharing a Song/Artist is already exactly
+    # correct for that case.
+    reissue_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="reissues"
+    )
+
+    class Meta:
+        # Catches "same release entered twice under different rec_ids"
+        # at insert time, the way the old rec_id string key did informally.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["label", "catalog_number", "side"], name="unique_label_catalog_side"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.credit_text} — {self.song} ({self.label} {self.catalog_number}{self.side})"
+
+
+class RecordingCredit(models.Model):
+    # The many-to-many join that replaces the old " - "-delimited Artist
+    # string. One row per artist actually credited on a recording.
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="credits")
+    artist = models.ForeignKey(Artist, on_delete=models.PROTECT, related_name="recording_credits")
+    # Billing order as printed -- "Bing Crosby - Andrews Sisters" has
+    # Crosby at credit_order=1, Andrews Sisters at credit_order=2.
+    credit_order = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            # An artist can't be credited twice on the same recording...
+            models.UniqueConstraint(fields=["recording", "artist"], name="unique_recording_artist"),
+            # ...and two artists can't claim the same billing slot.
+            models.UniqueConstraint(fields=["recording", "credit_order"], name="unique_recording_credit_order"),
+        ]
+        ordering = ["credit_order"]
+
+
+class Chart(models.Model):
+    # One row per continuous chart LINEAGE, e.g. "Country Jukebox" -- not
+    # per printed name. Billboard renamed this chart three times between
+    # 1944 and 1954; those renames live in ChartEra below, not here.
+    CATEGORY_CHOICES = [("country", "Country"), ("rnb", "R&B")]
+    METHOD_CHOICES = [("jockeys", "Jockeys/Radio"), ("jukebox", "Jukebox"), ("retail", "Retail")]
+
+    category = models.CharField(max_length=10, choices=CATEGORY_CHOICES)
+    method = models.CharField(max_length=10, choices=METHOD_CHOICES)
+    # Day of the week the issue's cover date falls on, almost always
+    # Saturday for this era -- validated against chart_entry.week_date
+    # in application code (see ChartEntry.clean()).
+    publication_weekday = models.PositiveSmallIntegerField(default=5)  # 5 = Saturday, Monday=0
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["category", "method"], name="unique_chart_category_method")]
+
+    def __str__(self):
+        return f"{self.get_category_display()} {self.get_method_display()}"
+
+
+class ChartEra(models.Model):
+    # A chart's printed name for a date range. start_date/end_date bound
+    # the era; end_date null means "current" (or "last era on file").
+    # Also carries the chart's declared size for that era, since Billboard
+    # expanded these charts from ~10-15 positions up to 100 over the
+    # decades -- position-in-range validation reads this, not a fixed
+    # DB constant. Chart size is also allowed to vary week-to-week within
+    # an era (charts don't always fill every slot, and can "overflow"
+    # past max_position when the very last position is itself a tie) --
+    # max_position is a ceiling for validation, not a requirement that
+    # every week reach it.
+    chart = models.ForeignKey(Chart, on_delete=models.CASCADE, related_name="eras")
+    printed_name = models.CharField(max_length=200)  # e.g. "Most-Played Juke Box Folk Records"
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    max_position = models.PositiveSmallIntegerField()
+
+    def __str__(self):
+        return self.printed_name
+
+
+class ChartEntry(models.Model):
+    # One row per position per week. The heart of the schema.
+    chart = models.ForeignKey(Chart, on_delete=models.PROTECT, related_name="entries")
+    week_date = models.DateField()  # ISO week-ENDING date, per CLAUDE.md convention
+    position = models.PositiveSmallIntegerField()
+    recording = models.ForeignKey(Recording, on_delete=models.PROTECT, related_name="chart_entries")
+
+    # --- printed values (what the magazine actually says) ---
+    # Null covers both "-" (debut/re-entry, no prior position) and "chart
+    # just started, no prior week exists at all" -- operationally the same
+    # case: nothing to resolve a carryover from.
+    printed_last_week_position = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Only some eras/charts print these columns at all; null = not printed.
+    printed_peak_position = models.PositiveSmallIntegerField(null=True, blank=True)
+    printed_weeks_on_chart = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # A handful of import-time exceptions are known, deliberate departures
+    # from a clean 1-recording-1-slot-per-week chart -- e.g. the two 1950
+    # cases where Billboard itself printed "Double Crossing Blues" / Savoy
+    # 731 twice in the same week under inconsistent catalog numbers and
+    # artist billing (see docs/audit/same_recording_repeated.csv). Rather
+    # than let the UNIQUE constraint or the "no repeated recording in a
+    # week" rule silently reject or dedupe these, they're imported as-is
+    # with this flag set, so they read as "verified against the magazine,
+    # kept intentionally" rather than as a bug that slipped through.
+    printed_anomaly_note = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        constraints = [
+            # NOTE: UNIQUE(chart, week_date, position, RECORDING), not just
+            # (chart, week_date, position). The audit established that
+            # competition/skip-ranking ties (two different recordings
+            # sharing one printed position in the same week) are the
+            # normal convention in this data, not an error -- including
+            # `recording` in the constraint still catches an exact
+            # duplicate row while allowing a genuine tie through.
+            models.UniqueConstraint(
+                fields=["chart", "week_date", "position", "recording"], name="unique_chart_week_position_recording"
+            ),
+        ]
+        indexes = [models.Index(fields=["chart", "week_date"])]
+
+    def clean(self):
+        # Application-level checks that can't be plain SQL CHECK
+        # constraints because SQLite can't reference other tables from one:
+        # (1) week_date must land on the chart's publication weekday,
+        # (2) position must be within the era's declared max_position
+        #     for that week.
+        if self.chart_id and self.week_date:
+            if self.week_date.weekday() != self.chart.publication_weekday:
+                raise ValidationError("week_date is not on this chart's publication weekday.")
+            era = self.chart.eras.filter(start_date__lte=self.week_date).filter(
+                models.Q(end_date__isnull=True) | models.Q(end_date__gte=self.week_date)
+            ).first()
+            if era and self.position > era.max_position:
+                raise ValidationError(f"position {self.position} exceeds chart size {era.max_position} for this era.")
+
+    # --- computed fields, exposed as properties, never stored ---
+    # weeks_on = previous week's weeks_on + 1; peak = MIN(previous peak, this position).
+    # These are computed on read (e.g. in the entry-form view) and compared
+    # against printed_peak_position / printed_weeks_on_chart so a mismatch
+    # can be surfaced in the UI -- never auto-corrected, per CLAUDE.md.

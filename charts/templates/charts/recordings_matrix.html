@@ -1,0 +1,82 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/recordings_matrix.html
+
+The recordings matrix: every recording across every chart, one row per
+chart it charted on (see the big comment in views._recordings_matrix_query
+for why it's per-chart and not merged), filterable by genre/chart/search
+and sortable by column. Replaces the earlier one-matrix-per-chart design.
+
+The <form> below drives BOTH the initial page load's filter values (its
+genre/chart/q come straight from the URL query string, so this page is
+always in sync with whatever's in the address bar) and live in-page
+updates: HTMX intercepts its own change/keyup events and re-GETs this
+SAME url+view, swapping just #matrix-results with the response --
+see recordings_matrix() in views.py for why it's the same URL rather
+than a separate fragment endpoint (so hx-push-url gives you back a
+normal, reloadable, bookmarkable/shareable filtered URL).
+{% endcomment %}
+{% block title %}Recordings{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% comment %} 8 columns want more room than the base 900px layout. {% endcomment %}
+<style>body { max-width: 1400px; }</style>
+{% endblock %}
+{% block content %}
+    <h1>Recordings</h1>
+    <p class="subtitle">
+        Every recording, every chart it's appeared on, with peak position, weeks charted, and
+        first/last week &middot;
+        <a href="{% url 'charts:chart_list' %}">&larr; back to charts</a>
+    </p>
+
+    <form
+        id="matrix-filters"
+        class="matrix-filters"
+        method="get"
+        action="{% url 'charts:recordings_matrix' %}"
+        hx-get="{% url 'charts:recordings_matrix' %}"
+        hx-target="#matrix-results"
+        hx-push-url="true"
+        hx-trigger="change from:select, input changed delay:300ms from:input[type=search], search from:input[type=search]"
+    >
+        {% comment %}
+        sort/dir travel as hidden fields, not visible controls -- they're
+        set by clicking a column heading (a plain link, full page load,
+        see _recordings_matrix_results.html), and just need to ride along
+        on every live-filter request so filtering doesn't reset your sort.
+        {% endcomment %}
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="dir" value="{{ dir }}">
+
+        <label>
+            Genre
+            <select name="genre">
+                <option value="">All genres</option>
+                {% for value, label in genre_choices %}
+                <option value="{{ value }}" {% if value == genre %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Chart
+            <select name="chart">
+                <option value="">All charts</option>
+                {% for c in all_charts %}
+                <option value="{{ c.id }}" {% if chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label class="search-label">
+            Search
+            <input type="search" name="q" value="{{ q }}" placeholder="song, artist, label, catalog #...">
+        </label>
+    </form>
+
+    <div id="matrix-results">
+        {% include "charts/_recordings_matrix_results.html" %}
+    </div>
+{% endblock %}

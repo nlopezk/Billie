@@ -1,0 +1,66 @@
+{% comment %}
+charts/templates/charts/_recordings_matrix_results.html
+
+Shared by recordings_matrix.html (via {% include %}, for the initial page
+load) and views.recordings_matrix's own HTMX response (rendered directly,
+for a live filter/search update) -- one template, so the two can never
+drift out of sync with each other.
+
+The <thead> lives IN here, not in the parent page, even though its
+column headers don't change per se: each header's sort link is built
+with the CURRENT genre/chart/q baked into its querystring (see
+views._recordings_matrix_columns), so it has to re-render on every live
+filter update too -- otherwise clicking "sort by Peak" after typing a
+search would silently drop whatever you'd just typed.
+{% endcomment %}
+<p class="matrix-summary" id="matrix-count">{{ total_rows }} row{{ total_rows|pluralize }}.</p>
+
+<div class="table-wrap">
+<table class="recordings-table">
+    <colgroup>
+        <col style="width: 2.5rem;">
+        <col style="width: 12rem;">
+        <col style="width: 8rem;">
+        <col style="width: 6.5rem;">
+        <col style="width: 8rem;">
+        <col style="width: 3rem;">
+        <col style="width: 4.5rem;">
+        <col style="width: 4.5rem;">
+    </colgroup>
+    <thead>
+        <tr>
+            <th class="num"><a class="sort-link" href="{{ columns.peak.href }}">Peak<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.song.href }}">Song<span class="sort-arrow">{{ columns.song.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.artist.href }}">Artist<span class="sort-arrow">{{ columns.artist.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.chart.href }}">Chart<span class="sort-arrow">{{ columns.chart.arrow }}</span></a></th>
+            <th>Label / catalog #</th>
+            <th class="num"><a class="sort-link" href="{{ columns.weeks.href }}">Weeks<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.first.href }}">First entry<span class="sort-arrow">{{ columns.first.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.last.href }}">Last entry<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in rows %}
+        <tr>
+            <td class="pos num">{{ r.peak_position }}</td>
+            <td class="wrap">{{ r.recording__song__title }}</td>
+            <td class="wrap">{{ r.recording__credit_text }}</td>
+            <td class="wrap">{{ r.chart_label }}</td>
+            <td>{{ r.catalog_display }}</td>
+            <td class="num">{{ r.weeks_charted }}</td>
+            {% comment %}
+            Displayed as y-m-d (2-digit year) -- this dense matrix reads
+            better compact, unlike the week-by-week browser's full dates.
+            The LINK target still uses full Y-m-d, since that's the
+            actual URL format chart_week's view parses -- only the text
+            shown to the reader is shortened.
+            {% endcomment %}
+            <td><a href="{% url 'charts:chart_week' r.chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a></td>
+            <td><a href="{% url 'charts:chart_week' r.chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" style="color: var(--muted); text-align: center;">No recordings match these filters.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>

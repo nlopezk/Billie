@@ -1,0 +1,8 @@
+{% comment %}
+Response to "+ Add row": the new row itself (appended into the table
+body, hx-swap="beforeend"), plus an out-of-band swap that bumps the
+hidden total_rows counter elsewhere on the page -- one HTMX response
+updating two different places at once.
+{% endcomment %}
+{% include "charts/_entry_row.html" %}
+<input type="hidden" id="total_rows" name="total_rows" value="{{ new_total }}" hx-swap-oob="true">

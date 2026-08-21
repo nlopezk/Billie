@@ -1,0 +1,49 @@
+{% comment %}
+charts/templates/charts/_entry_create_duplicate_check.html
+
+Shown instead of actually creating a Recording, when entry_create's
+backstop check (see the big comment there) turns up something that
+looks like it might already be on file. Reuses id="resolved-{{ row }}" --
+the SAME id _entry_resolved.html's root element uses -- so the "Create &
+use" button's existing hx-target="#resolved-{{ row }}" hx-swap="outerHTML"
+(in _entry_create_form.html) lands here without needing its own special
+case. Whichever way the user resolves this next -- picking one of the
+matches below, or confirming it's genuinely new -- both ALSO target
+#resolved-{{ row }}, so the row ends up looking exactly like any other
+resolved row either way, and the inline-create box behind this gets
+cleared automatically once that happens (see _entry_resolved.html's
+create-form-{{ row }} OOB clear).
+{% endcomment %}
+<div id="resolved-{{ row }}" class="resolved-preview ambiguous">
+    <span class="not-resolved">this might already be on file &mdash; pick one, or confirm it's new:</span>
+    <ul class="pick-list">
+        {% for r in matches %}
+        <li>
+            <button type="button"
+                hx-post="{% url 'charts:entry_select' chart.id %}"
+                hx-vals='{"row": "{{ row }}", "recording_id": "{{ r.id }}", "week": "{{ week_date_str }}"}'
+                hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+                {{ r.song }} &mdash; {{ r.credit_text }}
+                <span class="catalog-hint">({{ r.catalog_display }})</span>
+            </button>
+        </li>
+        {% endfor %}
+    </ul>
+    {% comment %}
+    hx-include points at the create-form DIV by id, not "closest" --
+    this button lives inside #resolved-{{ row }} (a table cell over),
+    not inside .inline-create itself, so there's no ancestor
+    relationship to walk up. The inline-create box (and its typed-in
+    values) is untouched and still sitting in #create-form-{{ row }},
+    exactly where entry_create_form put it -- this just re-submits it
+    with confirm_create=1 added, so entry_create skips the check this
+    time and actually creates.
+    {% endcomment %}
+    <button type="button" class="confirm-create-btn"
+        hx-post="{% url 'charts:entry_create' chart.id %}"
+        hx-include="#create-form-{{ row }}"
+        hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}", "confirm_create": "1"}'
+        hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+        None of these &mdash; create new anyway
+    </button>
+</div>

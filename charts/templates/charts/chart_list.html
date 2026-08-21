@@ -1,0 +1,51 @@
+{% extends "charts/base.html" %}
+{% block title %}Billboard Charts{% endblock %}
+{% block content %}
+    <h1>Billboard Charts</h1>
+    <p class="subtitle">
+        Pick a chart to browse it week by week
+        &middot; <a href="{% url 'charts:recordings_matrix' %}">all recordings, every chart &rarr;</a>
+    </p>
+
+    <table class="chart-list-table">
+        <colgroup>
+            <col style="width: 10rem;">
+            <col style="width: 14rem;">
+            <col style="width: 4.5rem;">
+            <col style="width: 6.5rem;">
+            <col style="width: 7rem;">
+        </colgroup>
+        <thead>
+            <tr>
+                <th>Chart</th>
+                <th>Date range on file</th>
+                <th>Entries</th>
+                <th></th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in charts %}
+            <tr>
+                <td>
+                    {% if row.entry_count %}
+                        <a href="{% url 'charts:chart_week_latest' row.chart.id %}">{{ row.chart }}</a>
+                    {% else %}
+                        {{ row.chart }} <span style="color: var(--muted)">(no entries yet)</span>
+                    {% endif %}
+                </td>
+                <td class="date-range-cell">
+                    {% if row.first_week %}{{ row.first_week }} &ndash; {{ row.last_week }}{% else %}&mdash;{% endif %}
+                </td>
+                <td>{{ row.entry_count }}</td>
+                <td>
+                    {% if row.entry_count %}
+                        <a href="{% url 'charts:recordings_matrix' %}?chart={{ row.chart.id }}" class="enter-week-link">recordings &rarr;</a>
+                    {% endif %}
+                </td>
+                <td><a href="{% url 'charts:entry_week' row.chart.id %}" class="enter-week-link">enter a week &rarr;</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

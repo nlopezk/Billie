@@ -1,0 +1,11 @@
+sheet,date,rec_id,position,past_number,song,artist,status,note
+Country JUKEBOX,1947-05-24,Columbia_37303B,4,5,Down at the Roadside Inn,Al Dexter,resolved,Correct as printed; the other row was fixed
+Country JUKEBOX,1947-05-24,Decca_46040A,5,5,,,resolved,Was mistakenly duplicated as Columbia_37303B; corrected in file
+R&B RETAIL,1948-10-02,Decca_24483A,4,12,Don't Burn the Candle on Both Ends,Louis Jordan,resolved,Correct as printed; the other row was fixed
+R&B RETAIL,1948-10-02,Decca_24448A,12,12,,,resolved,Was mistakenly duplicated as Decca_24483A; corrected in file
+R&B RETAIL,1949-11-19,Aladdin_3032A,6,13,Rooming House Blues,Amos Milburn,resolved,Correct as printed; the other row was fixed
+R&B RETAIL,1949-11-19,Jubilee_5016B,13,13,,,resolved,Was mistakenly duplicated as Aladdin_3032A; corrected in file
+R&B JUKEBOX,1950-02-18,Savoy_731A,2,3,Double Crossing Blues,Little Esther,kept as printed - anomaly,"Magazine printed Savoy 730 here, a catalog number that does not exist; artist is a combined Little Esther/Johnny Otis credit"
+R&B JUKEBOX,1950-02-18,Savoy_731A,10,-,Double Crossing Blues,Little Esther,kept as printed - anomaly,"Magazine printed Savoy 731 here and lists Johnny Otis; artist is a combined Little Esther/Johnny Otis credit"
+R&B RETAIL,1950-02-18,Savoy_731A,3,3,Double Crossing Blues,Little Esther,kept as printed - anomaly,"Magazine printed Savoy 730 here, a catalog number that does not exist; artist is a combined Little Esther/Johnny Otis credit"
+R&B RETAIL,1950-02-18,Savoy_731A,8,-,Double Crossing Blues,Little Esther,kept as printed - anomaly,"Magazine printed Savoy 731 here and lists Johnny Otis; artist is a combined Little Esther/Johnny Otis credit"

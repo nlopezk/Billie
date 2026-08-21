@@ -1,0 +1,235 @@
+{% comment %}
+charts/templates/charts/base.html
+Shared layout for the chart browser. Plain Django templates, no build
+step, no JS framework -- per CLAUDE.md's Stack section. The one bit of
+inline JS (select-onchange auto-submit on the week picker, in
+chart_week.html) is a single line, not worth reaching for HTMX over.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Billboard Charts{% endblock %}</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --border: #d0d0d0;
+            --muted: #666;
+            --up: #1a7d1a;
+            --down: #b23b3b;
+            --new: #a06a00;
+            --tie: #6a4fbf;
+        }
+        /* border-box everywhere: a `width: Xrem` on an input/button/td
+           means Xrem TOTAL (border+padding included), not Xrem of content
+           PLUS whatever padding/border adds on top. Without this, a
+           narrow table column sized exactly to fit its input (see the
+           entry table's Pos/Wks-on/Anomaly-note columns) ends up a few
+           pixels narrower than the input actually renders at, and the
+           overflow gets silently clipped by `overflow: hidden` on td --
+           which is what was cutting off the delete button and the
+           narrower inputs' placeholder text. */
+        *, *::before, *::after { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            line-height: 1.4;
+        }
+        a { color: inherit; }
+        h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+        .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; }
+        .nav-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap; }
+        .nav-bar a.button, .nav-bar select {
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.3rem 0.6rem;
+            text-decoration: none;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+        }
+        /* Lets a wide table (e.g. the recordings matrix's 7 columns)
+           scroll horizontally on a narrow window instead of squeezing
+           every column unreadably thin or busting the page layout --
+           body itself never scrolls sideways, just this wrapper. */
+        .table-wrap { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+        th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; }
+        th { border-bottom: 2px solid var(--border); }
+        .pos { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+        .movement { text-align: center; }
+        .movement.up { color: var(--up); }
+        .movement.down { color: var(--down); }
+        .movement.new { color: var(--new); font-weight: 600; }
+        .tie-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            line-height: 1;
+            border: 1px solid var(--tie);
+            color: var(--tie);
+            border-radius: 3px;
+            padding: 0.1rem 0.25rem;
+            margin-left: 0.3rem;
+            vertical-align: middle;
+        }
+        .anomaly-note {
+            font-size: 0.8rem;
+            color: var(--new);
+            display: block;
+            margin-top: 0.15rem;
+        }
+        /* Recordings matrix (recordings_matrix.html) */
+        .matrix-filters {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+            padding: 0.6rem 0.8rem;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+        .matrix-filters label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); }
+        .matrix-filters select, .matrix-filters input { font-size: 0.95rem; }
+        .matrix-filters .search-label { flex: 1; min-width: 12rem; }
+        .matrix-filters .search-label input { width: 100%; }
+        /* Smaller than the rest of the site -- this table has 8 columns
+           and up to ~1,500 rows, so it reads as a dense reference grid
+           rather than the same size text as the week-by-week browser. */
+        .recordings-table { font-size: 0.82rem; }
+        .recordings-table td { vertical-align: top; }
+        .recordings-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+        /* Song titles are the one column long enough to regularly run
+           past its column width. The base `td` rule (above) truncates
+           with an ellipsis -- overridden here so a long title WRAPS onto
+           a second line (the row just grows taller) instead of being cut
+           off, since losing part of a song's title is worse than a
+           slightly taller row. */
+        .recordings-table td.wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+        th a.sort-link { color: inherit; text-decoration: none; }
+        th a.sort-link:hover { text-decoration: underline; }
+        th a.sort-link .sort-arrow { color: var(--tie); margin-left: 0.15rem; }
+        .matrix-summary { color: var(--muted); margin: 0 0 1rem; }
+
+        .chart-list-table td { vertical-align: top; }
+        .chart-list-table .date-range-cell { white-space: nowrap; }
+        .chart-list-table .enter-week-link { font-size: 0.85rem; }
+        footer { margin-top: 2rem; color: var(--muted); font-size: 0.85rem; }
+
+        /* Weekly entry form */
+        .entry-errors {
+            border: 1px solid var(--down);
+            color: var(--down);
+            border-radius: 4px;
+            padding: 0.6rem 0.8rem;
+            margin-bottom: 1rem;
+        }
+        .entry-errors ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+        table.entry-table td { vertical-align: top; padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        .entry-inputs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+        .entry-inputs input[type="number"] { width: 5.5rem; }
+        .entry-inputs input[type="text"] { flex: 1; min-width: 10rem; }
+        /* Pos, Wks-on, and Anomaly-note inputs each just fill their own
+           column now (widths come from entry-table's <colgroup> alone) --
+           this is what the box-sizing fix above makes safe to rely on. */
+        .col-pos input, .col-narrow input, .col-note input { width: 100%; }
+        .wks-hint {
+            display: block;
+            margin-top: 0.2rem;
+            font-size: 0.75rem;
+            color: var(--tie);
+            white-space: nowrap;
+        }
+        input, button, select { font: inherit; padding: 0.25rem 0.4rem; border: 1px solid var(--border); border-radius: 3px; background: transparent; color: inherit; }
+        .resolved-preview {
+            margin-top: 0.4rem;
+            font-size: 1rem;
+            padding: 0.35rem 0.5rem;
+            border-radius: 4px;
+            border: 1px solid transparent;
+        }
+        /* Once a row actually resolves to a recording, it's the single
+           most important piece of information in that row -- give it a
+           visibly "confirmed" look (tinted background, bordered) instead
+           of reading as plain body text that gets lost among the input
+           boxes around it. Not applied to .empty (nothing resolved) or
+           .ambiguous (a tie -- still needs a pick, not confirmed yet). */
+        .resolved-preview:not(.empty):not(.ambiguous) {
+            background: rgba(26, 125, 26, 0.12);
+            border-color: var(--up);
+        }
+        .resolved-preview.empty .not-resolved { color: var(--muted); font-style: italic; }
+        .resolved-preview .resolved-check { color: var(--up); font-weight: 700; font-size: 1.15em; margin-right: 0.15rem; }
+        .resolved-preview .catalog-hint { color: var(--muted); font-size: 0.85em; }
+        .resolved-preview.ambiguous .not-resolved { color: var(--new); font-style: normal; font-weight: 600; }
+        .pick-list, .search-results { list-style: none; margin: 0.3rem 0; padding: 0; }
+        .pick-list li, .search-results li { margin-bottom: 0.2rem; }
+        .pick-list button, .search-results button, .create-new-link {
+            display: block;
+            width: 100%;
+            text-align: left;
+            cursor: pointer;
+        }
+        .pick-list button:hover, .search-results button:hover, .create-new-link:hover { background: rgba(128,128,128,0.15); }
+        .search-hint { color: var(--muted); font-size: 0.85rem; margin: 0.2rem 0; }
+        .create-new-link { font-size: 0.85rem; color: var(--muted); border-style: dashed; margin-top: 0.2rem; }
+        .confirm-create-btn {
+            display: block;
+            width: 100%;
+            font-size: 0.85rem;
+            color: var(--new);
+            border-color: var(--new);
+            margin-top: 0.3rem;
+            cursor: pointer;
+        }
+        .confirm-create-btn:hover { background: var(--new); color: white; }
+        .inline-create {
+            border: 1px solid var(--tie);
+            border-radius: 4px;
+            padding: 0.5rem;
+            margin-top: 0.3rem;
+        }
+        .inline-create-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; }
+        .inline-create-title { margin: 0; font-size: 0.85rem; color: var(--tie); }
+        .inline-create-close {
+            color: var(--tie);
+            border-color: var(--tie);
+            width: 1.5rem;
+            height: 1.5rem;
+            line-height: 1;
+            padding: 0;
+            cursor: pointer;
+            flex: none;
+        }
+        .inline-create-close:hover { background: var(--tie); color: white; }
+        /* Two explicit rows -- Song/Artist/Credit (the WORK and who's
+           credited) on one line, Label/Catalog/Side (the physical
+           release) on the next -- rather than one flex-wrap blob where
+           only the narrowest field (Side) happened to wrap on its own. */
+        .inline-create-row { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
+        .inline-create-row:last-of-type { margin-bottom: 0; }
+        .inline-create input { flex: 1; min-width: 8rem; }
+        .inline-create .create-submit-btn { margin-top: 0.2rem; }
+        .entry-actions { display: flex; justify-content: space-between; margin-top: 1rem; }
+        .save-week-button { font-weight: 700; padding: 0.4rem 1rem; }
+        .col-delete { text-align: center; }
+        .delete-row-btn {
+            color: var(--down);
+            border-color: var(--down);
+            width: 1.8rem;
+            height: 1.8rem;
+            line-height: 1;
+            padding: 0;
+            cursor: pointer;
+        }
+        .delete-row-btn:hover { background: var(--down); color: white; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    {% block content %}{% endblock %}
+    <footer><a href="{% url 'charts:chart_list' %}">&larr; all charts</a> &middot; <a href="/admin/">admin</a></footer>
+</body>
+</html>

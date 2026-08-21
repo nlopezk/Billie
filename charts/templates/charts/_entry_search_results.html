@@ -1,0 +1,30 @@
+{% comment %}
+Existing-recording search results for a debut/re-entry row. Each result
+posts to entry_select on click, which returns the shared _entry_resolved
+fragment. If nothing matches, offers the inline "create new" sub-form
+instead (see _entry_create_form.html).
+{% endcomment %}
+{% if query|length < 2 %}
+    <p class="search-hint">type at least 2 characters to search</p>
+{% elif results %}
+    <ul class="search-results">
+        {% for r in results %}
+        <li>
+            <button type="button"
+                hx-post="{% url 'charts:entry_select' chart.id %}"
+                hx-vals='{"row": "{{ row }}", "recording_id": "{{ r.id }}", "week": "{{ week_date_str }}"}'
+                hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+                {{ r.song }} &mdash; {{ r.credit_text }}
+                <span class="catalog-hint">({{ r.catalog_display }})</span>
+            </button>
+        </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p class="search-hint">no matches</p>
+{% endif %}
+<button type="button" class="create-new-link"
+    hx-get="{% url 'charts:entry_create_form' chart.id %}?row={{ row }}&week={{ week_date_str }}&q={{ query }}"
+    hx-target="#create-form-{{ row }}" hx-swap="innerHTML">
+    + create new recording, never charted before
+</button>

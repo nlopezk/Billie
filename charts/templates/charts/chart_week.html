@@ -1,0 +1,106 @@
+{% extends "charts/base.html" %}
+{% block title %}{{ chart }} &mdash; {{ selected_week }}{% endblock %}
+{% block content %}
+    <h1>{{ chart }}</h1>
+    <p class="subtitle">
+        {% if era %}"{{ era.printed_name }}"{% endif %}
+        &middot; week ending {{ selected_week|date:"F j, Y" }}
+        &middot; <a href="{% url 'charts:entry_week' chart.id %}">enter a new week &rarr;</a>
+        &middot; <a href="{% url 'charts:entry_week_edit' chart.id selected_week|date:'Y-m-d' %}">edit this week</a>
+        &middot; <a href="{% url 'charts:recordings_matrix' %}?chart={{ chart.id }}">recordings matrix &rarr;</a>
+    </p>
+
+    <div class="nav-bar">
+        <div>
+            {% if prev_week %}
+                <a class="button" href="{% url 'charts:chart_week' chart.id prev_week|date:'Y-m-d' %}">&larr; {{ prev_week }}</a>
+            {% else %}
+                <span class="button" style="color: var(--muted)">&larr; (first week on file)</span>
+            {% endif %}
+        </div>
+
+        {% comment %}
+        Two small dropdowns instead of one giant list: Year narrows
+        things down, Week (scoped to that year) picks the exact week.
+        Each select just navigates on change -- one line of JS each,
+        not worth reaching for HTMX over per CLAUDE.md's "no build
+        step" guidance.
+        {% endcomment %}
+        <div style="display: flex; gap: 0.5rem;">
+            <select onchange="location.href=this.value" aria-label="Jump to year">
+                {% for year, first_week_of_year in year_options %}
+                <option value="{% url 'charts:chart_week' chart.id first_week_of_year|date:'Y-m-d' %}" {% if year == selected_week.year %}selected{% endif %}>
+                    {{ year }}
+                </option>
+                {% endfor %}
+            </select>
+            <select onchange="location.href=this.value" aria-label="Jump to week">
+                {% for w in weeks_this_year %}
+                <option value="{% url 'charts:chart_week' chart.id w|date:'Y-m-d' %}" {% if w == selected_week %}selected{% endif %}>
+                    {{ w|date:"M j" }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div>
+            {% if next_week %}
+                <a class="button" href="{% url 'charts:chart_week' chart.id next_week|date:'Y-m-d' %}">{{ next_week }} &rarr;</a>
+            {% else %}
+                <span class="button" style="color: var(--muted)">(last week on file) &rarr;</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <table>
+        {% comment %}
+        table-layout:fixed + explicit widths so one row's tie badge can't
+        stretch the Pos column for every row in the table -- that was the
+        "row goes double width" bug: with the browser's default auto
+        layout, a column is sized to fit its WIDEST cell across the whole
+        table, so a single "1 TIE" cell was widening the Pos column
+        everywhere, tie or not.
+        {% endcomment %}
+        <colgroup>
+            <col style="width: 3.5rem;">
+            <col style="width: 2.5rem;">
+            <col>
+            <col style="width: 11rem;">
+            <col style="width: 4rem;">
+        </colgroup>
+        <thead>
+            <tr>
+                <th class="pos">Pos</th>
+                <th class="movement"></th>
+                <th>Recording</th>
+                <th>Label / catalog #</th>
+                <th>Last wk</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td class="pos">
+                    {{ row.entry.position }}
+                    {% if row.is_tie %}<span class="tie-badge" title="Tied with another recording this week">T</span>{% endif %}
+                </td>
+                <td class="movement {{ row.movement }}" title="{{ row.movement }}">
+                    {% if row.movement == "up" %}&#9650;
+                    {% elif row.movement == "down" %}&#9660;
+                    {% elif row.movement == "new" %}NEW
+                    {% else %}&mdash;
+                    {% endif %}
+                </td>
+                <td>
+                    <strong>{{ row.entry.recording.song }}</strong> &mdash; {{ row.entry.recording.credit_text }}
+                    {% if row.entry.printed_anomaly_note %}
+                        <span class="anomaly-note" title="Printed anomaly, kept as-is -- see docs/audit/">&#9888; {{ row.entry.printed_anomaly_note }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ row.entry.recording.catalog_display }}</td>
+                <td>{% if row.entry.printed_last_week_position %}{{ row.entry.printed_last_week_position }}{% else %}&mdash;{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

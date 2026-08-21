@@ -1,0 +1,22 @@
+{% comment %}
+Last week had a TIE at the position the user typed -- can't tell which
+of the tied recordings continues into this row from the number alone, so
+ask instead of silently guessing. Reuses entry_select for the actual
+pick, same as a search result.
+{% endcomment %}
+<div id="resolved-{{ row }}" class="resolved-preview ambiguous">
+    <span class="not-resolved">tied last week &mdash; pick one:</span>
+    <ul class="pick-list">
+        {% for m in matches %}
+        <li>
+            <button type="button"
+                hx-post="{% url 'charts:entry_select' chart.id %}"
+                hx-vals='{"row": "{{ row }}", "recording_id": "{{ m.recording.id }}", "week": "{{ week_date_str }}"}'
+                hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+                {{ m.recording.song }} &mdash; {{ m.recording.credit_text }}
+                <span class="catalog-hint">({{ m.recording.catalog_display }})</span>
+            </button>
+        </li>
+        {% endfor %}
+    </ul>
+</div>

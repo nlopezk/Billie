@@ -1,0 +1,51 @@
+{% comment %}
+The ONE fragment shape used by all three ways a row gets resolved: typing
+a last-week number (entry_resolve), picking a search result or an
+ambiguous-tie option (entry_select), or creating a brand-new recording
+(entry_create). Whichever path got here, the row ends up looking
+identical -- and carries the hidden recording_id input the final save
+actually reads.
+
+When rendered as a standalone HTTP response (entry_resolve/entry_select/
+entry_create -- each passes include_wks_hint_oob=True), also carries an
+out-of-band update to that SAME row's wks-hint span, which lives over in
+the Wks-on column (_entry_row.html) rather than in here -- the "prior: N
+wks" hint is only useful sitting right next to the field it's meant to
+be compared against. No printed peak field exists (see _entry_row.html),
+so only weeks_hint gets surfaced, not peak_hint -- nothing to compare a
+peak hint against right now.
+
+include_wks_hint_oob is deliberately OFF when this template is instead
+{% include %}'d straight into _entry_row.html for a normal page render
+(entry_week / entry_week_edit's GET) -- that context already has its own
+wks-hint span sitting in the right place with the right value baked in
+server-side; emitting a SECOND element with the same id here too would
+be a duplicate-id bug, not just a redundant one.
+
+When recording is set (a REAL resolution, not an error/empty state),
+also clears out #create-form-{{ row }} via OOB -- the inline "new
+recording" box (_entry_create_form.html), if it was ever opened for this
+row, has now served its purpose (either it just created what's resolved,
+or the user picked an existing match off _entry_create_duplicate_check's
+list instead) and would otherwise sit there stale, still showing
+whatever was typed into it. Harmless no-op if that div is already empty
+(the far more common case: most rows resolve via last-week# or a plain
+search pick, never opening the create box at all).
+{% endcomment %}
+<div id="resolved-{{ row }}" class="resolved-preview{% if not recording %} empty{% endif %}">
+    {% if recording %}
+        <input type="hidden" name="recording_id_{{ row }}" value="{{ recording.id }}">
+        <span class="resolved-check">&check;</span>
+        <strong>{{ recording.song }}</strong> &mdash; {{ recording.credit_text }}
+        <span class="catalog-hint">({{ recording.catalog_display }})</span>
+    {% else %}
+        <span class="not-resolved">{% if error %}{{ error }}{% else %}not resolved yet{% endif %}</span>
+    {% endif %}
+</div>
+{% if include_wks_hint_oob %}
+<span id="wks-hint-{{ row }}" class="wks-hint" hx-swap-oob="true"
+      title="Computed from prior weeks on file -- compare against what's printed to the left, don't auto-fill from this">{% if weeks_hint %}prior: {{ weeks_hint }} wk{{ weeks_hint|pluralize }}{% endif %}</span>
+{% if recording %}
+<div id="create-form-{{ row }}" hx-swap-oob="true"></div>
+{% endif %}
+{% endif %}
