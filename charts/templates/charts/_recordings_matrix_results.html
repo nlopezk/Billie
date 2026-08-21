@@ -67,13 +67,10 @@ search would silently drop whatever you'd just typed.
             <td><a href="{% url 'charts:chart_week' r.chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
             <td class="discogs-cell">
                 {% if r.discogs_url %}
+                    <span class="ref-id ref-{{ r.discogs_ref_type|lower }}" title="Discogs {{ r.discogs_ref_type }} ID">{{ r.discogs_ref_type|slice:":1" }}{{ r.discogs_ref_id }}</span>
                     <a href="{{ r.discogs_url }}" target="_blank" rel="noopener"
                        title="{{ r.recording__discogs__songwriters|default:'No songwriter credits cached yet' }}">
-                        {% if r.recording__discogs__matched_catalog_number %}
-                            {{ r.recording__discogs__matched_catalog_number }}
-                        {% else %}
-                            {{ r.recording__discogs__discogs_release_id }}
-                        {% endif %} &nearr;
+                        {% if r.recording__discogs__matched_catalog_number %}{{ r.recording__discogs__matched_catalog_number }}{% endif %} &nearr;
                     </a>
                 {% elif r.recording__discogs__status == "no_match" %}
                     <span class="muted" title="Searched, nothing on Discogs">not on Discogs</span>

@@ -135,6 +135,25 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .discogs-btn.primary:hover { background: var(--up); color: white; }
         .discogs-btn.subtle { color: var(--muted); }
         .discogs-btn:hover { background: rgba(128,128,128,0.15); }
+        /* The Discogs Release/Master id -- shown as plain visible text
+           (not just the link href) specifically so several candidates'
+           ids can be compared at a glance, no hovering needed. */
+        .ref-id {
+            display: inline-block;
+            font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: 3px;
+            padding: 0.1rem 0.3rem;
+            margin: 0 0.2rem 0.2rem 0;
+            background: rgba(128,128,128,0.15);
+        }
+        /* Release (the precise, common case -- search only ever looks for
+           these) vs Master (only when a specific pressing couldn't be
+           pinned down) get distinct colors so the difference is visible
+           without reading the letter closely. */
+        .ref-id.ref-release { color: var(--up); }
+        .ref-id.ref-master { color: var(--tie); }
         .status-badge, .confidence-badge {
             display: inline-block; font-size: 0.7rem; line-height: 1;
             border-radius: 3px; padding: 0.15rem 0.3rem; margin: 0 0.2rem 0.2rem 0;

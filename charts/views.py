@@ -217,6 +217,7 @@ def _recordings_matrix_query(request):
             # renders as an em-dash.
             "recording__discogs__status",
             "recording__discogs__discogs_release_id",
+            "recording__discogs__discogs_master_id",
             "recording__discogs__matched_catalog_number",
             "recording__discogs__songwriters",
         )
@@ -259,10 +260,22 @@ def _recordings_matrix_query(request):
         if row["recording__side"]:
             parts.append(row["recording__side"])
         row["catalog_display"] = " ".join(parts)
-        # Plain outbound discogs.com URL, built from the cached id --
-        # a string, not a request. Blank when there's no link yet.
+        # Plain outbound discogs.com URL, built from the cached id -- a
+        # string, not a request. Release preferred (the precise, common
+        # case); Master is the fallback for a manually-entered reference
+        # that could only be pinned down to the work, not the specific
+        # pressing (see DiscogsReferenceMixin). Blank when there's no
+        # link at all yet.
         release_id = row["recording__discogs__discogs_release_id"]
-        row["discogs_url"] = f"https://www.discogs.com/release/{release_id}" if release_id else ""
+        master_id = row["recording__discogs__discogs_master_id"]
+        row["discogs_ref_id"] = release_id or master_id
+        row["discogs_ref_type"] = "Release" if release_id else ("Master" if master_id else "")
+        if release_id:
+            row["discogs_url"] = f"https://www.discogs.com/release/{release_id}"
+        elif master_id:
+            row["discogs_url"] = f"https://www.discogs.com/master/{master_id}"
+        else:
+            row["discogs_url"] = ""
 
     state = {"genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction}
     return rows, state
@@ -1124,23 +1137,53 @@ def discogs_confirm(request, recording_id):
     return _render_discogs_row(request, match)
 
 
+def _parse_discogs_reference(raw):
+    """
+    Turn a pasted Discogs URL or bare ID into (release_id, master_id) --
+    at most one of which is set. Handles a full URL with slug
+    ("https://www.discogs.com/release/12345-Some-Slug" or .../master/...),
+    a bare path ("release/12345" / "master/12345"), and a bare number
+    (assumed to mean a RELEASE, since that's what you get pasting from a
+    normal discogs.com release page -- paste a full master/... URL if you
+    specifically mean a master).
+
+    Checking for "master/" FIRST matters: a release URL never contains
+    the substring "master", but the reverse isn't guaranteed to be worth
+    risking, and this way there's no ambiguity either way.
+
+    Returns (release_id, master_id, error_message) -- error_message is
+    set (and both ids None) when nothing recognizable was found.
+    """
+    raw = raw.strip()
+    master_match = re.search(r"master/(\d+)", raw)
+    if master_match:
+        return None, int(master_match.group(1)), None
+    release_match = re.search(r"release/(\d+)", raw)
+    if release_match:
+        return int(release_match.group(1)), None, None
+    bare_match = re.fullmatch(r"\d+", raw)
+    if bare_match:
+        return int(raw), None, None
+    return None, None, "Couldn't read a release or master ID out of that."
+
+
 def discogs_manual(request, recording_id):
-    # HTMX target of the "paste a Discogs release ID or URL" box, for
-    # when the search genuinely can't find it but you have found it
+    # HTMX target of the "paste a Discogs release/master URL or ID" box,
+    # for when the search genuinely can't find it but you've found it
     # yourself on discogs.com.
     match, _ = DiscogsMatch.objects.get_or_create(recording_id=recording_id)
     raw = (request.POST.get("discogs_ref") or "").strip()
 
-    # Accept a bare id, a /release/12345 URL, or a full URL with slug.
-    found = re.search(r"(?:release/)?(\d+)", raw)
-    if not found:
+    release_id, master_id, error = _parse_discogs_reference(raw)
+    if error:
         return render(request, "charts/_discogs_row.html", {
-            "match": match, "error": "Couldn't read a release ID out of that.",
+            "match": match, "error": error,
             "querystring": request.POST.get("querystring", ""),
         })
 
     with transaction.atomic():
-        match.discogs_release_id = int(found.group(1))
+        match.discogs_release_id = release_id
+        match.discogs_master_id = master_id
         match.status = DiscogsMatch.MANUAL
         match.confidence = ""
         # Deliberately cleared: whatever summary was cached described a

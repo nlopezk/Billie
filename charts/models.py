@@ -154,7 +154,42 @@ class RecordingCredit(models.Model):
 # release-level credits when the track can't be identified.
 
 
-class DiscogsMatch(models.Model):
+class DiscogsReferenceMixin:
+    """
+    Shared by DiscogsMatch and DiscogsCandidate: both carry the same pair
+    of "which kind of Discogs object is this actually pointing at" fields
+    (discogs_release_id / discogs_master_id), and the same rule for
+    telling a reader which one is in play -- a Release (a specific,
+    identified pressing -- the precise, common case, since search only
+    ever looks for releases) or, only when a pressing that specific
+    couldn't be pinned down, a Master (just "this is the song", not which
+    physical copy of it). At most one is ever set at a time.
+    """
+
+    @property
+    def reference_type(self):
+        if self.discogs_release_id:
+            return "Release"
+        if self.discogs_master_id:
+            return "Master"
+        return ""
+
+    @property
+    def reference_id(self):
+        return self.discogs_release_id or self.discogs_master_id
+
+    @property
+    def discogs_url(self):
+        # Plain outbound link for eyeballing this on discogs.com. Just a
+        # URL string -- rendering it makes no API call.
+        if self.discogs_release_id:
+            return f"https://www.discogs.com/release/{self.discogs_release_id}"
+        if self.discogs_master_id:
+            return f"https://www.discogs.com/master/{self.discogs_master_id}"
+        return ""
+
+
+class DiscogsMatch(DiscogsReferenceMixin, models.Model):
     """One Recording's link (or deliberate non-link) to Discogs."""
 
     # --- status: where this recording is in the review workflow ---
@@ -234,33 +269,26 @@ class DiscogsMatch(models.Model):
 
     @property
     def is_linked(self):
-        # Points at an actual Discogs record (as opposed to settled-but-
-        # deliberately-unlinked, i.e. no_match / rejected).
-        return self.status in (self.CONFIRMED, self.MANUAL) and bool(self.discogs_release_id)
+        # Points at an actual Discogs record -- a Release OR (for a
+        # manually-entered reference that could only be pinned down to
+        # the work, not the specific pressing) a Master -- as opposed to
+        # settled-but-deliberately-unlinked (no_match / rejected).
+        return self.status in (self.CONFIRMED, self.MANUAL) and bool(self.reference_id)
 
     @property
     def needs_detail(self):
-        # Linked, but the expensive per-release fetch hasn't run yet, so
-        # songwriters/producers/genres are still blank. Confirming is
-        # deliberately decoupled from fetching (see views.discogs_confirm),
-        # so this is a normal intermediate state, not an error.
-        return self.is_linked and self.raw_data is None
-
-    @property
-    def discogs_url(self):
-        # Plain outbound link for eyeballing the match on discogs.com.
-        # Just a URL string -- rendering it makes no API call.
-        if self.discogs_release_id:
-            return f"https://www.discogs.com/release/{self.discogs_release_id}"
-        if self.discogs_master_id:
-            return f"https://www.discogs.com/master/{self.discogs_master_id}"
-        return ""
+        # Linked AND specifically has a Release id -- the expensive
+        # per-release fetch (charts.discogs.fetch_release_detail) hits
+        # Discogs' /releases/ endpoint, which needs an actual release,
+        # not a master. A master-only manual match has nothing this can
+        # fetch, so it deliberately never shows as needing it.
+        return self.is_linked and bool(self.discogs_release_id) and self.raw_data is None
 
     def __str__(self):
         return f"{self.recording} -> {self.get_status_display()}"
 
 
-class DiscogsCandidate(models.Model):
+class DiscogsCandidate(DiscogsReferenceMixin, models.Model):
     """
     One of the handful of possible Discogs releases turned up for a
     recording, held until a human picks one (or rejects them all).
@@ -298,14 +326,6 @@ class DiscogsCandidate(models.Model):
 
     class Meta:
         ordering = ["rank"]
-
-    @property
-    def discogs_url(self):
-        if self.discogs_release_id:
-            return f"https://www.discogs.com/release/{self.discogs_release_id}"
-        if self.discogs_master_id:
-            return f"https://www.discogs.com/master/{self.discogs_master_id}"
-        return ""
 
     def __str__(self):
         return f"{self.title} ({self.label} {self.catalog_number})"

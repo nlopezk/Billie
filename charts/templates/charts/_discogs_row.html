@@ -35,8 +35,18 @@ you're part-way through reviewing) stays exactly where it was.
         {% if match.is_linked %}
             {% comment %} Confirmed or manually entered -- show what's cached. {% endcomment %}
             <div class="discogs-linked">
+                {% comment %}
+                The ID is plain visible text, not just the href -- the
+                whole point is comparing it at a glance without having to
+                hover the link or click through. R/M prefix (Release vs
+                Master, see DiscogsReferenceMixin) since a manually-
+                pasted reference can be either -- search results are
+                always a Release, but a hand-entered one might only have
+                been findable at the Master (song) level.
+                {% endcomment %}
+                <span class="ref-id ref-{{ match.reference_type|lower }}" title="Discogs {{ match.reference_type }} ID">{{ match.reference_type|slice:":1" }}{{ match.reference_id }}</span>
                 <a href="{{ match.discogs_url }}" target="_blank" rel="noopener">
-                    {% if match.matched_title %}{{ match.matched_title }}{% else %}Release {{ match.discogs_release_id }}{% endif %} &nearr;
+                    {% if match.matched_title %}{{ match.matched_title }}{% else %}{{ match.reference_type }} {{ match.reference_id }}{% endif %} &nearr;
                 </a>
                 {% if match.matched_label or match.matched_catalog_number %}
                     <span class="catalog-hint">({{ match.matched_label }} {{ match.matched_catalog_number }}{% if match.matched_year %}, {{ match.matched_year }}{% endif %}{% if match.matched_country %}, {{ match.matched_country }}{% endif %})</span>
@@ -64,6 +74,7 @@ you're part-way through reviewing) stays exactly where it was.
                         hx-vals='{"candidate_id": "{{ candidate.id }}", "querystring": "{{ querystring }}"}'
                         hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
                         <span class="confidence-badge confidence-{{ candidate.confidence }}">{{ candidate.get_confidence_display }}</span>
+                        <span class="ref-id ref-{{ candidate.reference_type|lower }}" title="Discogs {{ candidate.reference_type }} ID">{{ candidate.reference_type|slice:":1" }}{{ candidate.reference_id }}</span>
                         {{ candidate.title }}
                         <span class="catalog-hint">({{ candidate.label }} {{ candidate.catalog_number }}{% if candidate.year %}, {{ candidate.year }}{% endif %}{% if candidate.country %}, {{ candidate.country }}{% endif %}{% if candidate.format %} &middot; {{ candidate.format }}{% endif %})</span>
                     </button>
@@ -81,7 +92,7 @@ you're part-way through reviewing) stays exactly where it was.
         {% endcomment %}
         {% if not match.is_linked %}
         <div class="manual-entry">
-            <input type="text" name="discogs_ref" placeholder="or paste a Discogs release URL / ID"
+            <input type="text" name="discogs_ref" placeholder="or paste a Discogs release/master URL or ID"
                    id="manual-{{ match.recording_id }}">
             <button type="button" class="discogs-btn"
                 hx-post="{% url 'charts:discogs_manual' match.recording_id %}"

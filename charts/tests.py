@@ -402,6 +402,41 @@ class DiscogsDetailTests(TestCase):
         self.assertEqual(detail["songwriters"], "Billy Hayes")
 
 
+class DiscogsReferenceMixinTests(TestCase):
+    """reference_type/reference_id/discogs_url, shared by DiscogsMatch and
+    DiscogsCandidate -- at most one of release/master id is ever set."""
+
+    def setUp(self):
+        self.recording = Recording.objects.create(
+            label=Label.objects.create(name="Specialty"), catalog_number="355", side="A",
+            song=Song.objects.create(title="Pink Champagne"), credit_text="Joe Liggins",
+        )
+
+    def test_release_takes_priority_and_reports_as_release(self):
+        match = DiscogsMatch.objects.create(recording=self.recording, discogs_release_id=42, discogs_master_id=99)
+        self.assertEqual(match.reference_type, "Release")
+        self.assertEqual(match.reference_id, 42)
+        self.assertEqual(match.discogs_url, "https://www.discogs.com/release/42")
+
+    def test_master_only_reports_as_master(self):
+        match = DiscogsMatch.objects.create(recording=self.recording, discogs_master_id=99)
+        self.assertEqual(match.reference_type, "Master")
+        self.assertEqual(match.reference_id, 99)
+        self.assertEqual(match.discogs_url, "https://www.discogs.com/master/99")
+
+    def test_neither_set_reports_empty(self):
+        match = DiscogsMatch.objects.create(recording=self.recording)
+        self.assertEqual(match.reference_type, "")
+        self.assertIsNone(match.reference_id)
+        self.assertEqual(match.discogs_url, "")
+
+    def test_candidate_has_the_same_behavior(self):
+        match = DiscogsMatch.objects.create(recording=self.recording)
+        candidate = DiscogsCandidate.objects.create(match=match, discogs_master_id=99, title="x", rank=0)
+        self.assertEqual(candidate.reference_type, "Master")
+        self.assertEqual(candidate.reference_id, 99)
+
+
 class DiscogsWorkflowTests(TestCase):
     """The review queue's state transitions."""
 
@@ -509,7 +544,35 @@ class DiscogsWorkflowTests(TestCase):
             )
             self.match.refresh_from_db()
             self.assertEqual(self.match.discogs_release_id, 12345, msg=f"failed for {reference!r}")
+            self.assertIsNone(self.match.discogs_master_id, msg=f"failed for {reference!r}")
             self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+
+    def test_manual_entry_recognizes_a_master_url_and_does_not_store_it_as_a_release(self):
+        # The bug this guards against: a naive "just grab the first
+        # number" parser would treat .../master/12345 as release id
+        # 12345, which is wrong -- a Master isn't a Release, and would
+        # later break the "fetch full details" call (that endpoint needs
+        # an actual release id).
+        for reference in ["https://www.discogs.com/master/12345", "master/12345-Some-Slug"]:
+            self.client.post(
+                reverse("charts:discogs_manual", args=[self.recording.id]),
+                {"discogs_ref": reference},
+            )
+            self.match.refresh_from_db()
+            self.assertIsNone(self.match.discogs_release_id, msg=f"failed for {reference!r}")
+            self.assertEqual(self.match.discogs_master_id, 12345, msg=f"failed for {reference!r}")
+            self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+            self.assertEqual(self.match.reference_type, "Master")
+            self.assertFalse(self.match.needs_detail)  # can't fetch release detail for a master-only match
+
+    def test_manual_entry_rejects_garbage(self):
+        response = self.client.post(
+            reverse("charts:discogs_manual", args=[self.recording.id]),
+            {"discogs_ref": "not a url or id"},
+        )
+        self.assertContains(response, "Couldn&#x27;t read a release or master ID")
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
 
     def test_reset_clears_the_link_and_everything_cached(self):
         self.match.status = DiscogsMatch.CONFIRMED
