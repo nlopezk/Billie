@@ -1039,11 +1039,17 @@ def discogs_queue(request):
     page = paginator.get_page(request.GET.get("page"))
 
     # Does this page have anything the "confirm all exact matches" button
-    # could act on? Drives whether that button renders at all.
+    # could act on? Drives whether that button renders at all. Counts
+    # only matches with EXACTLY one EXACT candidate -- more than one
+    # (the same catalog+label matching several distinct Discogs releases,
+    # e.g. a US and a Canadian pressing) is a genuine tie that bulk-
+    # confirm refuses to guess between, see discogs_bulk's confirm_exact.
+    # This count has to agree with what that action will actually do, or
+    # the button's own number would be a lie.
     page_exact_ids = [
         match.id for match in page
         if match.status == DiscogsMatch.SUGGESTED
-        and any(c.confidence == DiscogsMatch.EXACT for c in match.candidates.all())
+        and sum(1 for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT) == 1
     ]
 
     progress = _discogs_progress()
@@ -1344,10 +1350,23 @@ def discogs_bulk(request):
         # Use the "Fetch details" bulk action afterward to catch these up.
         ids = request.POST.getlist("match_id")
         confirmed = 0
+        skipped_ties = 0
         for match in DiscogsMatch.objects.filter(id__in=ids, status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"):
-            exact = next((c for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT), None)
-            if not exact:
+            exact_candidates = [c for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT]
+            if not exact_candidates:
                 continue
+            if len(exact_candidates) > 1:
+                # A genuine tie -- the same catalog+label matches more
+                # than one distinct Discogs release (different country/
+                # year/pressing sharing a catalog number, which really
+                # happens -- see the reasoning in discogs.search_
+                # candidates). Left as 'suggested' rather than picking
+                # one: they're already sorted with the most likely one
+                # (US, earliest year) first, so this only needs one
+                # deliberate click to resolve, not a guess made for you.
+                skipped_ties += 1
+                continue
+            exact = exact_candidates[0]
             with transaction.atomic():
                 match.discogs_release_id = exact.discogs_release_id
                 match.discogs_master_id = exact.discogs_master_id
@@ -1363,7 +1382,10 @@ def discogs_bulk(request):
                 match.save()
                 match.candidates.all().delete()
                 confirmed += 1
-        messages.append(f"Confirmed {confirmed} exact match{'' if confirmed == 1 else 'es'}.")
+        message = f"Confirmed {confirmed} exact match{'' if confirmed == 1 else 'es'}."
+        if skipped_ties:
+            message += f" Skipped {skipped_ties} with more than one exact match -- needs a manual pick."
+        messages.append(message)
 
     elif action == "fetch_details":
         # Fill in songwriters/producers/etc for confirmed matches that

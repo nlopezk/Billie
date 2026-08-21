@@ -296,6 +296,17 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
         # fetch, so it deliberately never shows as needing it.
         return self.is_linked and bool(self.discogs_release_id) and self.raw_data is None
 
+    @property
+    def has_ambiguous_exact_tie(self):
+        # More than one candidate scored EXACT -- the same catalog+label
+        # matches more than one distinct Discogs release (a US and a
+        # Canadian pressing sharing a catalog series, an original and a
+        # same-numbered reissue, etc. -- see the reasoning in
+        # charts.discogs.search_candidates). Bulk-confirm refuses to
+        # guess between these; this is what the review row uses to
+        # explain why a manual pick is needed here specifically.
+        return sum(1 for c in self.candidates.all() if c.confidence == self.EXACT) > 1
+
     def __str__(self):
         return f"{self.recording} -> {self.get_status_display()}"
 

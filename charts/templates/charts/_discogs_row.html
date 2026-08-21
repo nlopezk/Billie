@@ -76,6 +76,13 @@ you're part-way through reviewing) stays exactly where it was.
 
         {% elif match.candidates.all %}
             {% comment %} Searched, shortlist waiting on a human decision. {% endcomment %}
+            {% if match.has_ambiguous_exact_tie %}
+                <p class="ambiguous-tie-note">
+                    More than one exact match (same catalog # and label) -- likely different pressings
+                    of the same release (country, year...). Sorted with the most likely one first;
+                    the bulk "confirm exact matches" button skips these on purpose.
+                </p>
+            {% endif %}
             <ul class="candidate-list">
                 {% for candidate in match.candidates.all %}
                 <li>

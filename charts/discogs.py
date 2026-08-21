@@ -262,11 +262,39 @@ def search_candidates(recording, limit=5):
             "raw_data": result,
         })
 
-    # Best first: EXACT, then STRONG, then WEAK, preserving Discogs' own
-    # relevance order within each tier.
+    # Best first: EXACT, then STRONG, then WEAK. Within a tier, Discogs'
+    # own relevance order is otherwise arbitrary from our point of view --
+    # and a real case worth ordering deliberately rather than leaving to
+    # chance: the SAME catalog number under the SAME label genuinely can
+    # have more than one Discogs release object (a US pressing and a
+    # Canadian one sharing a catalog series, an original and a later
+    # reissue that kept the same catalog number, etc.), all scoring
+    # identically on catalog+label alone. Two tie-breakers, in order:
+    #   1. US pressings first -- every chart in this database is a US
+    #      Billboard chart, so that's the market a chart position
+    #      actually describes; a Canadian/UK pressing sharing the same
+    #      catalog number is very unlikely to be the one that charted.
+    #   2. Earliest year first among what's left -- a chart position is
+    #      tied to a specific week, so the release that could plausibly
+    #      have BEEN on sale then is the original pressing, not a later
+    #      reissue that happens to share a catalog number.
+    # This only ever affects DISPLAY ORDER -- it never picks one on its
+    # own. A single-row confirm is still a human clicking a specific
+    # candidate; see discogs_bulk's confirm_exact for where a genuine
+    # tie (more than one EXACT candidate) is refused rather than
+    # resolved by this ordering, since "probably right" isn't the same
+    # as "confirmed" for something done unattended.
     from .models import DiscogsMatch
     tier = {DiscogsMatch.EXACT: 0, DiscogsMatch.STRONG: 1, DiscogsMatch.WEAK: 2}
-    candidates.sort(key=lambda c: tier.get(c["confidence"], 3))
+
+    def sort_key(c):
+        return (
+            tier.get(c["confidence"], 3),
+            0 if c["country"] == "US" else 1,
+            c["year"] if c["year"] is not None else 9999,
+        )
+
+    candidates.sort(key=sort_key)
     return candidates
 
 

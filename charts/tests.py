@@ -316,6 +316,28 @@ class DiscogsSearchTests(TestCase):
             [DiscogsMatch.EXACT, DiscogsMatch.STRONG, DiscogsMatch.WEAK],
         )
 
+    def test_exact_ties_prefer_us_pressing_regardless_of_year(self):
+        # Same catalog+label, two countries -- a real thing Discogs has
+        # (a shared catalog series pressed in more than one country).
+        # US must sort first even though it's the LATER of the two --
+        # country beats year, since this whole database is US charts.
+        payload = {"results": [
+            {"id": 1, "title": "x", "catno": "355", "label": ["Specialty"], "country": "Canada", "year": "1948"},
+            {"id": 2, "title": "x", "catno": "355", "label": ["Specialty"], "country": "US", "year": "1950"},
+        ]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload):
+            candidates = discogs_api.search_candidates(self.recording)
+        self.assertEqual([c["discogs_release_id"] for c in candidates], [2, 1])
+
+    def test_exact_ties_within_same_country_prefer_earliest_year(self):
+        payload = {"results": [
+            {"id": 1, "title": "x", "catno": "355", "label": ["Specialty"], "country": "US", "year": "1955"},
+            {"id": 2, "title": "x", "catno": "355", "label": ["Specialty"], "country": "US", "year": "1950"},
+        ]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload):
+            candidates = discogs_api.search_candidates(self.recording)
+        self.assertEqual([c["discogs_release_id"] for c in candidates], [2, 1])
+
     def test_unparseable_year_does_not_blow_up(self):
         # Discogs sends year as a string, sometimes empty, sometimes junk.
         payload = {"results": [{"id": 7, "title": "x", "catno": "355", "label": ["Specialty"], "year": ""}]}
@@ -739,6 +761,46 @@ class DiscogsWorkflowTests(TestCase):
         self.assertEqual(exact_match.status, DiscogsMatch.CONFIRMED)
         self.assertEqual(weak_match.status, DiscogsMatch.SUGGESTED)  # untouched
         self.assertIsNone(weak_match.discogs_release_id)
+
+    def test_bulk_confirm_skips_a_genuine_tie_between_two_exact_candidates(self):
+        # Two DIFFERENT Discogs releases (different ids -- e.g. a US and
+        # a Canadian pressing) both score EXACT for the same recording.
+        # Bulk-confirm must refuse to guess between them rather than
+        # picking whichever happened to come first.
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
+        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
+
+        response = self.client.post(reverse("charts:discogs_bulk"), {
+            "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
+        }, follow=True)
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.SUGGESTED)  # untouched, still needs a human
+        self.assertIsNone(self.match.discogs_release_id)
+        self.assertEqual(self.match.candidates.count(), 2)  # shortlist NOT cleared
+        self.assertContains(response, "Skipped 1 with more than one exact match")
+
+    def test_has_ambiguous_exact_tie(self):
+        self.assertFalse(self.match.has_ambiguous_exact_tie)
+        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
+        self.assertFalse(self.match.has_ambiguous_exact_tie)
+        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
+        self.assertTrue(self.match.has_ambiguous_exact_tie)
+
+    def test_page_exact_count_excludes_ambiguous_ties(self):
+        # The "confirm N exact matches" button's own count must agree
+        # with what the action will actually do -- a match with two
+        # EXACT candidates doesn't count towards N, since confirm_exact
+        # will skip it.
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
+        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
+
+        response = self.client.get(reverse("charts:discogs_queue"), {"status": "suggested"})
+        self.assertEqual(response.context["page_exact_ids"], [])
 
 
 class DiscogsTokenTests(TestCase):
