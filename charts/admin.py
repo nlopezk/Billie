@@ -132,7 +132,7 @@ class DiscogsMatchAdmin(admin.ModelAdmin):
     # the awkward one-offs -- fixing a release id by hand, adding a note
     # about why a match is unusual, or bulk-resetting a batch that went
     # wrong via the admin action below.
-    list_display = ["recording", "status", "confidence", "discogs_release_id", "matched_title", "songwriters", "updated_at"]
+    list_display = ["recording", "status", "confidence", "discogs_release_id", "matched_artist", "matched_title", "songwriters", "updated_at"]
     list_filter = ["status", "confidence"]
     search_fields = [
         "recording__credit_text", "recording__song__title",

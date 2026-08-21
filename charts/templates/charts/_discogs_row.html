@@ -46,7 +46,7 @@ you're part-way through reviewing) stays exactly where it was.
                 {% endcomment %}
                 <span class="ref-id ref-{{ match.reference_type|lower }}" title="Discogs {{ match.reference_type }} ID">{{ match.reference_type|slice:":1" }}{{ match.reference_id }}</span>
                 <a href="{{ match.discogs_url }}" target="_blank" rel="noopener">
-                    {% if match.matched_title %}{{ match.matched_title }}{% else %}{{ match.reference_type }} {{ match.reference_id }}{% endif %} &nearr;
+                    {% if match.matched_artist %}{{ match.matched_artist }} &mdash; {% endif %}{% if match.matched_title %}{{ match.matched_title }}{% else %}{{ match.reference_type }} {{ match.reference_id }}{% endif %} &nearr;
                 </a>
                 {% if match.matched_label or match.matched_catalog_number %}
                     <span class="catalog-hint">({{ match.matched_label }} {{ match.matched_catalog_number }}{% if match.matched_year %}, {{ match.matched_year }}{% endif %}{% if match.matched_country %}, {{ match.matched_country }}{% endif %})</span>
@@ -75,7 +75,7 @@ you're part-way through reviewing) stays exactly where it was.
                         hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
                         <span class="confidence-badge confidence-{{ candidate.confidence }}">{{ candidate.get_confidence_display }}</span>
                         <span class="ref-id ref-{{ candidate.reference_type|lower }}" title="Discogs {{ candidate.reference_type }} ID">{{ candidate.reference_type|slice:":1" }}{{ candidate.reference_id }}</span>
-                        {{ candidate.title }}
+                        {% if candidate.artist %}{{ candidate.artist }} &mdash; {% endif %}{{ candidate.title }}
                         <span class="catalog-hint">({{ candidate.label }} {{ candidate.catalog_number }}{% if candidate.year %}, {{ candidate.year }}{% endif %}{% if candidate.country %}, {{ candidate.country }}{% endif %}{% if candidate.format %} &middot; {{ candidate.format }}{% endif %})</span>
                     </button>
                     <a class="candidate-peek" href="{{ candidate.discogs_url }}" target="_blank" rel="noopener" title="Open on discogs.com to check before picking">&nearr;</a>

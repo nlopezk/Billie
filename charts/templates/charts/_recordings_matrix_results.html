@@ -68,8 +68,7 @@ search would silently drop whatever you'd just typed.
             <td class="discogs-cell">
                 {% if r.discogs_url %}
                     <span class="ref-id ref-{{ r.discogs_ref_type|lower }}" title="Discogs {{ r.discogs_ref_type }} ID">{{ r.discogs_ref_type|slice:":1" }}{{ r.discogs_ref_id }}</span>
-                    <a href="{{ r.discogs_url }}" target="_blank" rel="noopener"
-                       title="{{ r.recording__discogs__songwriters|default:'No songwriter credits cached yet' }}">
+                    <a href="{{ r.discogs_url }}" target="_blank" rel="noopener" title="{{ r.discogs_tooltip }}">
                         {% if r.recording__discogs__matched_catalog_number %}{{ r.recording__discogs__matched_catalog_number }}{% endif %} &nearr;
                     </a>
                 {% elif r.recording__discogs__status == "no_match" %}

@@ -218,6 +218,7 @@ def _recordings_matrix_query(request):
             "recording__discogs__status",
             "recording__discogs__discogs_release_id",
             "recording__discogs__discogs_master_id",
+            "recording__discogs__matched_artist",
             "recording__discogs__matched_catalog_number",
             "recording__discogs__songwriters",
         )
@@ -276,6 +277,17 @@ def _recordings_matrix_query(request):
             row["discogs_url"] = f"https://www.discogs.com/master/{master_id}"
         else:
             row["discogs_url"] = ""
+        # One combined hover tooltip rather than a second visible column
+        # -- the matrix is already tight on width (see the earlier "song
+        # extremely wide" fix), so Discogs' own Artist credit is here for
+        # a quick "does this match" sanity check on hover, not as
+        # something that needs its own column.
+        tooltip_lines = []
+        if row["recording__discogs__matched_artist"]:
+            tooltip_lines.append(f"Artist: {row['recording__discogs__matched_artist']}")
+        if row["recording__discogs__songwriters"]:
+            tooltip_lines.append(f"Written by: {row['recording__discogs__songwriters']}")
+        row["discogs_tooltip"] = "\n".join(tooltip_lines) or "No details cached yet"
 
     state = {"genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction}
     return rows, state
