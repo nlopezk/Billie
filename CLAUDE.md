@@ -132,10 +132,60 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   (the rest of the app's test coverage claimed by the "Next step" bullet below does not
   currently exist in that file — worth checking next session, since it may have been lost
   rather than never written).
-- **Next step when resuming:** use the entry form for a real week and see what breaks
-  or feels wrong in practice — it's tested (resolve/tie/search/create/delete/edit/save
-  all verified via Django's test client, happy path and error/rollback path) but not
-  yet used for a real week end to end by the owner.
+- **Discogs matching, built 2026-08-21** — `/discogs/` (`views.discogs_*`,
+  `charts/discogs.py`, `charts/management/commands/discogs_match.py`,
+  `discogs_queue.html` + `_discogs_row.html`). Links each `Recording` to its Discogs
+  release, for what Billboard never printed (songwriters, producers, real release year,
+  country, genres). Key points:
+  - **`charts/discogs.py` is the only module in the project that touches the network**,
+    and nothing outside the `/discogs/` section imports it. Stdlib-only (`urllib`, no
+    `requests`), so `requirements.txt` stays at just Django. Every failure mode (no
+    token, no internet, 401, 429) is caught and shown on the page — it never 500s.
+  - **Two models**: `DiscogsMatch` (one-to-one with `Recording`, carries the status
+    workflow + cached snapshot + credits + raw JSON) and `DiscogsCandidate` (the
+    transient shortlist a search turns up). Deliberately NOT fields on `Recording` —
+    the entry form's model stays untouched.
+  - **Nothing is ever auto-confirmed.** Searching only ever produces `status=suggested`
+    with a shortlist; a human picks. Same "don't silently guess" rule as the entry
+    form's tie-picker and duplicate-recording check. Bulk-confirm exists but only acts
+    on `EXACT` candidates (label AND catalog number both matched, normalized).
+  - **Confirming is decoupled from detail-fetching** on purpose: confirming copies
+    already-cached summary data (instant, no API call), while the expensive per-release
+    fetch that fills in songwriters/producers is a separate batched step. `needs_detail`
+    marks the gap. That's why bulk-confirming 25 rows is instant rather than 25
+    sequential API calls.
+  - **Granularity note worth remembering:** a `Recording` is one SIDE of a disc, a
+    Discogs *Release* is the whole disc — so A and B sides legitimately share a
+    `discogs_release_id`. Songwriter credits are per-TRACK, so `_find_track()` matches
+    the side to its track by title (then by A/B position) before falling back to
+    release-level credits.
+  - The recordings matrix has a **Discogs column** showing link state — entirely from
+    cached data, no API call, so the matrix still works offline.
+  - `python manage.py discogs_match` does the same searching in bulk from a terminal
+    (where a long-running process is normal); the web section is for interactive review
+    and small batches. Neither ever confirms anything.
+  - **Token setup:** a Discogs personal access token from
+    https://www.discogs.com/settings/developers, in a git-ignored `.env` file at the
+    project root as `DISCOGS_TOKEN=...` (or the same-named env var). The `/discogs/`
+    page shows setup instructions when it's missing.
+  - Tests mock `charts.discogs._request` throughout — **the suite never hits the real
+    API** (it would be slow, rate-limited, non-deterministic, and would fail on a
+    machine with no token). What's tested is our logic: confidence scoring/normalization,
+    the two-tier search, per-track credit extraction, and the workflow's state
+    transitions.
+- **A latent CSRF bug was found and fixed while building the above:** HTMX `hx-post`
+  from an element that isn't inside a `<form>` sends no CSRF token, so
+  `CsrfViewMiddleware` 403s it. `base.html`'s `<body>` now carries
+  `hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'`, which every descendant inherits —
+  verified with `Client(enforce_csrf_checks=True)` (403 without the header, 200 with).
+- **Next step when resuming:** get a Discogs token in place and run a first batch
+  (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
+  see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic
+  is tested against mocked responses but has never been run against the real API.
+  Expect a meaningful proportion of `no_match`; the manual paste-a-URL box exists for
+  exactly that.
+- **Also still open:** use the entry form for more real weeks and see what breaks in
+  practice, and the `combined_credit_artists.txt` splitting work.
 
 ## Non-negotiables
 
@@ -145,8 +195,23 @@ Read these before proposing any change in direction.
    week by week while entering them. Never propose scraping, bulk-importing from Wikipedia /
    Whitburn / secondhand datasets, or OCR-ing the magazines into the database. The tool's job
    is to *reduce typing and prevent mistakes*, not to replace the human.
-2. **Everything runs locally.** SQLite on disk, local dev server. No cloud database, no hosted
-   service, no telemetry, no API calls that need an internet connection at runtime.
+2. **Everything that matters runs locally, and chart entry never needs the internet.**
+   SQLite on disk, local dev server. No cloud database, no hosted service, no telemetry.
+   The browser and the weekly entry form must keep working with the network unplugged —
+   entering a chart week is *never* allowed to depend on an external service being
+   reachable.
+
+   *Amended 2026-08-21 (owner's decision).* This rule originally read "no API calls that
+   need an internet connection at runtime," full stop. That was too broad: the real
+   intent is (a) never automate *filling in the charts* from an outside source, and
+   (b) never make internet a prerequisite for the owner to sit down and work. It was
+   never meant to forbid deliberately looking a record up somewhere after the fact.
+   So: the **Discogs section** (`/discogs/`, see below) *is* allowed to make live API
+   calls, because it's a separate, opt-in, after-the-fact enrichment screen the owner
+   chooses to open — not part of the entry path. The entry form still makes zero network
+   calls, and nothing in the chart browser or entry flow degrades when offline. A future
+   "Discogs ID" field on the entry form would be acceptable *only* as a manually typed
+   value, never as a live lookup that blocks saving a week.
 3. **Comment code thoroughly.** The owner is using this project to learn. Every non-obvious
    line gets an inline comment explaining *why*, not just *what*. When you present code in
    chat, explain what each block does in prose as well. Verbose is correct here.

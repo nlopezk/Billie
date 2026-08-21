@@ -112,6 +112,56 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         th a.sort-link:hover { text-decoration: underline; }
         th a.sort-link .sort-arrow { color: var(--tie); margin-left: 0.15rem; }
         .matrix-summary { color: var(--muted); margin: 0 0 1rem; }
+        .recordings-table .discogs-cell { font-size: 0.9em; }
+        .recordings-table .discogs-cell a { color: var(--up); }
+        .recordings-table .discogs-cell a.needs-review { color: var(--new); }
+
+        /* Discogs review queue (discogs_queue.html + _discogs_row.html) */
+        .discogs-table { font-size: 0.85rem; }
+        .discogs-table td { vertical-align: top; }
+        .discogs-recording .catalog-hint, .muted { color: var(--muted); }
+        .discogs-progress { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+        .progress-bar { flex: 1; height: 0.5rem; background: rgba(128,128,128,0.2); border-radius: 3px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--up); }
+        .progress-label { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+        .discogs-batch { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .discogs-message {
+            border: 1px solid var(--up); color: var(--up);
+            border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.6rem; font-size: 0.9rem;
+        }
+        .discogs-error { color: var(--down); margin: 0 0 0.4rem; font-size: 0.85rem; }
+        .discogs-btn { cursor: pointer; font-size: 0.8rem; margin: 0 0.2rem 0.2rem 0; }
+        .discogs-btn.primary { border-color: var(--up); color: var(--up); font-weight: 600; }
+        .discogs-btn.primary:hover { background: var(--up); color: white; }
+        .discogs-btn.subtle { color: var(--muted); }
+        .discogs-btn:hover { background: rgba(128,128,128,0.15); }
+        .status-badge, .confidence-badge {
+            display: inline-block; font-size: 0.7rem; line-height: 1;
+            border-radius: 3px; padding: 0.15rem 0.3rem; margin: 0 0.2rem 0.2rem 0;
+            border: 1px solid currentColor; white-space: nowrap;
+        }
+        .status-badge.status-unmatched { color: var(--muted); }
+        .status-badge.status-suggested { color: var(--new); font-weight: 600; }
+        .status-badge.status-confirmed, .status-badge.status-manual { color: var(--up); font-weight: 600; }
+        .status-badge.status-no_match, .status-badge.status-rejected { color: var(--muted); }
+        .confidence-badge.confidence-exact { color: var(--up); }
+        .confidence-badge.confidence-strong { color: var(--tie); }
+        .confidence-badge.confidence-weak { color: var(--new); }
+        .candidate-list { list-style: none; margin: 0; padding: 0; }
+        .candidate-list li { display: flex; align-items: flex-start; gap: 0.3rem; margin-bottom: 0.25rem; }
+        .candidate-pick { flex: 1; text-align: left; cursor: pointer; font-size: 0.8rem; }
+        .candidate-pick:hover { background: rgba(26,125,26,0.15); border-color: var(--up); }
+        .candidate-peek { text-decoration: none; padding: 0.25rem; color: var(--muted); }
+        .discogs-linked a { font-weight: 600; color: var(--up); }
+        .credit-line { font-size: 0.8rem; margin-top: 0.2rem; }
+        .credit-label { color: var(--muted); }
+        .discogs-note { display: block; font-size: 0.75rem; color: var(--new); margin-top: 0.2rem; }
+        .manual-entry { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
+        .manual-entry input { flex: 1; font-size: 0.8rem; min-width: 8rem; }
+        /* HTMX shows/hides these automatically around an in-flight request
+           (it toggles the .htmx-request class on the indicator). */
+        .spinner { color: var(--muted); font-size: 0.8rem; opacity: 0; transition: opacity 0.2s; }
+        .htmx-request.spinner, .htmx-request .spinner { opacity: 1; }
 
         .chart-list-table td { vertical-align: top; }
         .chart-list-table .date-range-cell { white-space: nowrap; }
@@ -228,7 +278,14 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
     </style>
     {% block extra_head %}{% endblock %}
 </head>
-<body>
+{% comment %}
+hx-headers on <body> makes EVERY htmx request on every page carry the
+CSRF token, inherited by every descendant element. Without it, any
+hx-post from an element that isn't inside a <form> (e.g. the Discogs
+queue's per-row buttons) gets rejected by CsrfViewMiddleware with a 403.
+Set once here rather than repeated on each button.
+{% endcomment %}
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
     {% block content %}{% endblock %}
     <footer><a href="{% url 'charts:chart_list' %}">&larr; all charts</a> &middot; <a href="/admin/">admin</a></footer>
 </body>

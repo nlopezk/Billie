@@ -24,6 +24,8 @@ from .models import (
     Chart,
     ChartEra,
     ChartEntry,
+    DiscogsMatch,
+    DiscogsCandidate,
 )
 
 
@@ -106,6 +108,57 @@ class ChartEntryAdmin(admin.ModelAdmin):
     date_hierarchy = "week_date"
     search_fields = ["recording__credit_text", "recording__song__title"]
     autocomplete_fields = ["chart", "recording"]
+
+
+class DiscogsCandidateInline(admin.TabularInline):
+    # The shortlist a search turned up, visible on the match's own page.
+    # Read-only: candidates are machine-generated and transient (cleared
+    # when a match is confirmed), so there's nothing meaningful to hand-
+    # edit here -- picking one is what the /discogs/ queue is for.
+    model = DiscogsCandidate
+    extra = 0
+    can_delete = False
+    readonly_fields = ["discogs_release_id", "title", "label", "catalog_number", "year", "country", "confidence"]
+    fields = readonly_fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DiscogsMatch)
+class DiscogsMatchAdmin(admin.ModelAdmin):
+    # The correction surface for Discogs links. The /discogs/ review queue
+    # is the primary workflow (search, pick, confirm); this is here for
+    # the awkward one-offs -- fixing a release id by hand, adding a note
+    # about why a match is unusual, or bulk-resetting a batch that went
+    # wrong via the admin action below.
+    list_display = ["recording", "status", "confidence", "discogs_release_id", "matched_title", "songwriters", "updated_at"]
+    list_filter = ["status", "confidence"]
+    search_fields = [
+        "recording__credit_text", "recording__song__title",
+        "recording__catalog_number", "matched_title", "songwriters",
+    ]
+    autocomplete_fields = ["recording"]
+    # raw_data is the verbatim API response -- useful to READ when
+    # something looks wrong, never worth hand-editing.
+    readonly_fields = ["raw_data", "searched_at", "updated_at"]
+    inlines = [DiscogsCandidateInline]
+    actions = ["reset_matches"]
+
+    @admin.action(description="Reset selected matches back to 'not looked up yet'")
+    def reset_matches(self, request, queryset):
+        # Clears the link and every cached field, so the recording goes
+        # back to looking untouched and can be re-searched cleanly.
+        updated = queryset.update(
+            status=DiscogsMatch.UNMATCHED, confidence="",
+            discogs_release_id=None, discogs_master_id=None,
+            matched_title="", matched_artist="", matched_label="",
+            matched_catalog_number="", matched_country="", matched_format="",
+            matched_year=None, songwriters="", producers="",
+            genres=[], styles=[], raw_data=None,
+        )
+        DiscogsCandidate.objects.filter(match__in=queryset).delete()
+        self.message_user(request, f"Reset {updated} match(es).")
 
 
 @admin.register(LogEntry)

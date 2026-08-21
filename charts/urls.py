@@ -28,6 +28,18 @@ urlpatterns = [
     # with the patterns below, since "recordings" never matches <int:...>.
     path("recordings/", views.recordings_matrix, name="recordings_matrix"),
 
+    # --- Discogs review section (the only network-touching part) ---
+    # /discogs/                                -- the review queue
+    path("discogs/", views.discogs_queue, name="discogs_queue"),
+    # Page-level batch actions (search N / confirm exact / fetch details):
+    path("discogs/bulk/", views.discogs_bulk, name="discogs_bulk"),
+    # Per-recording HTMX row actions:
+    path("discogs/<int:recording_id>/search/", views.discogs_search, name="discogs_search"),
+    path("discogs/<int:recording_id>/confirm/", views.discogs_confirm, name="discogs_confirm"),
+    path("discogs/<int:recording_id>/manual/", views.discogs_manual, name="discogs_manual"),
+    path("discogs/<int:recording_id>/status/", views.discogs_set_status, name="discogs_set_status"),
+    path("discogs/<int:recording_id>/detail/", views.discogs_fetch_detail, name="discogs_fetch_detail"),
+
     # --- weekly entry form ---
     # /1/entry/                               -- new-week entry form (GET), submit target (POST)
     path("<int:chart_id>/entry/", views.entry_week, name="entry_week"),

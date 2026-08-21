@@ -26,6 +26,7 @@ search would silently drop whatever you'd just typed.
         <col style="width: 3rem;">
         <col style="width: 4.5rem;">
         <col style="width: 4.5rem;">
+        <col style="width: 8rem;">
     </colgroup>
     <thead>
         <tr>
@@ -37,6 +38,13 @@ search would silently drop whatever you'd just typed.
             <th class="num"><a class="sort-link" href="{{ columns.weeks.href }}">Weeks<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.first.href }}">First entry<span class="sort-arrow">{{ columns.first.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.last.href }}">Last entry<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
+            {% comment %}
+            Discogs link state. Everything shown here is CACHED in our own
+            database (see views._recordings_matrix_query's .values()) --
+            rendering this column makes no API call, so the matrix still
+            works fine with no internet.
+            {% endcomment %}
+            <th>Discogs</th>
         </tr>
     </thead>
     <tbody>
@@ -57,9 +65,27 @@ search would silently drop whatever you'd just typed.
             {% endcomment %}
             <td><a href="{% url 'charts:chart_week' r.chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a></td>
             <td><a href="{% url 'charts:chart_week' r.chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
+            <td class="discogs-cell">
+                {% if r.discogs_url %}
+                    <a href="{{ r.discogs_url }}" target="_blank" rel="noopener"
+                       title="{{ r.recording__discogs__songwriters|default:'No songwriter credits cached yet' }}">
+                        {% if r.recording__discogs__matched_catalog_number %}
+                            {{ r.recording__discogs__matched_catalog_number }}
+                        {% else %}
+                            {{ r.recording__discogs__discogs_release_id }}
+                        {% endif %} &nearr;
+                    </a>
+                {% elif r.recording__discogs__status == "no_match" %}
+                    <span class="muted" title="Searched, nothing on Discogs">not on Discogs</span>
+                {% elif r.recording__discogs__status == "suggested" %}
+                    <a class="needs-review" href="{% url 'charts:discogs_queue' %}?q={{ r.recording__catalog_number|urlencode }}">needs review</a>
+                {% else %}
+                    <span class="muted">&mdash;</span>
+                {% endif %}
+            </td>
         </tr>
         {% empty %}
-        <tr><td colspan="8" style="color: var(--muted); text-align: center;">No recordings match these filters.</td></tr>
+        <tr><td colspan="9" style="color: var(--muted); text-align: center;">No recordings match these filters.</td></tr>
         {% endfor %}
     </tbody>
 </table>

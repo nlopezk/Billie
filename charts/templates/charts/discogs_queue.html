@@ -1,0 +1,162 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/discogs_queue.html
+
+The Discogs review queue -- the one section of the site that talks to the
+network, and only when you click something here. See the big comment
+above views.discogs_queue for the workflow and why it's shaped this way.
+
+Per-row actions are HTMX (swap one row in place, keeping your scroll
+position and the rest of the page untouched). The page-level batch
+actions are plain form POSTs that redirect back here, because they change
+many rows at once and re-rendering honestly beats patching N rows.
+{% endcomment %}
+{% block title %}Discogs matching{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+<style>body { max-width: 1500px; }</style>
+{% endblock %}
+{% block content %}
+    <h1>Discogs matching</h1>
+    <p class="subtitle">
+        Link each recording to its Discogs release, for the information Billboard never printed
+        &middot; <a href="{% url 'charts:recordings_matrix' %}">recordings matrix &rarr;</a>
+    </p>
+
+    {% if not has_token %}
+    {% comment %}
+    Everything on this page needs a token, so say so plainly and up front
+    rather than letting every button fail one at a time.
+    {% endcomment %}
+    <div class="entry-errors">
+        <strong>No Discogs token configured.</strong>
+        <p style="margin:0.4rem 0 0">
+            Generate a personal access token at
+            <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a>
+            &rarr; <em>Generate new token</em>, then create a file called <code>.env</code> in the
+            project root containing:
+        </p>
+        <pre style="margin:0.4rem 0 0">DISCOGS_TOKEN=your_token_here</pre>
+        <p style="margin:0.4rem 0 0">
+            <code>.env</code> is git-ignored, so the token never gets committed.
+        </p>
+    </div>
+    {% endif %}
+
+    {% for message in messages %}
+        <div class="discogs-message">{{ message }}</div>
+    {% endfor %}
+
+    {% comment %} Progress across every recording on file. {% endcomment %}
+    <div class="discogs-progress">
+        <div class="progress-bar"><div class="progress-fill" style="width: {{ progress.percent }}%"></div></div>
+        <span class="progress-label">{{ progress.settled }} of {{ progress.total }} recordings settled ({{ progress.percent }}%)</span>
+    </div>
+
+    <form class="matrix-filters" method="get" action="{% url 'charts:discogs_queue' %}">
+        <label>
+            Status
+            <select name="status" onchange="this.form.submit()">
+                {% for option in status_options %}
+                <option value="{{ option.value }}" {% if status == option.value %}selected{% endif %}>
+                    {{ option.label }} ({{ option.count }})
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="search-label">
+            Search
+            <input type="search" name="q" value="{{ q }}" placeholder="song, artist, label, catalog #...">
+        </label>
+        <button type="submit" class="discogs-btn">Filter</button>
+    </form>
+
+    {% comment %}
+    Batch actions. Each is a separate small form so the buttons post
+    different `action` values without needing JS -- and each carries the
+    current querystring so the redirect lands back on the same filter/page.
+    {% endcomment %}
+    {% if has_token %}
+    <div class="discogs-batch">
+        {% if unmatched_count %}
+        <form method="post" action="{% url 'charts:discogs_bulk' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="search_batch">
+            <input type="hidden" name="querystring" value="{{ querystring }}">
+            <button type="submit" class="discogs-btn primary"
+                title="Roughly one second per recording -- this request stays open until it finishes">
+                Search next {{ batch_size }} unsearched ({{ unmatched_count }} left)
+            </button>
+        </form>
+        {% endif %}
+
+        {% if page_exact_ids %}
+        <form method="post" action="{% url 'charts:discogs_bulk' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="confirm_exact">
+            <input type="hidden" name="querystring" value="{{ querystring }}">
+            {% for match_id in page_exact_ids %}<input type="hidden" name="match_id" value="{{ match_id }}">{% endfor %}
+            <button type="submit" class="discogs-btn"
+                title="Confirms only suggestions where BOTH label and catalog number matched exactly. No API calls -- instant.">
+                Confirm {{ page_exact_ids|length }} exact match{{ page_exact_ids|length|pluralize:"es" }} on this page
+            </button>
+        </form>
+        {% endif %}
+
+        {% if progress.needs_detail %}
+        <form method="post" action="{% url 'charts:discogs_bulk' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="fetch_details">
+            <input type="hidden" name="querystring" value="{{ querystring }}">
+            <button type="submit" class="discogs-btn"
+                title="Confirming is instant; this is the slower per-release fetch that fills in songwriters and producers.">
+                Fetch details for next {{ batch_size }} ({{ progress.needs_detail }} pending)
+            </button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="table-wrap">
+    <table class="discogs-table">
+        <colgroup>
+            <col style="width: 16rem;">
+            <col style="width: 9rem;">
+            <col>
+            <col style="width: 11rem;">
+        </colgroup>
+        <thead>
+            <tr>
+                <th>Recording</th>
+                <th>Status</th>
+                <th>Discogs</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for match in page %}
+                {% include "charts/_discogs_row.html" %}
+            {% empty %}
+            <tr><td colspan="4" style="color: var(--muted); text-align:center;">Nothing here with these filters.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    {% if page.has_other_pages %}
+    <div class="nav-bar" style="margin-top:1rem;">
+        <div>
+            {% if page.has_previous %}
+                <a class="button" href="?status={{ status }}&q={{ q }}&page={{ page.previous_page_number }}">&larr; previous</a>
+            {% endif %}
+        </div>
+        <span class="muted">page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <div>
+            {% if page.has_next %}
+                <a class="button" href="?status={{ status }}&q={{ q }}&page={{ page.next_page_number }}">next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+{% endblock %}

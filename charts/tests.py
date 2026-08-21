@@ -7,11 +7,13 @@
 # produce a number nobody ever printed anywhere).
 
 from datetime import date
+from unittest import mock
 
 from django.test import TestCase
 from django.urls import reverse
 
-from .models import Chart, ChartEntry, Label, Recording, Song
+from . import discogs as discogs_api
+from .models import Chart, ChartEntry, DiscogsCandidate, DiscogsMatch, Label, Recording, Song
 
 
 class RecordingsMatrixTests(TestCase):
@@ -203,3 +205,387 @@ class EntryCreateDuplicateCheckTests(TestCase):
         self.assertTemplateUsed(response, "charts/_entry_resolved.html")
         self.assertTemplateNotUsed(response, "charts/_entry_create_duplicate_check.html")
         self.assertEqual(Recording.objects.count(), before + 1)
+
+
+# =============================================================================
+# Discogs matching
+# =============================================================================
+#
+# EVERY test below mocks charts.discogs._request. Nothing in this suite is
+# ever allowed to hit the real API: it would be slow, rate-limited,
+# non-deterministic, and would fail entirely on a machine with no token or
+# no internet. What's worth testing here is OUR logic -- the confidence
+# scoring, the two-tier search, the per-track credit extraction, and the
+# review workflow's state transitions -- not Discogs' behaviour.
+
+
+class DiscogsConfidenceTests(TestCase):
+    """The scoring that decides what's safe to bulk-confirm."""
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Capitol")
+        self.song = Song.objects.create(title="Bouquet of Roses")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="20-2806", side="B",
+            song=self.song, credit_text="Eddy Arnold",
+        )
+
+    def test_exact_when_label_and_catalog_both_match(self):
+        result = {"catno": "20-2806", "label": ["Capitol"]}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+    def test_catalog_punctuation_is_normalized_away(self):
+        # Discogs writes catalog numbers inconsistently; "20 2806",
+        # "20-2806" and "202806" are the same number as far as
+        # matching goes.
+        for catno in ["20 2806", "202806", "20-2806", "20/2806"]:
+            result = {"catno": catno, "label": ["Capitol"]}
+            self.assertEqual(
+                discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT,
+                msg=f"{catno!r} should normalize to match",
+            )
+
+    def test_label_records_suffix_is_normalized_away(self):
+        # The magazine prints "Capitol"; Discogs often carries the fuller
+        # "Capitol Records". Same label.
+        result = {"catno": "20-2806", "label": ["Capitol Records"]}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+    def test_strong_when_only_catalog_matches(self):
+        result = {"catno": "20-2806", "label": ["Some Other Label"]}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.STRONG)
+
+    def test_weak_when_catalog_differs(self):
+        result = {"catno": "99-9999", "label": ["Capitol"]}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.WEAK)
+
+    def test_any_of_several_labels_matching_is_enough(self):
+        # A Discogs release can list several labels (imprint, parent,
+        # distributor) -- matching any one of them counts.
+        result = {"catno": "20-2806", "label": ["Universal", "Capitol", "EMI"]}
+        self.assertEqual(discogs_api._score_confidence(self.recording, result), DiscogsMatch.EXACT)
+
+
+class DiscogsSearchTests(TestCase):
+    """The two-tier search, and that it never picks a winner on its own."""
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Specialty")
+        self.song = Song.objects.create(title="Pink Champagne")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="355", side="A",
+            song=self.song, credit_text="Joe Liggins",
+        )
+
+    def test_catalog_search_used_first_and_title_search_skipped_on_a_hit(self):
+        payload = {"results": [{"id": 42, "title": "Joe Liggins - Pink Champagne",
+                                "catno": "355", "label": ["Specialty"], "year": "1950"}]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload) as request:
+            candidates = discogs_api.search_candidates(self.recording)
+
+        # Exactly one call: the catalog+label search hit, so neither the
+        # catalog-only retry nor the weak title/artist fallback ran.
+        self.assertEqual(request.call_count, 1)
+        _, params = request.call_args[0]
+        self.assertEqual(params["catno"], "355")
+        self.assertEqual(params["label"], "Specialty")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["discogs_release_id"], 42)
+        self.assertEqual(candidates[0]["confidence"], DiscogsMatch.EXACT)
+
+    def test_falls_back_through_all_three_searches_when_nothing_matches(self):
+        with mock.patch.object(discogs_api, "_request", return_value={"results": []}) as request:
+            candidates = discogs_api.search_candidates(self.recording)
+
+        self.assertEqual(candidates, [])
+        # catalog+label, then catalog alone, then title+artist.
+        self.assertEqual(request.call_count, 3)
+        self.assertIn("release_title", request.call_args[0][1])
+
+    def test_candidates_come_back_best_confidence_first(self):
+        payload = {"results": [
+            {"id": 1, "title": "A weak one", "catno": "999", "label": ["Nope"]},
+            {"id": 2, "title": "An exact one", "catno": "355", "label": ["Specialty"]},
+            {"id": 3, "title": "A strong one", "catno": "355", "label": ["Nope"]},
+        ]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload):
+            candidates = discogs_api.search_candidates(self.recording)
+
+        self.assertEqual(
+            [c["confidence"] for c in candidates],
+            [DiscogsMatch.EXACT, DiscogsMatch.STRONG, DiscogsMatch.WEAK],
+        )
+
+    def test_unparseable_year_does_not_blow_up(self):
+        # Discogs sends year as a string, sometimes empty, sometimes junk.
+        payload = {"results": [{"id": 7, "title": "x", "catno": "355", "label": ["Specialty"], "year": ""}]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload):
+            candidates = discogs_api.search_candidates(self.recording)
+        self.assertIsNone(candidates[0]["year"])
+
+
+class DiscogsDetailTests(TestCase):
+    """Per-track credit extraction -- the reason a Recording (one SIDE) has
+    to find its own track inside a Release (the whole disc)."""
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Decca")
+        self.song = Song.objects.create(title="Blue Christmas")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="46186", side="B",
+            song=self.song, credit_text="Ernest Tubb",
+        )
+
+    def _release(self, **overrides):
+        release = {
+            "id": 100, "title": "Blue Christmas / White Christmas",
+            "artists": [{"name": "Ernest Tubb"}],
+            "labels": [{"name": "Decca", "catno": "46186"}],
+            "formats": [{"name": "Shellac"}],
+            "year": 1949, "country": "US",
+            "genres": ["Folk, World, & Country"], "styles": ["Country"],
+            "tracklist": [
+                {"position": "A", "title": "White Christmas",
+                 "extraartists": [{"name": "Irving Berlin", "role": "Written-By"}]},
+                {"position": "B", "title": "Blue Christmas",
+                 "extraartists": [{"name": "Billy Hayes", "role": "Written-By"},
+                                  {"name": "Jay W. Johnson", "role": "Written-By"}]},
+            ],
+            "extraartists": [{"name": "Some Producer", "role": "Producer"}],
+        }
+        release.update(overrides)
+        return release
+
+    def test_credits_come_from_this_sides_track_not_the_other_side(self):
+        with mock.patch.object(discogs_api, "_request", return_value=self._release()):
+            detail = discogs_api.fetch_release_detail(100, self.recording)
+
+        # "Blue Christmas" is the B side -- must NOT pick up the A side's
+        # Irving Berlin credit for "White Christmas".
+        self.assertEqual(detail["songwriters"], "Billy Hayes, Jay W. Johnson")
+        self.assertNotIn("Irving Berlin", detail["songwriters"])
+
+    def test_falls_back_to_release_level_credits_when_track_has_none(self):
+        release = self._release(tracklist=[{"position": "B", "title": "Blue Christmas"}])
+        release["extraartists"] = [{"name": "Release Writer", "role": "Written-By"}]
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            detail = discogs_api.fetch_release_detail(100, self.recording)
+        self.assertEqual(detail["songwriters"], "Release Writer")
+
+    def test_producer_falls_back_to_release_level(self):
+        with mock.patch.object(discogs_api, "_request", return_value=self._release()):
+            detail = discogs_api.fetch_release_detail(100, self.recording)
+        self.assertEqual(detail["producers"], "Some Producer")
+
+    def test_loose_title_match_handles_part_i_and_ii_style_differences(self):
+        song = Song.objects.create(title="Blue Light Boogie")
+        recording = Recording.objects.create(
+            label=self.label, catalog_number="48111", side="A",
+            song=song, credit_text="Louis Jordan",
+        )
+        release = self._release(tracklist=[
+            {"position": "A", "title": "Blue Light Boogie (Part I & II)",
+             "extraartists": [{"name": "Louis Jordan", "role": "Written-By"}]},
+        ])
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            detail = discogs_api.fetch_release_detail(100, recording)
+        self.assertEqual(detail["songwriters"], "Louis Jordan")
+
+    def test_discogs_name_disambiguators_are_stripped(self):
+        # Discogs appends "(2)", "(3)" to distinguish same-named artists.
+        release = self._release(tracklist=[
+            {"position": "B", "title": "Blue Christmas",
+             "extraartists": [{"name": "Billy Hayes (2)", "role": "Written-By"}]},
+        ])
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            detail = discogs_api.fetch_release_detail(100, self.recording)
+        self.assertEqual(detail["songwriters"], "Billy Hayes")
+
+
+class DiscogsWorkflowTests(TestCase):
+    """The review queue's state transitions."""
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Specialty")
+        self.song = Song.objects.create(title="Pink Champagne")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="355", side="A",
+            song=self.song, credit_text="Joe Liggins",
+        )
+        self.match = DiscogsMatch.objects.create(recording=self.recording)
+
+    def _candidate(self, **overrides):
+        data = {
+            "match": self.match, "discogs_release_id": 42, "title": "Pink Champagne",
+            "label": "Specialty", "catalog_number": "355", "year": 1950,
+            "confidence": DiscogsMatch.EXACT, "rank": 0,
+        }
+        data.update(overrides)
+        return DiscogsCandidate.objects.create(**data)
+
+    def test_queue_creates_a_match_row_for_every_recording(self):
+        # A recording created later (e.g. a debut typed into the entry
+        # form) gets picked up automatically -- no signal, no extra step.
+        new = Recording.objects.create(
+            label=self.label, catalog_number="999", side="A",
+            song=Song.objects.create(title="Later Addition"), credit_text="Someone",
+        )
+        self.assertFalse(DiscogsMatch.objects.filter(recording=new).exists())
+        self.client.get(reverse("charts:discogs_queue"))
+        self.assertTrue(DiscogsMatch.objects.filter(recording=new).exists())
+
+    def test_search_stores_candidates_without_confirming_anything(self):
+        payload = {"results": [{"id": 42, "title": "Joe Liggins - Pink Champagne",
+                                "catno": "355", "label": ["Specialty"]}]}
+        with mock.patch.object(discogs_api, "_request", return_value=payload):
+            self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+
+        self.match.refresh_from_db()
+        # SUGGESTED, never CONFIRMED -- picking is always a human action.
+        self.assertEqual(self.match.status, DiscogsMatch.SUGGESTED)
+        self.assertEqual(self.match.candidates.count(), 1)
+        self.assertIsNone(self.match.discogs_release_id)
+
+    def test_empty_search_marks_no_match_rather_than_leaving_it_pending(self):
+        with mock.patch.object(discogs_api, "_request", return_value={"results": []}):
+            self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.NO_MATCH)
+
+    def test_api_failure_is_shown_not_raised(self):
+        # A dead connection must not 500 the page or change any state.
+        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("no internet")):
+            response = self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "no internet")
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
+
+    def test_confirming_copies_the_candidate_and_makes_no_api_call(self):
+        candidate = self._candidate()
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
+
+        # If confirming tried to reach the API this would raise.
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("must not call the API")):
+            self.client.post(
+                reverse("charts:discogs_confirm", args=[self.recording.id]),
+                {"candidate_id": candidate.id},
+            )
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
+        self.assertEqual(self.match.discogs_release_id, 42)
+        self.assertEqual(self.match.matched_catalog_number, "355")
+        # Shortlist cleared, and detail still pending (that's a separate step).
+        self.assertEqual(self.match.candidates.count(), 0)
+        self.assertTrue(self.match.needs_detail)
+
+    def test_fetch_detail_fills_in_credits(self):
+        self.match.status = DiscogsMatch.CONFIRMED
+        self.match.discogs_release_id = 42
+        self.match.save()
+        release = {
+            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
+            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
+            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
+            "tracklist": [{"position": "A", "title": "Pink Champagne",
+                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
+        }
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            self.client.post(reverse("charts:discogs_fetch_detail", args=[self.recording.id]))
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
+        self.assertEqual(self.match.genres, ["Blues"])
+        self.assertFalse(self.match.needs_detail)
+
+    def test_manual_entry_accepts_a_url_or_a_bare_id(self):
+        for reference in ["12345", "https://www.discogs.com/release/12345", "release/12345-Some-Slug"]:
+            self.client.post(
+                reverse("charts:discogs_manual", args=[self.recording.id]),
+                {"discogs_ref": reference},
+            )
+            self.match.refresh_from_db()
+            self.assertEqual(self.match.discogs_release_id, 12345, msg=f"failed for {reference!r}")
+            self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+
+    def test_reset_clears_the_link_and_everything_cached(self):
+        self.match.status = DiscogsMatch.CONFIRMED
+        self.match.discogs_release_id = 42
+        self.match.songwriters = "Someone"
+        self.match.matched_title = "Something"
+        self.match.raw_data = {"id": 42}
+        self.match.save()
+        self._candidate()
+
+        self.client.post(
+            reverse("charts:discogs_set_status", args=[self.recording.id]),
+            {"status": "unmatched"},
+        )
+
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
+        self.assertIsNone(self.match.discogs_release_id)
+        self.assertEqual(self.match.songwriters, "")
+        self.assertEqual(self.match.matched_title, "")
+        self.assertIsNone(self.match.raw_data)
+        self.assertEqual(self.match.candidates.count(), 0)
+
+    def test_bulk_confirm_only_touches_exact_matches(self):
+        exact_match = self.match
+        exact_match.status = DiscogsMatch.SUGGESTED
+        exact_match.save()
+        self._candidate(confidence=DiscogsMatch.EXACT)
+
+        # A second recording whose only candidate is a WEAK guess -- it
+        # must be left alone even though its id is submitted too.
+        weak_recording = Recording.objects.create(
+            label=self.label, catalog_number="777", side="A",
+            song=Song.objects.create(title="Something Else"), credit_text="Someone",
+        )
+        weak_match = DiscogsMatch.objects.create(recording=weak_recording, status=DiscogsMatch.SUGGESTED)
+        DiscogsCandidate.objects.create(
+            match=weak_match, discogs_release_id=99, title="A guess",
+            confidence=DiscogsMatch.WEAK, rank=0,
+        )
+
+        self.client.post(reverse("charts:discogs_bulk"), {
+            "action": "confirm_exact",
+            "match_id": [exact_match.id, weak_match.id],
+            "querystring": "",
+        })
+
+        exact_match.refresh_from_db()
+        weak_match.refresh_from_db()
+        self.assertEqual(exact_match.status, DiscogsMatch.CONFIRMED)
+        self.assertEqual(weak_match.status, DiscogsMatch.SUGGESTED)  # untouched
+        self.assertIsNone(weak_match.discogs_release_id)
+
+
+class DiscogsTokenTests(TestCase):
+    """Token loading, and that its absence degrades gracefully."""
+
+    def test_env_var_wins(self):
+        with mock.patch.dict("os.environ", {"DISCOGS_TOKEN": "from-env"}):
+            self.assertEqual(discogs_api.get_token(), "from-env")
+
+    def test_missing_token_returns_none_rather_than_raising(self):
+        # The queue page uses this to show a setup prompt instead of
+        # letting every button fail one at a time.
+        with mock.patch.dict("os.environ", {"DISCOGS_TOKEN": ""}), \
+             mock.patch("pathlib.Path.exists", return_value=False):
+            self.assertIsNone(discogs_api.get_token())
+
+    def test_request_without_a_token_raises_a_helpful_error(self):
+        with mock.patch.object(discogs_api, "get_token", return_value=None):
+            with self.assertRaises(discogs_api.DiscogsError) as caught:
+                discogs_api._request("/database/search")
+        self.assertIn("discogs.com/settings/developers", str(caught.exception))
+
+    def test_queue_page_works_with_no_token_configured(self):
+        with mock.patch.object(discogs_api, "get_token", return_value=None):
+            response = self.client.get(reverse("charts:discogs_queue"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No Discogs token configured")

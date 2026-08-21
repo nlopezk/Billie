@@ -134,6 +134,183 @@ class RecordingCredit(models.Model):
         ordering = ["credit_order"]
 
 
+# =============================================================================
+# Discogs linking -- OPTIONAL, after-the-fact enrichment. Nothing below is
+# part of the chart-entry path.
+# =============================================================================
+#
+# Why a separate model instead of fields on Recording: this data is
+# optional, separately populated, separately corrected, and comes from an
+# outside source that can be wrong. Keeping it off Recording means the
+# entry form's hot-path model is untouched by any of it, and a Recording
+# with no Discogs link at all is still a perfectly complete row.
+#
+# Note the granularity mismatch, which is expected and fine: a Recording
+# is ONE SIDE of a disc (Victor 20-1873 A and B are two Recording rows),
+# while a Discogs *Release* is the whole disc. So the A and B sides
+# legitimately share a discogs_release_id. Songwriter/producer credits
+# are per-TRACK though, so those get pulled by finding this side's track
+# within the release's tracklist (see charts/discogs.py), falling back to
+# release-level credits when the track can't be identified.
+
+
+class DiscogsMatch(models.Model):
+    """One Recording's link (or deliberate non-link) to Discogs."""
+
+    # --- status: where this recording is in the review workflow ---
+    UNMATCHED = "unmatched"    # never looked up
+    SUGGESTED = "suggested"    # candidates fetched, waiting on a human to decide
+    CONFIRMED = "confirmed"    # a human picked one of the suggested candidates
+    MANUAL = "manual"          # a human typed/pasted a Discogs ID directly
+    NO_MATCH = "no_match"      # searched, Discogs returned nothing plausible
+    REJECTED = "rejected"      # a human looked at the candidates and said none of them are it
+
+    STATUS_CHOICES = [
+        (UNMATCHED, "Not looked up yet"),
+        (SUGGESTED, "Suggested -- needs review"),
+        (CONFIRMED, "Confirmed"),
+        (MANUAL, "Manually entered"),
+        (NO_MATCH, "No match found on Discogs"),
+        (REJECTED, "Rejected -- none of the suggestions fit"),
+    ]
+    # Statuses that mean "a human has settled this one" -- used by the
+    # review queue to decide what still needs attention.
+    SETTLED_STATUSES = [CONFIRMED, MANUAL, NO_MATCH, REJECTED]
+
+    # --- how good the machine thought the match was ---
+    # Recorded so the review page can offer "bulk-confirm the exact ones"
+    # without re-deriving it, and so a weak match stays visibly weak even
+    # after it's been confirmed.
+    EXACT = "exact"      # label AND catalog number both matched (normalized)
+    STRONG = "strong"    # catalog number matched exactly, label didn't
+    WEAK = "weak"        # only found via the title/artist fallback search
+    CONFIDENCE_CHOICES = [(EXACT, "Exact"), (STRONG, "Strong"), (WEAK, "Weak")]
+
+    recording = models.OneToOneField(Recording, on_delete=models.CASCADE, related_name="discogs")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=UNMATCHED)
+    confidence = models.CharField(max_length=6, choices=CONFIDENCE_CHOICES, blank=True)
+
+    discogs_release_id = models.PositiveIntegerField(null=True, blank=True)
+    discogs_master_id = models.PositiveIntegerField(null=True, blank=True)
+
+    # --- cached snapshot of what Discogs says ---
+    # Cached, not fetched live, so the recordings matrix and review queue
+    # render with zero network calls. Refreshed only when a human asks.
+    matched_title = models.CharField(max_length=300, blank=True)
+    matched_artist = models.CharField(max_length=300, blank=True)
+    matched_label = models.CharField(max_length=200, blank=True)
+    matched_catalog_number = models.CharField(max_length=100, blank=True)
+    matched_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    matched_country = models.CharField(max_length=100, blank=True)
+    matched_format = models.CharField(max_length=200, blank=True)
+    genres = models.JSONField(default=list, blank=True)
+    styles = models.JSONField(default=list, blank=True)
+
+    # --- the actual payoff: what Billboard never printed ---
+    songwriters = models.CharField(max_length=500, blank=True)
+    producers = models.CharField(max_length=500, blank=True)
+
+    # Whole API response kept verbatim. Costs a little disk, but means
+    # surfacing a new field later is a template change rather than
+    # re-fetching all ~1,191 recordings over the API again.
+    raw_data = models.JSONField(null=True, blank=True)
+
+    # Free-text, for the human -- "this is the 1949 reissue, not the
+    # original", "Discogs has the B-side title wrong", etc.
+    note = models.CharField(max_length=500, blank=True)
+
+    searched_at = models.DateTimeField(null=True, blank=True)   # last time candidates were fetched
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "Discogs matches"
+        indexes = [models.Index(fields=["status"])]
+
+    @property
+    def is_settled(self):
+        # "A human has made a decision about this one" -- drives the
+        # review queue's default filter and the progress count.
+        return self.status in self.SETTLED_STATUSES
+
+    @property
+    def is_linked(self):
+        # Points at an actual Discogs record (as opposed to settled-but-
+        # deliberately-unlinked, i.e. no_match / rejected).
+        return self.status in (self.CONFIRMED, self.MANUAL) and bool(self.discogs_release_id)
+
+    @property
+    def needs_detail(self):
+        # Linked, but the expensive per-release fetch hasn't run yet, so
+        # songwriters/producers/genres are still blank. Confirming is
+        # deliberately decoupled from fetching (see views.discogs_confirm),
+        # so this is a normal intermediate state, not an error.
+        return self.is_linked and self.raw_data is None
+
+    @property
+    def discogs_url(self):
+        # Plain outbound link for eyeballing the match on discogs.com.
+        # Just a URL string -- rendering it makes no API call.
+        if self.discogs_release_id:
+            return f"https://www.discogs.com/release/{self.discogs_release_id}"
+        if self.discogs_master_id:
+            return f"https://www.discogs.com/master/{self.discogs_master_id}"
+        return ""
+
+    def __str__(self):
+        return f"{self.recording} -> {self.get_status_display()}"
+
+
+class DiscogsCandidate(models.Model):
+    """
+    One of the handful of possible Discogs releases turned up for a
+    recording, held until a human picks one (or rejects them all).
+
+    Deliberately a real table rather than a JSON list on DiscogsMatch:
+    it matches the house style (ChartEra, RecordingCredit and ArtistAlias
+    are all proper tables too), and the review page can order/filter these
+    directly. Rows are transient -- refetching a recording's candidates
+    replaces them, and confirming one copies its snapshot up onto the
+    DiscogsMatch before they're cleared.
+
+    Only SUMMARY data from the search endpoint lives here. The expensive
+    per-release detail fetch (tracklist, songwriters, producers) happens
+    once, at confirm time, for the one candidate that was actually
+    chosen -- not for every candidate of every recording, which would be
+    thousands of extra API calls for data mostly destined to be discarded.
+    """
+
+    match = models.ForeignKey(DiscogsMatch, on_delete=models.CASCADE, related_name="candidates")
+    discogs_release_id = models.PositiveIntegerField(null=True, blank=True)
+    discogs_master_id = models.PositiveIntegerField(null=True, blank=True)
+
+    title = models.CharField(max_length=300, blank=True)
+    artist = models.CharField(max_length=300, blank=True)
+    label = models.CharField(max_length=200, blank=True)
+    catalog_number = models.CharField(max_length=100, blank=True)
+    year = models.PositiveSmallIntegerField(null=True, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    format = models.CharField(max_length=200, blank=True)
+    thumb_url = models.URLField(max_length=500, blank=True)
+
+    confidence = models.CharField(max_length=6, choices=DiscogsMatch.CONFIDENCE_CHOICES, blank=True)
+    rank = models.PositiveSmallIntegerField(default=0)  # display order, best first
+    raw_data = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["rank"]
+
+    @property
+    def discogs_url(self):
+        if self.discogs_release_id:
+            return f"https://www.discogs.com/release/{self.discogs_release_id}"
+        if self.discogs_master_id:
+            return f"https://www.discogs.com/master/{self.discogs_master_id}"
+        return ""
+
+    def __str__(self):
+        return f"{self.title} ({self.label} {self.catalog_number})"
+
+
 class Chart(models.Model):
     # One row per continuous chart LINEAGE, e.g. "Country Jukebox" -- not
     # per printed name. Billboard renamed this chart three times between

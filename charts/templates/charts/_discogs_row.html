@@ -1,0 +1,137 @@
+{% comment %}
+charts/templates/charts/_discogs_row.html
+
+One recording's row in the Discogs review queue. Used both for the
+initial page render (via {% include %} from discogs_queue.html) and as
+the response to every per-row HTMX action, so a row looks identical
+however it reached its current state -- same shared-fragment approach as
+the entry form's _entry_resolved.html.
+
+Every action button posts to a view that returns THIS template again,
+targeting #discogs-row-{{ match.recording_id }} with outerHTML, so one
+row updates in place while the rest of the page (and any long batch
+you're part-way through reviewing) stays exactly where it was.
+{% endcomment %}
+<tr id="discogs-row-{{ match.recording_id }}" class="discogs-row status-{{ match.status }}">
+    <td class="discogs-recording">
+        <strong>{{ match.recording.song }}</strong><br>
+        <span class="muted">{{ match.recording.credit_text }}</span><br>
+        <span class="catalog-hint">{{ match.recording.catalog_display }}</span>
+    </td>
+
+    <td class="discogs-state">
+        <span class="status-badge status-{{ match.status }}">{{ match.get_status_display }}</span>
+        {% if match.confidence %}
+            <span class="confidence-badge confidence-{{ match.confidence }}">{{ match.get_confidence_display }}</span>
+        {% endif %}
+        {% if match.note %}<span class="discogs-note">{{ match.note }}</span>{% endif %}
+    </td>
+
+    <td class="discogs-detail">
+        {% if error %}
+            <p class="discogs-error">{{ error }}</p>
+        {% endif %}
+
+        {% if match.is_linked %}
+            {% comment %} Confirmed or manually entered -- show what's cached. {% endcomment %}
+            <div class="discogs-linked">
+                <a href="{{ match.discogs_url }}" target="_blank" rel="noopener">
+                    {% if match.matched_title %}{{ match.matched_title }}{% else %}Release {{ match.discogs_release_id }}{% endif %} &nearr;
+                </a>
+                {% if match.matched_label or match.matched_catalog_number %}
+                    <span class="catalog-hint">({{ match.matched_label }} {{ match.matched_catalog_number }}{% if match.matched_year %}, {{ match.matched_year }}{% endif %}{% if match.matched_country %}, {{ match.matched_country }}{% endif %})</span>
+                {% endif %}
+                {% if match.songwriters %}<div class="credit-line"><span class="credit-label">Written by</span> {{ match.songwriters }}</div>{% endif %}
+                {% if match.producers %}<div class="credit-line"><span class="credit-label">Produced by</span> {{ match.producers }}</div>{% endif %}
+                {% if match.genres %}<div class="credit-line"><span class="credit-label">Genre</span> {{ match.genres|join:", " }}{% if match.styles %} &middot; {{ match.styles|join:", " }}{% endif %}</div>{% endif %}
+                {% if match.needs_detail %}
+                    <button type="button" class="discogs-btn"
+                        hx-post="{% url 'charts:discogs_fetch_detail' match.recording_id %}"
+                        hx-vals='{"querystring": "{{ querystring }}"}'
+                        hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                        Fetch full details (songwriters, etc.)
+                    </button>
+                {% endif %}
+            </div>
+
+        {% elif match.candidates.all %}
+            {% comment %} Searched, shortlist waiting on a human decision. {% endcomment %}
+            <ul class="candidate-list">
+                {% for candidate in match.candidates.all %}
+                <li>
+                    <button type="button" class="candidate-pick"
+                        hx-post="{% url 'charts:discogs_confirm' match.recording_id %}"
+                        hx-vals='{"candidate_id": "{{ candidate.id }}", "querystring": "{{ querystring }}"}'
+                        hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                        <span class="confidence-badge confidence-{{ candidate.confidence }}">{{ candidate.get_confidence_display }}</span>
+                        {{ candidate.title }}
+                        <span class="catalog-hint">({{ candidate.label }} {{ candidate.catalog_number }}{% if candidate.year %}, {{ candidate.year }}{% endif %}{% if candidate.country %}, {{ candidate.country }}{% endif %}{% if candidate.format %} &middot; {{ candidate.format }}{% endif %})</span>
+                    </button>
+                    <a class="candidate-peek" href="{{ candidate.discogs_url }}" target="_blank" rel="noopener" title="Open on discogs.com to check before picking">&nearr;</a>
+                </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% comment %}
+        The manual escape hatch, always available: find it yourself on
+        discogs.com and paste the URL or bare ID. Covers everything the
+        automated search can't -- which for 1940s 78rpm singles is going
+        to be a real proportion of them.
+        {% endcomment %}
+        {% if not match.is_linked %}
+        <div class="manual-entry">
+            <input type="text" name="discogs_ref" placeholder="or paste a Discogs release URL / ID"
+                   id="manual-{{ match.recording_id }}">
+            <button type="button" class="discogs-btn"
+                hx-post="{% url 'charts:discogs_manual' match.recording_id %}"
+                hx-include="#manual-{{ match.recording_id }}"
+                hx-vals='{"querystring": "{{ querystring }}"}'
+                hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                Use this
+            </button>
+        </div>
+        {% endif %}
+    </td>
+
+    <td class="discogs-actions">
+        {% if not match.is_linked %}
+            <button type="button" class="discogs-btn primary"
+                hx-post="{% url 'charts:discogs_search' match.recording_id %}"
+                hx-vals='{"querystring": "{{ querystring }}"}'
+                hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                hx-indicator="#spinner-{{ match.recording_id }}">
+                {% if match.searched_at %}Search again{% else %}Search Discogs{% endif %}
+            </button>
+            <span id="spinner-{{ match.recording_id }}" class="htmx-indicator spinner">searching&hellip;</span>
+        {% endif %}
+
+        {% if match.candidates.all %}
+            <button type="button" class="discogs-btn"
+                hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
+                hx-vals='{"status": "rejected", "querystring": "{{ querystring }}"}'
+                hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                None of these
+            </button>
+        {% endif %}
+
+        {% if not match.is_linked and match.status != "no_match" %}
+            <button type="button" class="discogs-btn"
+                hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
+                hx-vals='{"status": "no_match", "querystring": "{{ querystring }}"}'
+                hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                Not on Discogs
+            </button>
+        {% endif %}
+
+        {% if match.status != "unmatched" %}
+            <button type="button" class="discogs-btn subtle"
+                hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
+                hx-vals='{"status": "unmatched", "querystring": "{{ querystring }}"}'
+                hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                title="Clear this match and everything cached about it, back to untouched">
+                Reset
+            </button>
+        {% endif %}
+    </td>
+</tr>
