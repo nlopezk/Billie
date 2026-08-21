@@ -231,8 +231,20 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
     # --- cached snapshot of what Discogs says ---
     # Cached, not fetched live, so the recordings matrix and review queue
     # render with zero network calls. Refreshed only when a human asks.
+    #
+    # matched_title/matched_artist are the RELEASE's own -- the whole
+    # disc, e.g. "When The Lights Go On Again / That's All" credited to
+    # BOTH sides' artists combined. matched_track_title/matched_track_
+    # artist are the ones that actually correspond to THIS Recording (one
+    # side): Discogs' own tracklist entry for that side, where
+    # identifiable (charts.discogs._find_track). A single credited to two
+    # different acts, one per side, is exactly why this distinction
+    # matters -- the release-level artist can include a name that never
+    # appears on this side at all.
     matched_title = models.CharField(max_length=300, blank=True)
     matched_artist = models.CharField(max_length=300, blank=True)
+    matched_track_title = models.CharField(max_length=300, blank=True)
+    matched_track_artist = models.CharField(max_length=300, blank=True)
     matched_label = models.CharField(max_length=200, blank=True)
     matched_catalog_number = models.CharField(max_length=100, blank=True)
     matched_year = models.PositiveSmallIntegerField(null=True, blank=True)

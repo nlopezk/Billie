@@ -51,6 +51,16 @@ you're part-way through reviewing) stays exactly where it was.
                 {% if match.matched_label or match.matched_catalog_number %}
                     <span class="catalog-hint">({{ match.matched_label }} {{ match.matched_catalog_number }}{% if match.matched_year %}, {{ match.matched_year }}{% endif %}{% if match.matched_country %}, {{ match.matched_country }}{% endif %})</span>
                 {% endif %}
+                {% comment %}
+                The line above is the RELEASE's own title/artist -- the
+                whole disc, both sides combined (Discogs credits a single
+                to every act that appears on EITHER side). These two are
+                what actually apply to THIS Recording specifically (one
+                side) -- an act credited on the release as a whole can
+                still be entirely absent from this particular side.
+                {% endcomment %}
+                {% if match.matched_track_artist %}<div class="credit-line"><span class="credit-label">Artist</span> {{ match.matched_track_artist }}</div>{% endif %}
+                {% if match.matched_track_title %}<div class="credit-line"><span class="credit-label">Song</span> {{ match.matched_track_title }}</div>{% endif %}
                 {% if match.songwriters %}<div class="credit-line"><span class="credit-label">Written by</span> {{ match.songwriters }}</div>{% endif %}
                 {% if match.producers %}<div class="credit-line"><span class="credit-label">Produced by</span> {{ match.producers }}</div>{% endif %}
                 {% if match.genres %}<div class="credit-line"><span class="credit-label">Genre</span> {{ match.genres|join:", " }}{% if match.styles %} &middot; {{ match.styles|join:", " }}{% endif %}</div>{% endif %}

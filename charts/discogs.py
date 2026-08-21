@@ -324,6 +324,31 @@ def _find_track(release, recording):
     return None
 
 
+def _track_artist_names(track, release):
+    """
+    Who's actually credited on ONE track -- not the release's combined
+    credit. Discogs only attaches its own `artists` list to a track when
+    that track's artist differs from the release as a whole (exactly the
+    case a 2-sided single with a different act on each side needs); when
+    a track has none, it's credited the same as the release, so that's
+    the fallback.
+
+    This is the whole reason a release-level "Artist" isn't reliable
+    enough on its own: a release credited to "Lucky Millinder And His
+    Orchestra, Sister Rosetta Tharpe" (Discogs' combined credit for BOTH
+    sides of one single) does NOT mean Tharpe is on the side we actually
+    have -- she might only be on the OTHER side.
+    """
+    names = [a.get("name", "") for a in ((track or {}).get("artists") or [])]
+    if not names:
+        names = [a.get("name", "") for a in (release.get("artists") or [])]
+    # Same "(2)"/"(3)" disambiguator stripping as credit names, and
+    # de-duplicated while preserving order (a name can legitimately
+    # appear twice in Discogs' own list).
+    names = [re.sub(r"\s*\(\d+\)$", "", n).strip() for n in names if n]
+    return ", ".join(dict.fromkeys(names))
+
+
 def fetch_release_detail(release_id, recording=None):
     """
     Full detail for one release -- the expensive call, made once per
@@ -331,9 +356,13 @@ def fetch_release_detail(release_id, recording=None):
     (which would be thousands of calls for data mostly thrown away).
 
     Returns a dict of the fields DiscogsMatch caches. When `recording` is
-    given, songwriter/producer credits are taken from that recording's
-    own track within the release where identifiable, falling back to
-    release-level credits.
+    given, the songwriter/producer credits AND the track-level title/
+    artist are all taken from that recording's own track within the
+    release where identifiable (see _find_track / _track_artist_names),
+    falling back to release-level data when a track can't be pinned down.
+    matched_title/matched_artist stay the RELEASE's own (the whole disc,
+    both sides) -- matched_track_title/matched_track_artist are the ones
+    that actually correspond to this one Recording.
     """
     release = _request(f"/releases/{release_id}")
 
@@ -343,11 +372,15 @@ def fetch_release_detail(release_id, recording=None):
 
     songwriters = []
     producers = []
+    track_title = ""
+    track_artist = ""
     if recording is not None:
         track = _find_track(release, recording)
         if track:
             songwriters = _collect_credits(track.get("extraartists"), SONGWRITER_ROLES)
             producers = _collect_credits(track.get("extraartists"), PRODUCER_ROLES)
+            track_title = (track.get("title") or "")[:300]
+            track_artist = _track_artist_names(track, release)[:300]
     # Release-level credits, used when there's no per-track credit (very
     # common for 78rpm-era singles, where Discogs often only credits the
     # release as a whole).
@@ -367,6 +400,8 @@ def fetch_release_detail(release_id, recording=None):
         "discogs_master_id": release.get("master_id") or None,
         "matched_title": (release.get("title") or "")[:300],
         "matched_artist": ", ".join(a.get("name", "") for a in artists)[:300],
+        "matched_track_title": track_title,
+        "matched_track_artist": track_artist,
         "matched_label": (labels[0].get("name", "") if labels else "")[:200],
         "matched_catalog_number": (labels[0].get("catno", "") if labels else "")[:100],
         "matched_year": year,

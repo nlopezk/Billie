@@ -1245,6 +1245,7 @@ def discogs_manual(request, recording_id):
         # DIFFERENT release, and leaving it would show misleading data
         # next to the new ID until the detail fetch below runs (or fails).
         match.matched_title = match.matched_artist = match.matched_label = ""
+        match.matched_track_title = match.matched_track_artist = ""
         match.matched_catalog_number = match.matched_country = match.matched_format = ""
         match.matched_year = None
         match.raw_data = None
@@ -1271,6 +1272,7 @@ def discogs_set_status(request, recording_id):
                 match.discogs_release_id = match.discogs_master_id = None
                 match.confidence = ""
                 match.matched_title = match.matched_artist = match.matched_label = ""
+                match.matched_track_title = match.matched_track_artist = ""
                 match.matched_catalog_number = match.matched_country = match.matched_format = ""
                 match.matched_year = None
                 match.songwriters = match.producers = ""

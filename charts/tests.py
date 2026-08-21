@@ -364,6 +364,51 @@ class DiscogsDetailTests(TestCase):
         # Irving Berlin credit for "White Christmas".
         self.assertEqual(detail["songwriters"], "Billy Hayes, Jay W. Johnson")
         self.assertNotIn("Irving Berlin", detail["songwriters"])
+        # And the track-level title is the SIDE's own, not the release's
+        # combined "A / B" title.
+        self.assertEqual(detail["matched_track_title"], "Blue Christmas")
+        self.assertNotEqual(detail["matched_track_title"], detail["matched_title"])
+
+    def test_track_artist_differs_from_release_artist_when_discogs_says_so(self):
+        # The exact scenario this whole distinction exists for: a single
+        # with a DIFFERENT act on each side. Discogs' release-level
+        # credit is the union of both; only the track-level `artists`
+        # (when present) says who's ACTUALLY on this one side.
+        release = self._release(
+            title="When The Lights Go On Again / That's All",
+            artists=[{"name": "Lucky Millinder And His Orchestra"}, {"name": "Sister Rosetta Tharpe"}],
+            tracklist=[
+                {"position": "A", "title": "When The Lights Go On Again (All Over The World)",
+                 "artists": [{"name": "Lucky Millinder And His Orchestra"}],
+                 "extraartists": [{"name": "Bennie Benjamin", "role": "Written-By"},
+                                  {"name": "Eddie Seiler", "role": "Written-By"},
+                                  {"name": "Sol Marcus", "role": "Written-By"}]},
+                {"position": "B", "title": "That's All",
+                 "artists": [{"name": "Sister Rosetta Tharpe"}]},
+            ],
+        )
+        recording = Recording.objects.create(
+            label=self.label, catalog_number="18496", side="A",
+            song=Song.objects.create(title="When The Lights Go On Again"), credit_text="Lucky Millinder And His Orchestra",
+        )
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            detail = discogs_api.fetch_release_detail(100, recording)
+
+        # Release-level artist includes Tharpe (she's on side B); the
+        # TRACK-level artist for this specific side must not.
+        self.assertIn("Sister Rosetta Tharpe", detail["matched_artist"])
+        self.assertEqual(detail["matched_track_artist"], "Lucky Millinder And His Orchestra")
+        self.assertNotIn("Sister Rosetta Tharpe", detail["matched_track_artist"])
+        self.assertEqual(detail["matched_track_title"], "When The Lights Go On Again (All Over The World)")
+
+    def test_track_artist_falls_back_to_release_artist_when_track_has_none(self):
+        # Most tracks DON'T carry their own `artists` -- only Discogs
+        # entries where a track's artist genuinely differs from the
+        # release do. No override present should mean "same as release".
+        release = self._release()  # tracks have no "artists" key at all
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            detail = discogs_api.fetch_release_detail(100, self.recording)
+        self.assertEqual(detail["matched_track_artist"], detail["matched_artist"])
 
     def test_falls_back_to_release_level_credits_when_track_has_none(self):
         release = self._release(tracklist=[{"position": "B", "title": "Blue Christmas"}])

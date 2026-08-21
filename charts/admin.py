@@ -153,6 +153,7 @@ class DiscogsMatchAdmin(admin.ModelAdmin):
             status=DiscogsMatch.UNMATCHED, confidence="",
             discogs_release_id=None, discogs_master_id=None,
             matched_title="", matched_artist="", matched_label="",
+            matched_track_title="", matched_track_artist="",
             matched_catalog_number="", matched_country="", matched_format="",
             matched_year=None, songwriters="", producers="",
             genres=[], styles=[], raw_data=None,
