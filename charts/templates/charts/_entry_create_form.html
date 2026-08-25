@@ -39,6 +39,18 @@ closing this and reopening it (or searching again) both still work.
         <input type="text" name="new_catalog_{{ row }}" placeholder="Catalog #" required>
         <input type="text" name="new_side_{{ row }}" placeholder="Side" maxlength="4" title="A, B, or AB for a song listed as spanning both sides (e.g. &quot;Parts I and II&quot;)" style="width: 3.5rem; flex: none;">
     </div>
+    {% comment %}
+    Optional Discogs link, typed by hand. Explicitly a TYPED value, never
+    a live lookup: the entry form makes zero network calls, so a chart
+    week can always be entered with the network unplugged (CLAUDE.md
+    non-negotiable #2, which names this exact field as the acceptable
+    form of it). The reference is just recorded here; the /discogs/
+    section fetches the songwriters and per-track detail for it later.
+    {% endcomment %}
+    <div class="inline-create-row">
+        <input type="text" name="new_discogs_{{ row }}" placeholder="Discogs release URL or ID (optional)"
+            title="If you already know this record's Discogs release, paste its URL or ID and it'll be linked. Nothing is looked up now -- the entry form never touches the network -- so its songwriter credits get fetched later from the Discogs page.">
+    </div>
     <button type="button" class="create-submit-btn"
         hx-post="{% url 'charts:entry_create' chart.id %}"
         hx-include="closest .inline-create"

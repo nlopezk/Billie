@@ -264,6 +264,15 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .resolved-preview.empty .not-resolved { color: var(--muted); font-style: italic; }
         .resolved-preview .resolved-check { color: var(--up); font-weight: 700; font-size: 1.15em; margin-right: 0.15rem; }
         .resolved-preview .catalog-hint { color: var(--muted); font-size: 0.85em; }
+        /* A hand-typed Discogs link on a freshly created recording --
+           confirmation that it took, and a way straight to the release. */
+        .discogs-linked-tag {
+            display: inline-block; font-size: 0.75rem; text-decoration: none;
+            color: var(--up); border: 1px solid var(--up); border-radius: 3px;
+            padding: 0.05rem 0.3rem; margin-left: 0.3rem; vertical-align: middle;
+        }
+        .discogs-linked-tag:hover { background: var(--up); color: white; }
+        .discogs-inline-note { display: block; font-size: 0.75rem; color: var(--new); margin-top: 0.2rem; }
         .resolved-preview.ambiguous .not-resolved { color: var(--new); font-style: normal; font-weight: 600; }
         .pick-list, .search-results { list-style: none; margin: 0.3rem 0; padding: 0; }
         .pick-list li, .search-results li { margin-bottom: 0.2rem; }

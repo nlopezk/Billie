@@ -891,6 +891,42 @@ def entry_create(request, chart_id):
         if created:
             RecordingCredit.objects.create(recording=recording, artist=artist, credit_order=1)
 
+    # --- optional hand-typed Discogs link ---------------------------------
+    # NOT looked up here, deliberately. The entry form makes zero network
+    # calls so a chart week can always be entered offline (CLAUDE.md
+    # non-negotiable #2, which names a manually typed Discogs ID as the
+    # acceptable form of this and a live lookup as the forbidden one).
+    # The reference is recorded with status=MANUAL and needs_detail left
+    # True; /discogs/ enriches it later, exactly like any other manual
+    # entry whose detail fetch hasn't run yet.
+    discogs_note = None
+    discogs_ref = request.POST.get(f"new_discogs_{row}", "").strip()
+    if discogs_ref:
+        release_id, master_id, parse_error = _parse_discogs_reference(discogs_ref)
+        if parse_error:
+            # Never block the recording over a bad optional field -- the
+            # chart data is what matters, the link can be fixed later.
+            discogs_note = f"{parse_error} The recording was created without a Discogs link."
+        else:
+            match, _ = DiscogsMatch.objects.get_or_create(recording=recording)
+            if match.is_linked and match.reference_id != (release_id or master_id):
+                # get_or_create above may have REUSED an existing
+                # recording that someone already linked. Never silently
+                # replace a link that was already decided -- say so and
+                # leave it, same "don't overwrite a human's call" rule
+                # as everywhere else in this project.
+                discogs_note = (
+                    f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
+                    f"left as-is -- change it from the Discogs page if that's wrong."
+                )
+            else:
+                match.discogs_release_id = release_id
+                match.discogs_master_id = master_id
+                match.status = DiscogsMatch.MANUAL
+                match.confidence = ""
+                match.linked_at = timezone.now()
+                match.save()
+
     weeks_hint = peak_hint = None
     if week_str:
         try:
@@ -901,7 +937,7 @@ def entry_create(request, chart_id):
 
     return render(request, "charts/_entry_resolved.html", {
         "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "include_wks_hint_oob": True,
+        "include_wks_hint_oob": True, "discogs_note": discogs_note,
     })
 
 

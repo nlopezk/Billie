@@ -38,6 +38,19 @@ search pick, never opening the create box at all).
         <span class="resolved-check">&check;</span>
         <strong>{{ recording.song }}</strong> &mdash; {{ recording.credit_text }}
         <span class="catalog-hint">({{ recording.catalog_display }})</span>
+        {% comment %}
+        Confirmation that a hand-typed Discogs link took (or a plain-
+        language reason it didn't). Reads recording.discogs, the
+        one-to-one DiscogsMatch -- absent for the overwhelming majority
+        of rows, which is why it's wrapped rather than assumed.
+        {% endcomment %}
+        {% if recording.discogs.is_linked %}
+            <a class="discogs-linked-tag" href="{{ recording.discogs.discogs_url }}" target="_blank" rel="noopener"
+               title="Linked to Discogs {{ recording.discogs.reference_type }} {{ recording.discogs.reference_id }}. Songwriter credits get fetched later from the Discogs page -- the entry form never goes online.">
+                Discogs {{ recording.discogs.reference_type|slice:":1" }}{{ recording.discogs.reference_id }} &nearr;
+            </a>
+        {% endif %}
+        {% if discogs_note %}<span class="discogs-inline-note">{{ discogs_note }}</span>{% endif %}
     {% else %}
         <span class="not-resolved">{% if error %}{{ error }}{% else %}not resolved yet{% endif %}</span>
     {% endif %}

@@ -200,6 +200,16 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   - `python manage.py discogs_match` does the same searching in bulk from a terminal
     (where a long-running process is normal); the web section is for interactive review
     and small batches. Neither ever confirms anything.
+  - **The entry form can record a Discogs link, typed by hand** (added 2026-08-21).
+    The inline "create new recording" sub-form has an optional Discogs release URL/ID
+    field. It is stored, never looked up — the entry form still makes **zero** network
+    calls, so a week can always be entered offline. This is exactly the shape
+    non-negotiable #2 names as acceptable ("a manually typed value, never a live lookup
+    that blocks saving a week"). The link lands as `status=MANUAL` with
+    `needs_detail=True`; `/discogs/` enriches it later. That's the one remaining
+    legitimate source of un-enriched rows, and it's unavoidable — fetching there would
+    break the offline guarantee. A bad/unparseable value never blocks the recording,
+    and an existing link on a reused recording is never silently overwritten.
   - **Token setup:** a Discogs personal access token from
     https://www.discogs.com/settings/developers, in a git-ignored `.env` file at the
     project root as `DISCOGS_TOKEN=...` (or the same-named env var). The `/discogs/`

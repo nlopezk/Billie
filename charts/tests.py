@@ -220,6 +220,85 @@ class EntryCreateDuplicateCheckTests(TestCase):
 # review workflow's state transitions -- not Discogs' behaviour.
 
 
+class EntryFormDiscogsLinkTests(TestCase):
+    """
+    The optional hand-typed Discogs field on the entry form's inline
+    "create new recording" sub-form.
+
+    The load-bearing property here is that entering a chart week NEVER
+    touches the network (CLAUDE.md non-negotiable #2), so every test
+    below patches _request to explode if called.
+    """
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+
+    def _create(self, discogs_ref="", **overrides):
+        data = {
+            "row": "0", "week": "1949-01-01", "confirm_create": "1",
+            "new_song_0": "A Brand New Song", "new_artist_0": "A New Artist",
+            "new_credit_text_0": "", "new_label_0": "Decca",
+            "new_catalog_0": "12345", "new_side_0": "A",
+            "new_discogs_0": discogs_ref,
+        }
+        data.update(overrides)
+        # side_effect, not return_value: any network call at all is a
+        # failure of the offline guarantee, not just a wrong one.
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("entry form must never call the API")):
+            return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), data)
+
+    def test_typed_release_url_links_the_new_recording(self):
+        self._create(discogs_ref="https://www.discogs.com/release/98765")
+        recording = Recording.objects.get(catalog_number="12345")
+        match = DiscogsMatch.objects.get(recording=recording)
+        self.assertEqual(match.discogs_release_id, 98765)
+        self.assertEqual(match.status, DiscogsMatch.MANUAL)
+        self.assertIsNotNone(match.linked_at)
+        # Detail deliberately NOT fetched -- that needs the network.
+        self.assertTrue(match.needs_detail)
+
+    def test_bare_id_and_master_url_both_work(self):
+        self._create(discogs_ref="4242")
+        self.assertEqual(DiscogsMatch.objects.get(recording__catalog_number="12345").discogs_release_id, 4242)
+
+        self._create(discogs_ref="https://www.discogs.com/master/777", new_catalog_0="99999")
+        other = DiscogsMatch.objects.get(recording__catalog_number="99999")
+        self.assertEqual(other.discogs_master_id, 777)
+        self.assertIsNone(other.discogs_release_id)
+
+    def test_leaving_it_blank_creates_no_match_row(self):
+        self._create(discogs_ref="")
+        recording = Recording.objects.get(catalog_number="12345")
+        self.assertFalse(DiscogsMatch.objects.filter(recording=recording).exists())
+
+    def test_unparseable_reference_still_creates_the_recording(self):
+        # The chart data is what matters; a bad optional field must never
+        # block it.
+        response = self._create(discogs_ref="not a url")
+        recording = Recording.objects.get(catalog_number="12345")
+        self.assertFalse(DiscogsMatch.objects.filter(recording=recording).exists())
+        self.assertContains(response, "without a Discogs link")
+
+    def test_does_not_overwrite_an_existing_link(self):
+        # get_or_create can hand back a recording someone already linked;
+        # replacing that silently would overwrite a human's decision.
+        existing = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="12345", side="A",
+            song=Song.objects.create(title="A Brand New Song"), credit_text="A New Artist",
+        )
+        DiscogsMatch.objects.create(
+            recording=existing, status=DiscogsMatch.CONFIRMED,
+            discogs_release_id=111, linked_at=timezone.now(),
+        )
+
+        response = self._create(discogs_ref="999")
+
+        existing.discogs.refresh_from_db()
+        self.assertEqual(existing.discogs.discogs_release_id, 111)   # untouched
+        self.assertEqual(existing.discogs.status, DiscogsMatch.CONFIRMED)
+        self.assertContains(response, "Already linked to Discogs")
+
+
 class DiscogsAgreementTests(TestCase):
     """
     catalog_numbers_agree / labels_agree / loose_text_match -- the
