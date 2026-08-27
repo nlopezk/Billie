@@ -111,9 +111,54 @@ docs/
   schema.sql              regenerated after every migration -- @-included in CLAUDE.md
   audit/                  data-quality audit trail, all findings resolved or documented
 Bb Charts fixed.xlsx      original data source, hand-transcribed, archival
-billboard.db              the actual database (gitignored, regenerate via import_workbook.py)
+billboard.db              the actual database -- TRACKED IN GIT, see "Backups" below
 CLAUDE.md                 project rules, design rationale, current status
 ```
+
+## Backups
+
+**`billboard.db` is committed to git and pushed to the private GitHub repo. That is the
+backup.** There is no other copy and no automatic process — nothing backs it up on a
+timer, on save, or when you close the server.
+
+It was excluded from git early on, on the theory that `import_workbook.py` could always
+regenerate it from `Bb Charts fixed.xlsx`. That stopped being true the moment anything was
+entered or edited after the import: weeks typed into the entry form, admin corrections,
+artist aliases, every Discogs link. None of that is in the workbook, and `import_workbook`
+refuses to run against a non-empty table anyway. **Re-running the import would not recover
+a single one of those.** So the database is now tracked, and committing it is the only
+thing standing between you and losing that work.
+
+### After an entry session, do this
+
+```bash
+git add billboard.db
+git commit -m "Chart entry: <what you did>"
+git push
+```
+
+Committing after each real session is the point — code commits happen on their own
+schedule and will not reliably carry your data with them. If you enter ten weeks and
+don't commit, ten weeks is what's at risk.
+
+### Restoring
+
+```bash
+git log --oneline -- billboard.db        # every version, newest first
+git show <commit>:billboard.db > recovered.db   # inspect one without touching the live file
+git checkout <commit> -- billboard.db    # roll the live database back to that version
+```
+
+The middle one is the safe move: recover to a separate file, open it, confirm it's the
+version you want, and only then replace the live one.
+
+### A note on repo size
+
+SQLite is a single binary file, so git stores a **complete copy on every commit** — it
+can't diff inside it the way it does with text. The file is ~11 MB and grows as Discogs
+detail (the cached raw JSON per match) accumulates, so each commit that touches it adds
+roughly that much to repo history permanently. Fine at this scale, and worth knowing
+before committing it hundreds of times in a day. Commit per session, not per week entered.
 
 ## Common commands
 
