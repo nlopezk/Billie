@@ -132,6 +132,44 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   (the rest of the app's test coverage claimed by the "Next step" bullet below does not
   currently exist in that file — worth checking next session, since it may have been lost
   rather than never written).
+- **Credit splitting, built 2026-08-21** — `/credits/` (`charts/credits.py`,
+  `views.credit_*`, `credit_queue.html`). Turns a combined-credit Artist row
+  ("Bing Crosby - Andrews Sisters", imported verbatim from the workbook's single
+  free-text artist field) into what it actually is: one recording credited to TWO
+  artists via `RecordingCredit`. That join table had existed since the schema was
+  designed and had **never once been used** — 0 of 1,229 recordings had more than one
+  credit before this.
+  - **`" - "` is the collaboration delimiter**, and that distinction is load-bearing:
+    31 artist rows use it and it's what the old workbook joined two acts with.
+    `" and "` / `" & "` (12 rows) are usually part of ONE act's name ("Homer & Jethro",
+    "Lester Young and His Kansas City Seven"), so they're surfaced for review but
+    ranked below and never presumed to be a split — though "Ink Spots and Ella
+    Fitzgerald" is a genuine collaboration hiding in that group.
+  - **The proposed part names are editable inputs, not fixed text.** A naive split of
+    "James - Sinatra" yields "James" and "Sinatra", neither of which is a canonical name
+    you'd want on file; you correct them to "Harry James"/"Frank Sinatra" before
+    anything is written. Green border = resolves to an artist already on file, amber =
+    will be created.
+  - **`Recording.credit_text` is never touched by a split** (non-negotiable #4) — the
+    printed billing stays exactly as transcribed; only the structured credit changes.
+  - The combined Artist row is **deleted** once nothing credits it (owner's decision —
+    `credit_text` preserves the printed billing and the entry-form search covers it, so
+    nothing is lost, and the autocomplete stops offering an act that isn't real).
+  - `Artist.confirmed_single_act` (migration `0007`) is how "this is one act, not two"
+    is remembered, so the queue stops asking. A genuine collaboration never needs it —
+    splitting deletes the combined row, which removes it from the queue that way.
+  - **`docs/audit/combined_credit_artists.txt` is the older hand-written checklist for
+    this same work** — superseded by the queue, kept as the record of the original
+    import-time decision not to auto-split.
+- **An artist-name typo was fixed while building the above:** "Ella Fritzgerald" was on
+  file as a canonical `Artist` with 5 credits, and "Ella Fitzgerald" didn't exist
+  standalone at all — which had spawned THREE separate combined rows for the same
+  Ella+Louis Jordan pairing. Proven a transcription typo rather than a printing
+  variation because Decca 18587's A and B sides (one physical disc) were transcribed
+  with different spellings. `canonical_name` corrected to "Ella Fitzgerald" and
+  "Ella Fritzgerald" kept as an `ArtistAlias` — which is exactly what that table is for,
+  and means the typo'd combined rows still resolve to the right artist when split.
+  Every `credit_text` left exactly as transcribed.
 - **Discogs matching, built 2026-08-21** — `/discogs/` (`views.discogs_*`,
   `charts/discogs.py`, `charts/management/commands/discogs_match.py`,
   `discogs_queue.html` + `_discogs_row.html`). Links each `Recording` to its Discogs

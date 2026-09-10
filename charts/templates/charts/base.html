@@ -214,6 +214,25 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .spinner { color: var(--muted); font-size: 0.8rem; opacity: 0; transition: opacity 0.2s; }
         .htmx-request.spinner, .htmx-request .spinner { opacity: 1; }
 
+        /* Credit splitting (credit_queue.html) */
+        .credit-card { border: 1px solid var(--border); border-radius: 4px; padding: 0.7rem 0.9rem; margin-bottom: 0.8rem; }
+        .credit-card.strong { border-left: 3px solid var(--up); }
+        .credit-card-head { margin-bottom: 0.4rem; }
+        .credit-recordings { list-style: none; margin: 0 0 0.6rem; padding: 0; font-size: 0.85rem; }
+        .credit-recordings li { margin-bottom: 0.15rem; }
+        .printed-as { color: var(--muted); font-style: italic; }
+        .credit-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+        .credit-split-form { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+        .credit-split-label { font-size: 0.8rem; color: var(--muted); }
+        .credit-split-form input { min-width: 12rem; font-size: 0.9rem; }
+        /* Green = resolves to an artist already on file; amber = splitting
+           will create it. Visible before you commit, not after. */
+        .credit-split-form input.resolves { border-color: var(--up); }
+        .credit-split-form input.will-create { border-color: var(--new); }
+        .credit-hint { font-size: 0.75rem; margin: 0.4rem 0 0; }
+        .credit-hint .ok { color: var(--up); margin-right: 0.7rem; }
+        .credit-hint .new { color: var(--new); margin-right: 0.7rem; }
+
         .chart-list-table td { vertical-align: top; }
         .chart-list-table .date-range-cell { white-space: nowrap; }
         .chart-list-table .enter-week-link { font-size: 0.85rem; }

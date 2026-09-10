@@ -1,0 +1,92 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/credit_queue.html
+
+Turning combined-credit Artist rows ("Bing Crosby - Andrews Sisters")
+into what they really are: one recording credited to two artists.
+
+The part names are EDITABLE inputs, not fixed text, and that's the
+point: a naive split of "James - Sinatra" yields "James" and "Sinatra",
+neither of which is a canonical name you'd want on file. You fix them to
+"Harry James" and "Frank Sinatra" before anything is written.
+
+Plain form POSTs, no HTMX -- each action changes several tables at once
+(re-crediting every affected recording, possibly creating artists,
+deleting the combined row), so re-rendering the page is both simpler and
+a more honest reflection of how much moved.
+{% endcomment %}
+{% block title %}Credit splitting{% endblock %}
+{% block extra_head %}<style>body { max-width: 1100px; }</style>{% endblock %}
+{% block content %}
+    <h1>Credit splitting</h1>
+    <p class="subtitle">
+        Artists whose name looks like two acts joined &middot;
+        <a href="{% url 'charts:chart_list' %}">&larr; back to charts</a>
+    </p>
+
+    {% for message in messages %}<div class="discogs-message">{{ message }}</div>{% endfor %}
+
+    <p class="matrix-summary">
+        <strong>{{ pending_count }}</strong> awaiting a decision
+        {% if confirmed_single_count %}&middot; {{ confirmed_single_count }} already confirmed as single acts{% endif %}
+    </p>
+
+    {% if not proposals %}
+        <p>Nothing left to review &mdash; every combined-looking credit has been split or confirmed as a single act.</p>
+    {% endif %}
+
+    <datalist id="known-artist-names">
+        {% for a in known_artists %}<option value="{{ a.canonical_name }}">{% endfor %}
+    </datalist>
+
+    {% for p in proposals %}
+    <div class="credit-card {% if p.is_strong %}strong{% endif %}">
+        <div class="credit-card-head">
+            <strong>{{ p.artist.canonical_name }}</strong>
+            {% if p.is_strong %}
+                <span class="confidence-badge confidence-exact" title="Joined with ' - ', which is the delimiter the original workbook used for collaborations">likely collaboration</span>
+            {% else %}
+                <span class="confidence-badge confidence-weak" title="Joined with 'and'/'&amp;', which far more often appears inside a single act's name">probably one act</span>
+            {% endif %}
+            <span class="muted">&middot; {{ p.recordings|length }} recording{{ p.recordings|length|pluralize }}</span>
+        </div>
+
+        <ul class="credit-recordings">
+            {% for r in p.recordings %}
+            <li>
+                {{ r.song.title }} <span class="catalog-hint">({{ r.catalog_display }})</span>
+                {% comment %} credit_text is the AS-PRINTED billing and is never altered by a split. {% endcomment %}
+                <span class="printed-as">printed as &ldquo;{{ r.credit_text }}&rdquo;</span>
+            </li>
+            {% endfor %}
+        </ul>
+
+        <div class="credit-actions">
+            <form method="post" action="{% url 'charts:credit_split' p.artist.id %}" class="credit-split-form">
+                {% csrf_token %}
+                <span class="credit-split-label">Split into:</span>
+                {% for part in p.parts %}
+                    <input type="text" name="part" value="{{ part.text }}" list="known-artist-names"
+                           class="{% if part.resolved %}resolves{% else %}will-create{% endif %}"
+                           title="{% if part.resolved %}Already on file as artist #{{ part.resolved.id }}{% else %}Not on file -- splitting will create this artist{% endif %}">
+                {% endfor %}
+                <button type="submit" class="discogs-btn primary">Split</button>
+            </form>
+
+            <form method="post" action="{% url 'charts:credit_keep' p.artist.id %}">
+                {% csrf_token %}
+                <button type="submit" class="discogs-btn subtle"
+                        title="This is one act's name, not two -- stop offering it here.">
+                    It's one act
+                </button>
+            </form>
+        </div>
+        <p class="credit-hint">
+            {% for part in p.parts %}
+                {% if part.resolved %}<span class="ok">&check; {{ part.text }} on file</span>
+                {% else %}<span class="new">+ {{ part.text }} will be created</span>{% endif %}
+            {% endfor %}
+        </p>
+    </div>
+    {% endfor %}
+{% endblock %}

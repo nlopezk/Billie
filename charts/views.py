@@ -25,6 +25,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
+from . import credits as credits_lib
 from . import discogs as discogs_api
 from .forms import ChartEntryRowForm
 from .models import (
@@ -958,6 +959,77 @@ def entry_add_row(request, chart_id):
     return render(request, "charts/_entry_add_row_response.html", {
         "chart": chart, "row": row, "week_date_str": week_str, "new_total": next_index + 1,
     })
+
+
+# =============================================================================
+# Credit splitting -- turning combined-credit artists into real collaborations
+# =============================================================================
+#
+# "Bing Crosby - Andrews Sisters" is on file as a single Artist row,
+# because that's how the original workbook stored it. It's really one
+# recording credited to two artists, which RecordingCredit has always
+# been able to express and -- before this screen -- never did (0 of 1,229
+# recordings had more than one credit).
+#
+# Read charts/credits.py for the split logic and why it never decides
+# anything on its own. This is just the review surface: propose, let a
+# human edit the names, apply on confirmation.
+
+
+def credit_queue(request):
+    artists = credits_lib.pending_artists()
+    proposals = [credits_lib.proposed_split(a) for a in artists]
+    return render(request, "charts/credit_queue.html", {
+        "proposals": proposals,
+        "pending_count": len(proposals),
+        "confirmed_single_count": Artist.objects.filter(confirmed_single_act=True).count(),
+        # Every artist a name could be split into, for the datalist on
+        # each part input -- typing suggests an existing act rather than
+        # accidentally creating a near-duplicate of one already on file.
+        "known_artists": Artist.objects.order_by("canonical_name"),
+        "messages": request.session.pop("credit_messages", []),
+    })
+
+
+def credit_split(request, artist_id):
+    # Applies a split. The part names come from editable inputs, NOT
+    # from re-parsing the name here: a naive split of "James - Sinatra"
+    # gives "James" and "Sinatra", and the whole point of showing them
+    # in text boxes is that you can correct that to "Harry James" and
+    # "Frank Sinatra" before anything is written.
+    artist = get_object_or_404(Artist, pk=artist_id)
+    part_names = [n for n in request.POST.getlist("part") if n.strip()]
+    try:
+        recordings, created, deleted = credits_lib.apply_split(artist, part_names)
+    except ValueError as exc:
+        request.session["credit_messages"] = [f"Couldn't split \"{artist.canonical_name}\": {exc}"]
+        return redirect("charts:credit_queue")
+
+    message = (
+        f"Split \"{artist.canonical_name}\" across "
+        f"{len(recordings)} recording{'' if len(recordings) == 1 else 's'}."
+    )
+    if created:
+        message += " Created " + ", ".join(f'"{a.canonical_name}"' for a in created) + "."
+    if not deleted:
+        # Shouldn't happen, but say so rather than implying a clean
+        # finish -- something else still credits the combined row.
+        message += " The combined artist row was kept (something still credits it)."
+    request.session["credit_messages"] = [message]
+    return redirect("charts:credit_queue")
+
+
+def credit_keep(request, artist_id):
+    # "This is one act, not two" -- e.g. Homer & Jethro, or Lester Young
+    # And His Kansas City Seven. Nothing about the data changes; the row
+    # is just flagged so the queue stops asking.
+    artist = get_object_or_404(Artist, pk=artist_id)
+    artist.confirmed_single_act = True
+    artist.save(update_fields=["confirmed_single_act"])
+    request.session["credit_messages"] = [
+        f'Kept "{artist.canonical_name}" as a single act -- it will not be offered again.'
+    ]
+    return redirect("charts:credit_queue")
 
 
 # =============================================================================

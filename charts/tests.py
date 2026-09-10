@@ -13,8 +13,12 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from . import credits as credits_lib
 from . import discogs as discogs_api
-from .models import Chart, ChartEntry, DiscogsCandidate, DiscogsMatch, Label, Recording, Song
+from .models import (
+    Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
+    Label, Recording, RecordingCredit, Song,
+)
 
 
 class RecordingsMatrixTests(TestCase):
@@ -218,6 +222,139 @@ class EntryCreateDuplicateCheckTests(TestCase):
 # no internet. What's worth testing here is OUR logic -- the confidence
 # scoring, the two-tier search, the per-track credit extraction, and the
 # review workflow's state transitions -- not Discogs' behaviour.
+
+
+class CreditSplitTests(TestCase):
+    """
+    Splitting a combined-credit Artist into a real multi-artist credit.
+    This rewrites RecordingCredit rows and deletes an Artist row, so the
+    destructive edges matter more here than the happy path does.
+    """
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Decca")
+        self.combined = Artist.objects.create(canonical_name="Bing Crosby - Andrews Sisters")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="23277", side="A",
+            song=Song.objects.create(title="Pistol Packin Mama"),
+            credit_text="Bing Crosby - Andrews Sisters",
+        )
+        RecordingCredit.objects.create(recording=self.recording, artist=self.combined, credit_order=1)
+
+    def test_dash_is_a_strong_signal_and_and_is_not(self):
+        self.assertEqual(credits_lib.split_name("Bing Crosby - Andrews Sisters"),
+                         (["Bing Crosby", "Andrews Sisters"], True))
+        # " and "/"&" sit inside a single act's name far more often than
+        # between two acts, so they're surfaced but never presumed.
+        self.assertEqual(credits_lib.split_name("Homer & Jethro"), (["Homer", "Jethro"], False))
+        self.assertEqual(credits_lib.split_name("Eddy Arnold"), (["Eddy Arnold"], False))
+
+    def test_split_creates_both_credits_in_billing_order(self):
+        Artist.objects.create(canonical_name="Bing Crosby")
+        recordings, created, deleted = credits_lib.apply_split(
+            self.combined, ["Bing Crosby", "Andrews Sisters"])
+
+        credits = list(self.recording.credits.select_related("artist").order_by("credit_order"))
+        self.assertEqual([c.artist.canonical_name for c in credits],
+                         ["Bing Crosby", "Andrews Sisters"])
+        self.assertEqual([c.credit_order for c in credits], [1, 2])
+        self.assertEqual(len(recordings), 1)
+        self.assertTrue(deleted)
+        self.assertEqual([a.canonical_name for a in created], ["Andrews Sisters"])
+
+    def test_split_never_touches_credit_text(self):
+        # credit_text is the billing exactly as the magazine printed it
+        # (non-negotiable #4). Restructuring OUR credits must not rewrite
+        # what the page said.
+        credits_lib.apply_split(self.combined, ["Bing Crosby", "Andrews Sisters"])
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.credit_text, "Bing Crosby - Andrews Sisters")
+
+    def test_combined_row_is_deleted_once_nothing_credits_it(self):
+        credits_lib.apply_split(self.combined, ["Bing Crosby", "Andrews Sisters"])
+        self.assertFalse(Artist.objects.filter(canonical_name="Bing Crosby - Andrews Sisters").exists())
+
+    def test_edited_names_are_used_not_the_naive_parse(self):
+        # Precisely why the parts are editable inputs: splitting
+        # "James - Sinatra" literally would put "James" and "Sinatra" on
+        # file as canonical names, which is wrong.
+        combined = Artist.objects.create(canonical_name="James - Sinatra")
+        rec = Recording.objects.create(
+            label=self.label, catalog_number="35587", side="B",
+            song=Song.objects.create(title="Flash"), credit_text="James - Sinatra",
+        )
+        RecordingCredit.objects.create(recording=rec, artist=combined, credit_order=1)
+
+        credits_lib.apply_split(combined, ["Harry James", "Frank Sinatra"])
+
+        self.assertEqual(
+            [c.artist.canonical_name for c in rec.credits.order_by("credit_order")],
+            ["Harry James", "Frank Sinatra"])
+        self.assertFalse(Artist.objects.filter(canonical_name="James").exists())
+
+    def test_split_applies_to_every_recording_using_that_credit(self):
+        second = Recording.objects.create(
+            label=self.label, catalog_number="23277", side="B",
+            song=Song.objects.create(title="Victory Polka"),
+            credit_text="Bing Crosby - Andrews Sisters",
+        )
+        RecordingCredit.objects.create(recording=second, artist=self.combined, credit_order=1)
+
+        recordings, _, _ = credits_lib.apply_split(self.combined, ["Bing Crosby", "Andrews Sisters"])
+        self.assertEqual(len(recordings), 2)
+        self.assertEqual(second.credits.count(), 2)
+
+    def test_existing_artist_is_reused_case_insensitively(self):
+        existing = Artist.objects.create(canonical_name="Bing Crosby")
+        credits_lib.apply_split(self.combined, ["bing crosby", "Andrews Sisters"])
+        self.assertEqual(Artist.objects.filter(canonical_name__iexact="bing crosby").count(), 1)
+        self.assertTrue(self.recording.credits.filter(artist=existing).exists())
+
+    def test_an_alias_resolves_to_its_artist(self):
+        real = Artist.objects.create(canonical_name="Big Joe Turner")
+        ArtistAlias.objects.create(artist=real, alias_text="Joe Turner")
+        self.assertEqual(credits_lib.resolve_artist("Joe Turner"), real)
+
+    def test_refuses_a_split_that_is_not_two_artists(self):
+        with self.assertRaises(ValueError):
+            credits_lib.apply_split(self.combined, ["Only One Name"])
+        self.assertTrue(Artist.objects.filter(pk=self.combined.pk).exists())
+        self.assertEqual(self.recording.credits.count(), 1)
+
+    def test_refuses_when_both_names_are_the_same_artist(self):
+        Artist.objects.create(canonical_name="Bing Crosby")
+        with self.assertRaises(ValueError):
+            credits_lib.apply_split(self.combined, ["Bing Crosby", "bing crosby"])
+        self.assertTrue(Artist.objects.filter(pk=self.combined.pk).exists())
+
+    def test_keep_removes_it_from_the_queue_without_changing_data(self):
+        single = Artist.objects.create(canonical_name="Homer & Jethro")
+        rec = Recording.objects.create(
+            label=self.label, catalog_number="10352", side="A",
+            song=Song.objects.create(title="Some Song"), credit_text="Homer & Jethro",
+        )
+        RecordingCredit.objects.create(recording=rec, artist=single, credit_order=1)
+
+        self.assertIn(single, credits_lib.pending_artists())
+        self.client.post(reverse("charts:credit_keep", args=[single.id]))
+        single.refresh_from_db()
+        self.assertTrue(single.confirmed_single_act)
+        self.assertNotIn(single, credits_lib.pending_artists())
+        self.assertEqual(rec.credits.count(), 1)  # nothing about the data moved
+
+    def test_uncredited_combined_artist_is_not_offered(self):
+        # Looks combined, but nothing credits it -- there's no
+        # re-crediting work to do, so it isn't queue material.
+        Artist.objects.create(canonical_name="Nobody - Nowhere")
+        self.assertNotIn("Nobody - Nowhere",
+                         [a.canonical_name for a in credits_lib.pending_artists()])
+
+    def test_split_view_end_to_end(self):
+        response = self.client.post(
+            reverse("charts:credit_split", args=[self.combined.id]),
+            {"part": ["Bing Crosby", "Andrews Sisters"]}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.recording.credits.count(), 2)
 
 
 class EntryFormDiscogsLinkTests(TestCase):

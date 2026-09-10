@@ -32,6 +32,14 @@ class Artist(models.Model):
     # is the thing autocomplete resolves to and the thing aliases point at.
     canonical_name = models.CharField(max_length=200)
 
+    # Set when a human has looked at a name that LOOKS like two acts
+    # joined ("Homer & Jethro", "Lester Young and His Kansas City Seven")
+    # and confirmed it is in fact one act. Purely to stop the credit-
+    # splitting queue (charts/credits.py) offering it again -- a genuine
+    # collaboration never needs this, because splitting it deletes the
+    # combined row entirely and it leaves the queue that way.
+    confirmed_single_act = models.BooleanField(default=False)
+
     def __str__(self):
         return self.canonical_name
 

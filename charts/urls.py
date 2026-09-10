@@ -28,6 +28,11 @@ urlpatterns = [
     # with the patterns below, since "recordings" never matches <int:...>.
     path("recordings/", views.recordings_matrix, name="recordings_matrix"),
 
+    # --- credit splitting (combined-credit artists -> real collaborations) ---
+    path("credits/", views.credit_queue, name="credit_queue"),
+    path("credits/<int:artist_id>/split/", views.credit_split, name="credit_split"),
+    path("credits/<int:artist_id>/keep/", views.credit_keep, name="credit_keep"),
+
     # --- Discogs review section (the only network-touching part) ---
     # /discogs/                                -- the review queue
     path("discogs/", views.discogs_queue, name="discogs_queue"),
