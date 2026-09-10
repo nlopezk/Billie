@@ -73,6 +73,22 @@ a more honest reflection of how much moved.
                 <button type="submit" class="discogs-btn primary">Split</button>
             </form>
 
+            {% comment %}
+            The third case, and the one that's easy to miss: ONE act,
+            but billed with a backing band ("Julia Lee And Her Boy
+            Friends" is Julia Lee). The canonical name is the shorter
+            one; the printed billing is kept as an ArtistAlias, which is
+            precisely what that table is for.
+            {% endcomment %}
+            <form method="post" action="{% url 'charts:credit_canonical' p.artist.id %}" class="credit-split-form">
+                {% csrf_token %}
+                <span class="credit-split-label">or canonical is:</span>
+                <input type="text" name="canonical" value="{{ p.leader }}" list="known-artist-names"
+                       class="{% if p.leader_resolved %}resolves{% elif p.has_leader_guess %}will-create{% endif %}"
+                       title="Use when the printed credit is one act plus its band. The full printed name is kept as an alias.">
+                <button type="submit" class="discogs-btn">Use as canonical</button>
+            </form>
+
             <form method="post" action="{% url 'charts:credit_keep' p.artist.id %}">
                 {% csrf_token %}
                 <button type="submit" class="discogs-btn subtle"
@@ -89,4 +105,21 @@ a more honest reflection of how much moved.
         </p>
     </div>
     {% endfor %}
+
+    {% if confirmed_single %}
+    <details class="confirmed-single-list">
+        <summary>{{ confirmed_single_count }} confirmed as single acts &mdash; reopen if one was a misclick</summary>
+        <ul>
+            {% for a in confirmed_single %}
+            <li>
+                {{ a.canonical_name }}
+                <form method="post" action="{% url 'charts:credit_reopen' a.id %}" style="display:inline">
+                    {% csrf_token %}
+                    <button type="submit" class="discogs-btn subtle">reopen</button>
+                </form>
+            </li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% endif %}
 {% endblock %}

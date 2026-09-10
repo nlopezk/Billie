@@ -40,6 +40,30 @@ STRONG_DELIMITER = " - "
 SOFT_DELIMITERS = [" and ", " And ", " & ", " + ", " with ", " With "]
 
 
+# A leader fronting a backing band: "Julia Lee And Her Boy Friends",
+# "Lester Young's Quartet", "Cozy Cole's All Star Band". The canonical
+# act is the leader; the full string is how that record was BILLED. This
+# is a third case, distinct from both a collaboration (two acts) and a
+# single act whose name merely contains a joining word (Homer & Jethro):
+# here there IS a shorter canonical name, and the printed form belongs in
+# ArtistAlias -- which is exactly what that table is for ("every spelling
+# of this artist ever seen in print points here").
+LEADER_AND_BAND = re.compile(r"^(?P<leader>.+?)\s+(?:and|&|with)\s+(?:his|her|the)\s+\S.*$", re.IGNORECASE)
+LEADER_POSSESSIVE = re.compile(r"^(?P<leader>.+?)'s\s+\S.*$")
+
+
+def leader_guess(name):
+    """
+    The leader's name, if this looks like 'leader + backing band'.
+    A guess offered for editing, never applied on its own.
+    """
+    match = LEADER_AND_BAND.match(name) or LEADER_POSSESSIVE.match(name)
+    if not match:
+        return None
+    leader = match.group("leader").strip()
+    return leader if leader and leader.lower() != name.strip().lower() else None
+
+
 def split_name(name):
     """
     Break a canonical name into its apparent parts, plus how much to
@@ -81,10 +105,17 @@ def proposed_split(artist):
     each part's text and the existing Artist it resolves to (or None).
     """
     parts, is_strong = split_name(artist.canonical_name)
+    leader = leader_guess(artist.canonical_name)
     return {
         "artist": artist,
         "is_strong": is_strong,
         "parts": [{"text": p, "resolved": resolve_artist(p)} for p in parts],
+        # Pre-fills the "canonical artist is" box. Falls back to the full
+        # name so the box is never empty; submitting it unchanged is
+        # refused rather than silently doing nothing.
+        "leader": leader or artist.canonical_name,
+        "has_leader_guess": leader is not None,
+        "leader_resolved": resolve_artist(leader) if leader else None,
         "recordings": list(
             Recording.objects.filter(credits__artist=artist)
             .select_related("song", "label").distinct()
@@ -107,7 +138,10 @@ def pending_artists():
     rows = []
     for artist in candidates:
         parts, is_strong = split_name(artist.canonical_name)
-        if len(parts) > 1:
+        # Leader+band rows often carry NO delimiter at all ("Lester
+        # Young's Quartet"), so they'd never surface on the split check
+        # alone -- but they're just as much in need of a decision.
+        if len(parts) > 1 or leader_guess(artist.canonical_name):
             rows.append((not is_strong, -artist.credit_count, artist.canonical_name, artist))
     rows.sort(key=lambda r: r[:3])
     return [r[3] for r in rows]
@@ -144,6 +178,16 @@ def apply_split(combined_artist, part_names):
     if len(artists) < 2:
         raise ValueError("Those names all resolve to the same artist.")
 
+    # Artist deletion CASCADEs to ArtistAlias, and a split has no single
+    # right home for an alias of the combined name -- pointing "Bing
+    # Crosby - Andrews Sisters" at just Bing Crosby would be wrong.
+    # Refuse rather than pick one and lose the other silently.
+    if combined_artist.aliases.exists():
+        raise ValueError(
+            "this artist has aliases, which a split has no unambiguous home for -- "
+            "move or delete them in the admin first"
+        )
+
     recordings = list(Recording.objects.filter(credits__artist=combined_artist).distinct())
     for recording in recordings:
         # Drop the combined credit BEFORE adding the real ones, so the
@@ -168,3 +212,61 @@ def apply_split(combined_artist, part_names):
         combined_artist.delete()
         deleted = True
     return recordings, created, deleted
+
+
+@transaction.atomic
+def apply_canonical(combined_artist, canonical_name):
+    """
+    "This is one act, but its canonical name is shorter."
+
+    "Julia Lee And Her Boy Friends" is Julia Lee, billed with her band.
+    So: re-credit her recordings to a canonical "Julia Lee", keep the
+    full printed form as an ArtistAlias pointing at her, and drop the
+    long row. The alias is the whole point -- ArtistAlias exists to hold
+    "every spelling of this artist ever seen in print", and this is that
+    case exactly.
+
+    Distinct from a split (that's two acts) and from confirming a single
+    act (that's leaving the name alone). Returns
+    (recordings, canonical_artist, created).
+
+    Recording.credit_text is untouched, as ever: the page said
+    "Julia Lee And Her Boy Friends" and continues to.
+    """
+    canonical_name = (canonical_name or "").strip()
+    if not canonical_name:
+        raise ValueError("Give the canonical artist name.")
+    if canonical_name.lower() == combined_artist.canonical_name.strip().lower():
+        raise ValueError("that is the same name -- use \"it's one act\" instead")
+
+    canonical = resolve_artist(canonical_name)
+    created = canonical is None
+    if created:
+        canonical = Artist.objects.create(canonical_name=canonical_name)
+
+    recordings = list(Recording.objects.filter(credits__artist=combined_artist).distinct())
+    for recording in recordings:
+        credit = RecordingCredit.objects.filter(recording=recording, artist=combined_artist).first()
+        if credit is None:
+            continue
+        if RecordingCredit.objects.filter(recording=recording, artist=canonical).exists():
+            # Already credited to the canonical artist (unique_recording_artist
+            # would reject a second row) -- drop the duplicate instead.
+            credit.delete()
+        else:
+            credit.artist = canonical
+            credit.save(update_fields=["artist"])
+
+    # The billing this row represented, preserved as a searchable
+    # spelling rather than thrown away with the row.
+    ArtistAlias.objects.get_or_create(
+        alias_text=combined_artist.canonical_name, defaults={"artist": canonical}
+    )
+    # Any aliases the old row already carried move across too -- deleting
+    # it would otherwise CASCADE them away. Unambiguous here, unlike in a
+    # split, because there is exactly one destination artist.
+    combined_artist.aliases.exclude(alias_text=combined_artist.canonical_name).update(artist=canonical)
+
+    if not RecordingCredit.objects.filter(artist=combined_artist).exists():
+        combined_artist.delete()
+    return recordings, canonical, created

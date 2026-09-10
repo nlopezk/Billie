@@ -1019,6 +1019,10 @@ def credit_queue(request):
     return render(request, "charts/credit_queue.html", {
         "proposals": proposals,
         "pending_count": len(proposals),
+        # Listed, not just counted, so a decision made by misclick -- or
+        # before the "canonical is" option existed -- can be reopened
+        # without going through the admin.
+        "confirmed_single": Artist.objects.filter(confirmed_single_act=True).order_by("canonical_name"),
         "confirmed_single_count": Artist.objects.filter(confirmed_single_act=True).count(),
         # Every artist a name could be split into, for the datalist on
         # each part input -- typing suggests an existing act rather than
@@ -1056,6 +1060,32 @@ def credit_split(request, artist_id):
     return redirect("charts:credit_queue")
 
 
+def credit_canonical(request, artist_id):
+    # "One act, but its canonical name is shorter" -- Julia Lee And Her
+    # Boy Friends is Julia Lee. Re-credits to the shorter name and keeps
+    # the printed billing as an ArtistAlias. See credits.apply_canonical.
+    artist = get_object_or_404(Artist, pk=artist_id)
+    printed = artist.canonical_name
+    try:
+        recordings, canonical, created = credits_lib.apply_canonical(
+            artist, request.POST.get("canonical", ""))
+    except ValueError as exc:
+        request.session["credit_messages"] = [
+            f'Could not recanonicalise "{printed}": {exc}'
+        ]
+        return redirect("charts:credit_queue")
+
+    message = (
+        f'"{printed}" is now credited to "{canonical.canonical_name}" across '
+        f"{len(recordings)} recording{'' if len(recordings) == 1 else 's'}, "
+        f'with "{printed}" kept as an alias.'
+    )
+    if not created:
+        message += f' Merged into the existing "{canonical.canonical_name}".'
+    request.session["credit_messages"] = [message]
+    return redirect("charts:credit_queue")
+
+
 def credit_keep(request, artist_id):
     # "This is one act, not two" -- e.g. Homer & Jethro, or Lester Young
     # And His Kansas City Seven. Nothing about the data changes; the row
@@ -1065,6 +1095,19 @@ def credit_keep(request, artist_id):
     artist.save(update_fields=["confirmed_single_act"])
     request.session["credit_messages"] = [
         f'Kept "{artist.canonical_name}" as a single act -- it will not be offered again.'
+    ]
+    return redirect("charts:credit_queue")
+
+
+def credit_reopen(request, artist_id):
+    # Undo for "it's one act". Without this, a misclick -- or a decision
+    # made before the "canonical is" option existed -- removed a row from
+    # the queue permanently, recoverable only through the admin.
+    artist = get_object_or_404(Artist, pk=artist_id)
+    artist.confirmed_single_act = False
+    artist.save(update_fields=["confirmed_single_act"])
+    request.session["credit_messages"] = [
+        f'Reopened "{artist.canonical_name}" for review.'
     ]
     return redirect("charts:credit_queue")
 

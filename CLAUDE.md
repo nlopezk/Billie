@@ -158,6 +158,24 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   - `Artist.confirmed_single_act` (migration `0007`) is how "this is one act, not two"
     is remembered, so the queue stops asking. A genuine collaboration never needs it —
     splitting deletes the combined row, which removes it from the queue that way.
+  - **Three outcomes, not two** (third added 2026-08-21 at the owner's prompting):
+    1. **Split** — two separate acts ("Ernest Tubb - Red Foley") → one `RecordingCredit`
+       each.
+    2. **Canonical is shorter** — ONE act billed with its band ("Julia Lee And Her Boy
+       Friends" *is* Julia Lee). Re-credits to the leader and keeps the full printed
+       billing as an `ArtistAlias`, which is precisely what that table is for. Detected
+       by `credits.leader_guess()` ("X and his/her/the Y", "X's Y"). This is the case
+       that also **merges duplicates**: Lester Young was on file twice, as "…and His
+       Kansas City Seven" and "…'s Quartet".
+    3. **One act, name as-is** ("Homer & Jethro") → `confirmed_single_act`, reversible
+       via the "reopen" list at the bottom of the queue.
+    Leader-pattern rows often carry NO delimiter at all, so `pending_artists()` checks
+    `leader_guess` as well as `split_name` — otherwise "Lester Young's Quartet" would
+    never surface.
+  - **`apply_split` refuses when the artist has aliases.** Deleting an Artist CASCADEs
+    to `ArtistAlias`, and a split has no unambiguous home for one ("Bing Crosby - Andrews
+    Sisters" pointing at just Bing Crosby would be wrong). `apply_canonical` *does* move
+    them, because there it's a single destination.
   - **`docs/audit/combined_credit_artists.txt` is the older hand-written checklist for
     this same work** — superseded by the queue, kept as the record of the original
     import-time decision not to auto-split.

@@ -31,7 +31,9 @@ urlpatterns = [
     # --- credit splitting (combined-credit artists -> real collaborations) ---
     path("credits/", views.credit_queue, name="credit_queue"),
     path("credits/<int:artist_id>/split/", views.credit_split, name="credit_split"),
+    path("credits/<int:artist_id>/canonical/", views.credit_canonical, name="credit_canonical"),
     path("credits/<int:artist_id>/keep/", views.credit_keep, name="credit_keep"),
+    path("credits/<int:artist_id>/reopen/", views.credit_reopen, name="credit_reopen"),
 
     # --- Discogs review section (the only network-touching part) ---
     # /discogs/                                -- the review queue

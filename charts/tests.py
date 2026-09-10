@@ -224,6 +224,112 @@ class EntryCreateDuplicateCheckTests(TestCase):
 # review workflow's state transitions -- not Discogs' behaviour.
 
 
+class CreditCanonicalTests(TestCase):
+    """
+    The third case: one act billed with a backing band. "Julia Lee And
+    Her Boy Friends" is Julia Lee -- so the canonical name is shorter
+    and the printed billing belongs in ArtistAlias, which is exactly
+    what that table is for.
+    """
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Capitol")
+        self.billed = Artist.objects.create(canonical_name="Julia Lee And Her Boy Friends")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="40028", side="A",
+            song=Song.objects.create(title="Snatch And Grab It"),
+            credit_text="Julia Lee And Her Boy Friends",
+        )
+        RecordingCredit.objects.create(recording=self.recording, artist=self.billed, credit_order=1)
+
+    def test_leader_guess_recognises_band_names_but_not_collaborations(self):
+        self.assertEqual(credits_lib.leader_guess("Julia Lee And Her Boy Friends"), "Julia Lee")
+        self.assertEqual(credits_lib.leader_guess("Lester Young's Quartet"), "Lester Young")
+        self.assertEqual(credits_lib.leader_guess("Cozy Cole's All Star Band"), "Cozy Cole")
+        # A duo act name and a genuine collaboration are NOT this case.
+        self.assertIsNone(credits_lib.leader_guess("Homer & Jethro"))
+        self.assertIsNone(credits_lib.leader_guess("Ernest Tubb - Red Foley"))
+        self.assertIsNone(credits_lib.leader_guess("Eddy Arnold"))
+
+    def test_recredits_to_the_leader_and_keeps_the_billing_as_an_alias(self):
+        recordings, canonical, created = credits_lib.apply_canonical(self.billed, "Julia Lee")
+
+        self.assertTrue(created)
+        self.assertEqual(canonical.canonical_name, "Julia Lee")
+        self.assertEqual(len(recordings), 1)
+        self.assertEqual(self.recording.credits.get().artist, canonical)
+        # The long form survives as a searchable spelling, not as an artist.
+        alias = ArtistAlias.objects.get(alias_text="Julia Lee And Her Boy Friends")
+        self.assertEqual(alias.artist, canonical)
+        self.assertFalse(Artist.objects.filter(canonical_name="Julia Lee And Her Boy Friends").exists())
+
+    def test_credit_text_is_untouched(self):
+        credits_lib.apply_canonical(self.billed, "Julia Lee")
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.credit_text, "Julia Lee And Her Boy Friends")
+
+    def test_merges_into_an_existing_canonical_artist(self):
+        # The real payoff: Lester Young was on file twice, as "...and His
+        # Kansas City Seven" and "...'s Quartet". Reducing both to the
+        # leader collapses them into one artist.
+        existing = Artist.objects.create(canonical_name="Lester Young")
+        for n, (cat, band) in enumerate([("603", "Lester Young's Quartet"),
+                                         ("604", "Lester Young and His Kansas City Seven")]):
+            billed = Artist.objects.create(canonical_name=band)
+            rec = Recording.objects.create(
+                label=self.label, catalog_number=cat, side="A",
+                song=Song.objects.create(title=f"Song {n}"), credit_text=band)
+            RecordingCredit.objects.create(recording=rec, artist=billed, credit_order=1)
+            _, canonical, created = credits_lib.apply_canonical(billed, "Lester Young")
+            self.assertEqual(canonical, existing)
+            self.assertFalse(created)
+
+        self.assertEqual(existing.recording_credits.count(), 2)
+        self.assertEqual(
+            set(ArtistAlias.objects.filter(artist=existing).values_list("alias_text", flat=True)),
+            {"Lester Young's Quartet", "Lester Young and His Kansas City Seven"})
+
+    def test_refuses_the_same_name(self):
+        with self.assertRaises(ValueError):
+            credits_lib.apply_canonical(self.billed, "Julia Lee And Her Boy Friends")
+        self.assertTrue(Artist.objects.filter(pk=self.billed.pk).exists())
+
+    def test_refuses_a_blank_name(self):
+        with self.assertRaises(ValueError):
+            credits_lib.apply_canonical(self.billed, "   ")
+
+    def test_leader_rows_reach_the_queue_even_with_no_delimiter(self):
+        # "Lester Young's Quartet" contains no joining delimiter at all,
+        # so the split check alone would never surface it.
+        billed = Artist.objects.create(canonical_name="Cozy Cole's All Star Band")
+        rec = Recording.objects.create(
+            label=self.label, catalog_number="605", side="A",
+            song=Song.objects.create(title="Jazz"), credit_text="Cozy Cole's All Star Band")
+        RecordingCredit.objects.create(recording=rec, artist=billed, credit_order=1)
+        self.assertIn(billed, credits_lib.pending_artists())
+
+    def test_split_refuses_rather_than_cascade_deleting_aliases(self):
+        # Deleting an Artist CASCADEs to its aliases, and a split has no
+        # unambiguous home for one. Refuse loudly instead of losing it.
+        ArtistAlias.objects.create(artist=self.billed, alias_text="Julia Lee & Her Boyfriends")
+        with self.assertRaises(ValueError):
+            credits_lib.apply_split(self.billed, ["Julia Lee", "Her Boy Friends"])
+        self.assertTrue(ArtistAlias.objects.filter(alias_text="Julia Lee & Her Boyfriends").exists())
+
+    def test_existing_aliases_move_across_rather_than_being_lost(self):
+        ArtistAlias.objects.create(artist=self.billed, alias_text="Julia Lee & Her Boyfriends")
+        _, canonical, _ = credits_lib.apply_canonical(self.billed, "Julia Lee")
+        moved = ArtistAlias.objects.get(alias_text="Julia Lee & Her Boyfriends")
+        self.assertEqual(moved.artist, canonical)
+
+    def test_view_end_to_end(self):
+        response = self.client.post(
+            reverse("charts:credit_canonical", args=[self.billed.id]),
+            {"canonical": "Julia Lee"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.recording.credits.get().artist.canonical_name, "Julia Lee")
+
+
 class EntryFormCollaborationTests(TestCase):
     """
     Entering a collaboration correctly at entry time -- one
@@ -423,6 +529,25 @@ class CreditSplitTests(TestCase):
         self.assertTrue(single.confirmed_single_act)
         self.assertNotIn(single, credits_lib.pending_artists())
         self.assertEqual(rec.credits.count(), 1)  # nothing about the data moved
+
+    def test_keep_can_be_undone(self):
+        # Without an undo, a misclick -- or a decision made before the
+        # "canonical is" option existed -- removed a row from the queue
+        # permanently, recoverable only through the admin.
+        single = Artist.objects.create(canonical_name="Actually A Collaboration - Really")
+        rec = Recording.objects.create(
+            label=self.label, catalog_number="7777", side="A",
+            song=Song.objects.create(title="Whatever"), credit_text="x")
+        RecordingCredit.objects.create(recording=rec, artist=single, credit_order=1)
+
+        self.client.post(reverse("charts:credit_keep", args=[single.id]))
+        single.refresh_from_db()
+        self.assertNotIn(single, credits_lib.pending_artists())
+
+        self.client.post(reverse("charts:credit_reopen", args=[single.id]))
+        single.refresh_from_db()
+        self.assertFalse(single.confirmed_single_act)
+        self.assertIn(single, credits_lib.pending_artists())
 
     def test_uncredited_combined_artist_is_not_offered(self):
         # Looks combined, but nothing credits it -- there's no
