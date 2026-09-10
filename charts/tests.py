@@ -224,6 +224,88 @@ class EntryCreateDuplicateCheckTests(TestCase):
 # review workflow's state transitions -- not Discogs' behaviour.
 
 
+class EntryFormCollaborationTests(TestCase):
+    """
+    Entering a collaboration correctly at entry time -- one
+    RecordingCredit per artist -- rather than filing it as a single
+    fake "A - B" Artist row, which is what created the 43 rows the
+    /credits/ queue exists to clean up.
+    """
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+
+    def _create(self, artists, row="0", **overrides):
+        data = {
+            "row": row, "week": "1949-01-01", "confirm_create": "1",
+            "new_song_0": "Tennessee Border No. 2", "new_artist_0": artists,
+            "new_credit_text_0": "", "new_label_0": "Decca",
+            "new_catalog_0": "46200", "new_side_0": "A", "new_discogs_0": "",
+        }
+        data.update(overrides)
+        return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), data)
+
+    def test_two_artists_produce_two_credits_in_billing_order(self):
+        self._create(["Ernest Tubb", "Red Foley"])
+        recording = Recording.objects.get(catalog_number="46200")
+        self.assertEqual(
+            [c.artist.canonical_name for c in recording.credits.order_by("credit_order")],
+            ["Ernest Tubb", "Red Foley"])
+        self.assertEqual([c.credit_order for c in recording.credits.order_by("credit_order")], [1, 2])
+        # No fake combined artist row was created.
+        self.assertFalse(Artist.objects.filter(canonical_name="Ernest Tubb - Red Foley").exists())
+
+    def test_credit_text_defaults_to_the_printed_joining_convention(self):
+        self._create(["Ernest Tubb", "Red Foley"])
+        self.assertEqual(Recording.objects.get(catalog_number="46200").credit_text,
+                         "Ernest Tubb - Red Foley")
+
+    def test_explicitly_typed_credit_text_wins_over_the_default(self):
+        # credit_text is the as-printed billing; a default must never
+        # override what was actually typed from the page.
+        self._create(["Ernest Tubb", "Red Foley"],
+                     new_credit_text_0="Ernest Tubb and Red Foley with the Texas Troubadours")
+        self.assertEqual(Recording.objects.get(catalog_number="46200").credit_text,
+                         "Ernest Tubb and Red Foley with the Texas Troubadours")
+
+    def test_single_artist_still_works_unchanged(self):
+        self._create(["Ernest Tubb"])
+        recording = Recording.objects.get(catalog_number="46200")
+        self.assertEqual(recording.credits.count(), 1)
+        self.assertEqual(recording.credit_text, "Ernest Tubb")
+
+    def test_blank_second_box_is_ignored(self):
+        self._create(["Ernest Tubb", "   "])
+        self.assertEqual(Recording.objects.get(catalog_number="46200").credits.count(), 1)
+
+    def test_the_same_artist_typed_twice_is_credited_once(self):
+        # unique_recording_artist would reject the second row outright.
+        self._create(["Ernest Tubb", "Ernest Tubb"])
+        self.assertEqual(Recording.objects.get(catalog_number="46200").credits.count(), 1)
+
+    def test_existing_artist_is_reused_via_alias_not_duplicated(self):
+        real = Artist.objects.create(canonical_name="Big Joe Turner")
+        ArtistAlias.objects.create(artist=real, alias_text="Joe Turner")
+        self._create(["Joe Turner"])
+        recording = Recording.objects.get(catalog_number="46200")
+        self.assertEqual(recording.credits.get().artist, real)
+        self.assertFalse(Artist.objects.filter(canonical_name="Joe Turner").exists())
+
+    def test_joined_name_in_one_box_still_creates_but_warns(self):
+        # Non-blocking on purpose -- credit_text records the billing
+        # correctly either way and /credits/ can unpick it -- but the
+        # warning is what makes it cheap to fix now instead of later.
+        response = self._create(["Ernest Tubb - Red Foley"])
+        self.assertTrue(Recording.objects.filter(catalog_number="46200").exists())
+        self.assertContains(response, "looks like 2 artists")
+
+    def test_single_act_name_containing_and_is_not_warned_about(self):
+        # "Homer & Jethro" is one act. Warning here would be noise, and
+        # noise is what makes warnings get ignored.
+        response = self._create(["Homer & Jethro"])
+        self.assertNotContains(response, "looks like")
+
+
 class CreditSplitTests(TestCase):
     """
     Splitting a combined-credit Artist into a real multi-artist credit.

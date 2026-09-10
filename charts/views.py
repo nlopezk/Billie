@@ -819,15 +819,27 @@ def entry_create(request, chart_id):
     confirmed = request.POST.get("confirm_create") == "1"
 
     song_title = request.POST.get(f"new_song_{row}", "").strip()
-    artist_name = request.POST.get(f"new_artist_{row}", "").strip()
-    credit_text = request.POST.get(f"new_credit_text_{row}", "").strip() or artist_name
+    # getlist, not get: the create sub-form renders more than one artist
+    # input under this same name, so a collaboration gets credited
+    # properly at entry time -- one RecordingCredit per artist -- instead
+    # of becoming a single fake "A - B" Artist row that /credits/ then
+    # has to unpick. Adding a third input needs no change here.
+    # De-duplicated with order preserved, since that order IS credit_order.
+    artist_names = list(dict.fromkeys(
+        n.strip() for n in request.POST.getlist(f"new_artist_{row}") if n.strip()
+    ))
+    # Falls back to the workbook's own " - " joining convention when the
+    # printed billing isn't given explicitly. Only a default -- whatever
+    # is typed into the Credit field wins, because that field is the
+    # as-printed value (non-negotiable #4).
+    credit_text = request.POST.get(f"new_credit_text_{row}", "").strip() or " - ".join(artist_names)
     label_name = request.POST.get(f"new_label_{row}", "").strip()
     catalog_number = request.POST.get(f"new_catalog_{row}", "").strip()
     side = request.POST.get(f"new_side_{row}", "").strip().upper()
 
     missing = [
         label for label, value in [
-            ("song title", song_title), ("artist", artist_name),
+            ("song title", song_title), ("artist", artist_names),
             ("label", label_name), ("catalog number", catalog_number),
         ] if not value
     ]
@@ -880,7 +892,18 @@ def entry_create(request, chart_id):
         # "auto-merge" CLAUDE.md warns against (that's about silently
         # treating two DIFFERENTLY-spelled entries as the same artist).
         # Reusing an EXACT string match is the normal, expected behavior.
-        artist, _ = Artist.objects.get_or_create(canonical_name=artist_name)
+        # resolve_artist rather than a raw exact-match get_or_create:
+        # it matches case-insensitively AND through ArtistAlias, so
+        # typing "Joe Turner" reuses the canonical "Big Joe Turner"
+        # instead of quietly creating a second artist for the same act.
+        # (CLAUDE.md's Artist-identity section says the autocomplete
+        # should search aliases; this is that, applied at create time.)
+        artists = []
+        for name in artist_names:
+            found = credits_lib.resolve_artist(name)
+            if found is None:
+                found = Artist.objects.create(canonical_name=name)
+            artists.append(found)
         label, _ = Label.objects.get_or_create(name=label_name)
         # get_or_create on the actual unique constraint -- if this exact
         # label+catalog+side already exists, reuse it (and its existing
@@ -890,7 +913,8 @@ def entry_create(request, chart_id):
             defaults={"song": song, "credit_text": credit_text},
         )
         if created:
-            RecordingCredit.objects.create(recording=recording, artist=artist, credit_order=1)
+            for order, artist in enumerate(artists, start=1):
+                RecordingCredit.objects.create(recording=recording, artist=artist, credit_order=order)
 
     # --- optional hand-typed Discogs link ---------------------------------
     # NOT looked up here, deliberately. The entry form makes zero network
@@ -900,14 +924,27 @@ def entry_create(request, chart_id):
     # The reference is recorded with status=MANUAL and needs_detail left
     # True; /discogs/ enriches it later, exactly like any other manual
     # entry whose detail fetch hasn't run yet.
-    discogs_note = None
+    notes = []
+    # The exact mistake that produced 43 combined-credit rows needing
+    # cleanup: typing "Ernest Tubb - Red Foley" into ONE artist box. Not
+    # blocking -- credit_text still records the billing correctly and
+    # /credits/ can unpick it later -- but said plainly at the moment it
+    # happens, which is the only time it's cheap to fix.
+    if len(artist_names) == 1 and credits_lib.split_name(artist_names[0])[1]:
+        parts = credits_lib.split_name(artist_names[0])[0]
+        notes.append(
+            f"“{artist_names[0]}” looks like {len(parts)} artists. If it is, "
+            f"Reset this row and use a separate artist box for each — otherwise it "
+            f"gets filed as one act."
+        )
+
     discogs_ref = request.POST.get(f"new_discogs_{row}", "").strip()
     if discogs_ref:
         release_id, master_id, parse_error = _parse_discogs_reference(discogs_ref)
         if parse_error:
             # Never block the recording over a bad optional field -- the
             # chart data is what matters, the link can be fixed later.
-            discogs_note = f"{parse_error} The recording was created without a Discogs link."
+            notes.append(f"{parse_error} The recording was created without a Discogs link.")
         else:
             match, _ = DiscogsMatch.objects.get_or_create(recording=recording)
             if match.is_linked and match.reference_id != (release_id or master_id):
@@ -916,7 +953,7 @@ def entry_create(request, chart_id):
                 # replace a link that was already decided -- say so and
                 # leave it, same "don't overwrite a human's call" rule
                 # as everywhere else in this project.
-                discogs_note = (
+                notes.append(
                     f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
                     f"left as-is -- change it from the Discogs page if that's wrong."
                 )
@@ -938,7 +975,7 @@ def entry_create(request, chart_id):
 
     return render(request, "charts/_entry_resolved.html", {
         "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "include_wks_hint_oob": True, "discogs_note": discogs_note,
+        "include_wks_hint_oob": True, "notes": notes,
     })
 
 

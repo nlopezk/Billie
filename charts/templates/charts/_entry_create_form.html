@@ -31,6 +31,15 @@ closing this and reopening it (or searching again) both still work.
     <div class="inline-create-row">
         <input type="text" name="new_song_{{ row }}" placeholder="Song title" list="known-songs" value="{{ prefill_song }}" required>
         <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
+        {% comment %}
+        Second artist, same field name on purpose -- the view reads these
+        with getlist, so a collaboration becomes one RecordingCredit per
+        artist. Leave it blank for the normal single-artist case. This is
+        what stops a two-act billing being filed as one fake "A - B"
+        artist, which is how 43 rows ended up needing /credits/ cleanup.
+        {% endcomment %}
+        <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists"
+            title="Only for a genuine collaboration between two credited acts. Leave blank for a single act -- including act names that contain 'and' or '&', like Homer &amp; Jethro.">
         <input type="text" name="new_credit_text_{{ row }}" placeholder="Credit as printed on the chart (optional)"
             title="How this release is actually billed on the page, if it differs from the canonical artist name -- e.g. artist is the canonical &quot;Bing Crosby&quot;, but this release is credited &quot;Bing Crosby - Andrews Sisters&quot;. Leave blank to just use the artist name above.">
     </div>

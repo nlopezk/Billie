@@ -50,7 +50,7 @@ search pick, never opening the create box at all).
                 Discogs {{ recording.discogs.reference_type|slice:":1" }}{{ recording.discogs.reference_id }} &nearr;
             </a>
         {% endif %}
-        {% if discogs_note %}<span class="discogs-inline-note">{{ discogs_note }}</span>{% endif %}
+        {% for note in notes %}<span class="discogs-inline-note">{{ note }}</span>{% endfor %}
     {% else %}
         <span class="not-resolved">{% if error %}{{ error }}{% else %}not resolved yet{% endif %}</span>
     {% endif %}
