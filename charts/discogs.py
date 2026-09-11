@@ -17,6 +17,7 @@
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,6 +40,13 @@ USER_AGENT = "BillboardChartDatabase/1.0 +https://github.com/nlopezk/Billie"
 MIN_SECONDS_BETWEEN_REQUESTS = 1.05
 
 _last_request_at = 0.0
+# The dev server is threaded, and the queue page can now fire several
+# per-row detail fetches at once (see _discogs_row.html's auto-fetch).
+# Without a lock two threads can read the same _last_request_at, both
+# decide no wait is needed, and hit the API back-to-back -- exactly what
+# the throttle exists to prevent. Holding the lock THROUGH the sleep is
+# deliberate: it queues concurrent callers one spacing-interval apart.
+_throttle_lock = threading.Lock()
 
 
 class DiscogsError(Exception):
@@ -81,10 +89,11 @@ def _throttle():
     # applications to throttle locally rather than just retrying into a
     # 429, so this runs before every request regardless of quota state.
     global _last_request_at
-    elapsed = time.monotonic() - _last_request_at
-    if elapsed < MIN_SECONDS_BETWEEN_REQUESTS:
-        time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - elapsed)
-    _last_request_at = time.monotonic()
+    with _throttle_lock:
+        elapsed = time.monotonic() - _last_request_at
+        if elapsed < MIN_SECONDS_BETWEEN_REQUESTS:
+            time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - elapsed)
+        _last_request_at = time.monotonic()
 
 
 def _request(path, params=None):

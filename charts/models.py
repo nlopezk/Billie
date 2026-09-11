@@ -312,6 +312,20 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
         # fetch, so it deliberately never shows as needing it.
         return self.is_linked and bool(self.discogs_release_id) and self.raw_data is None
 
+    @classmethod
+    def needs_detail_q(cls):
+        # The queryset form of needs_detail above, kept right next to it so
+        # the two definitions can't drift. Every view that counts, filters
+        # or batches "linked but not yet enriched" rows uses THIS rather
+        # than spelling out its own filter -- which is how the queue once
+        # counted master-only matches as pending (no release id, so they
+        # can never be fetched, and would sit "pending" forever).
+        return models.Q(
+            status__in=[cls.CONFIRMED, cls.MANUAL],
+            raw_data__isnull=True,
+            discogs_release_id__isnull=False,
+        )
+
     # --- display fallbacks -------------------------------------------
     # Track-level values only exist once the per-release detail fetch has
     # run (see needs_detail). Bulk-confirmed matches deliberately skip

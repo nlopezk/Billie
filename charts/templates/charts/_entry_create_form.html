@@ -30,18 +30,25 @@ closing this and reopening it (or searching again) both still work.
     </div>
     <div class="inline-create-row">
         <input type="text" name="new_song_{{ row }}" placeholder="Song title" list="known-songs" value="{{ prefill_song }}" required>
-        <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
-        {% comment %}
-        Second artist, same field name on purpose -- the view reads these
-        with getlist, so a collaboration becomes one RecordingCredit per
-        artist. Leave it blank for the normal single-artist case. This is
-        what stops a two-act billing being filed as one fake "A - B"
-        artist, which is how 43 rows ended up needing /credits/ cleanup.
-        {% endcomment %}
-        <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists"
-            title="Only for a genuine collaboration between two credited acts. Leave blank for a single act -- including act names that contain 'and' or '&', like Homer &amp; Jethro.">
         <input type="text" name="new_credit_text_{{ row }}" placeholder="Credit as printed on the chart (optional)"
-            title="How this release is actually billed on the page, if it differs from the canonical artist name -- e.g. artist is the canonical &quot;Bing Crosby&quot;, but this release is credited &quot;Bing Crosby - Andrews Sisters&quot;. Leave blank to just use the artist name above.">
+            title="How this release is actually billed on the page -- e.g. &quot;Bing Crosby - Andrews Sisters&quot;. Leave blank to use the artist names below, joined with &quot; - &quot;.">
+    </div>
+    {% comment %}
+    One box per CREDITED artist. Every box shares the same name and the
+    view reads them with getlist, so however many are filled in, each
+    becomes its own RecordingCredit in billing order: one for a single
+    act, two for "Ernest Tubb - Red Foley", three or more for a bigger
+    billing. "+ artist" clones another empty box on the spot, client-side
+    only (no server round trip, same idea as the row-delete button). An
+    act whose name merely contains "and"/"&" -- Homer & Jethro -- is ONE
+    artist in ONE box.
+    {% endcomment %}
+    <div class="inline-create-row artist-row">
+        <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
+        <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists"
+            title="Only for a genuine collaboration between separately credited acts. Leave blank for a single act.">
+        <button type="button" class="add-artist-btn" title="Add another credited artist (3rd, 4th...)"
+            onclick="const box = this.parentNode.querySelector('input[name^=new_artist_]').cloneNode(); box.value = ''; box.required = false; box.placeholder = 'Another artist'; this.before(box); box.focus();">+ artist</button>
     </div>
     <div class="inline-create-row">
         <input type="text" name="new_label_{{ row }}" placeholder="Label" list="known-labels" required>

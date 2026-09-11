@@ -176,6 +176,10 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     to `ArtistAlias`, and a split has no unambiguous home for one ("Bing Crosby - Andrews
     Sisters" pointing at just Bing Crosby would be wrong). `apply_canonical` *does* move
     them, because there it's a single destination.
+  - **Any number of artists, in both places** (2026-09-11). The entry form's create box
+    and the `/credits/` split form each have a "+ artist" button that clones another box
+    client-side. All boxes share one field name and the views read them with `getlist`,
+    so a third or fourth credited act needs no server-side change.
   - **`docs/audit/combined_credit_artists.txt` is the older hand-written checklist for
     this same work** — superseded by the queue, kept as the record of the original
     import-time decision not to auto-split.
@@ -266,6 +270,16 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     legitimate source of un-enriched rows, and it's unavoidable — fetching there would
     break the offline guarantee. A bad/unparseable value never blocks the recording,
     and an existing link on a reused recording is never silently overwritten.
+    **Fixed 2026-09-11:** those rows used to count as *settled* (`status=manual`), so the
+    queue's default filter hid them and nothing ever enriched them -- three sat invisible.
+    "Needs attention" now includes any linked row still needing detail
+    (`DiscogsMatch.needs_detail_q()`, the ONE shared definition -- the old hand-written
+    filters also counted master-only rows, which can never be fetched). They sort to the
+    top and each fetches itself on page load via `hx-trigger="load"`; a failed fetch
+    renders a retry button instead, so it can't loop. Also fixed: picking an existing
+    recording off the duplicate-check list silently dropped the typed Discogs ID -- both
+    paths now go through `views._link_discogs_from_entry`. `discogs._throttle` gained a
+    lock, since several rows can now fetch concurrently on the threaded dev server.
   - **Token setup:** a Discogs personal access token from
     https://www.discogs.com/settings/developers, in a git-ignored `.env` file at the
     project root as `DISCOGS_TOKEN=...` (or the same-named env var). The `/discogs/`

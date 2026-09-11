@@ -70,6 +70,9 @@ a more honest reflection of how much moved.
                            class="{% if part.resolved %}resolves{% else %}will-create{% endif %}"
                            title="{% if part.resolved %}Already on file as artist #{{ part.resolved.id }}{% else %}Not on file -- splitting will create this artist{% endif %}">
                 {% endfor %}
+                {% comment %} Split into a 3rd/4th artist: clones a box, apply_split already takes any number. {% endcomment %}
+                <button type="button" class="add-artist-btn" title="Split into one more artist"
+                    onclick="const box = this.form.querySelector('input[name=part]').cloneNode(); box.value = ''; box.className = 'will-create'; box.title = 'New artist'; this.before(box); box.focus();">+ artist</button>
                 <button type="submit" class="discogs-btn primary">Split</button>
             </form>
 

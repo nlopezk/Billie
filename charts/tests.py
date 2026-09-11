@@ -361,6 +361,17 @@ class EntryFormCollaborationTests(TestCase):
         # No fake combined artist row was created.
         self.assertFalse(Artist.objects.filter(canonical_name="Ernest Tubb - Red Foley").exists())
 
+    def test_three_artists_produce_three_credits_in_order(self):
+        # "+ artist" just adds another box under the same field name, so
+        # any number of artists goes through the same getlist.
+        self._create(["Ernest Tubb", "Red Foley", "Minnie Pearl"])
+        recording = Recording.objects.get(catalog_number="46200")
+        credits = recording.credits.order_by("credit_order")
+        self.assertEqual([c.artist.canonical_name for c in credits],
+                         ["Ernest Tubb", "Red Foley", "Minnie Pearl"])
+        self.assertEqual([c.credit_order for c in credits], [1, 2, 3])
+        self.assertEqual(recording.credit_text, "Ernest Tubb - Red Foley - Minnie Pearl")
+
     def test_credit_text_defaults_to_the_printed_joining_convention(self):
         self._create(["Ernest Tubb", "Red Foley"])
         self.assertEqual(Recording.objects.get(catalog_number="46200").credit_text,
@@ -449,6 +460,12 @@ class CreditSplitTests(TestCase):
         self.assertEqual(len(recordings), 1)
         self.assertTrue(deleted)
         self.assertEqual([a.canonical_name for a in created], ["Andrews Sisters"])
+
+    def test_split_into_three(self):
+        credits_lib.apply_split(self.combined, ["Bing Crosby", "Andrews Sisters", "Vic Schoen"])
+        self.assertEqual(
+            [c.artist.canonical_name for c in self.recording.credits.order_by("credit_order")],
+            ["Bing Crosby", "Andrews Sisters", "Vic Schoen"])
 
     def test_split_never_touches_credit_text(self):
         # credit_text is the billing exactly as the magazine printed it
@@ -622,6 +639,34 @@ class EntryFormDiscogsLinkTests(TestCase):
         recording = Recording.objects.get(catalog_number="12345")
         self.assertFalse(DiscogsMatch.objects.filter(recording=recording).exists())
         self.assertContains(response, "without a Discogs link")
+
+    def test_picking_an_existing_recording_from_the_duplicate_check_keeps_the_typed_link(self):
+        # Regression: the duplicate-check "pick one" path went through
+        # entry_select, which never read the create box's Discogs field,
+        # so a typed ID was silently discarded.
+        existing = Recording.objects.create(
+            label=Label.objects.create(name="Chess"), catalog_number="1441", side="A",
+            song=Song.objects.create(title="Louisiana Blues"), credit_text="Muddy Waters")
+        with mock.patch.object(discogs_api, "_request",
+                               side_effect=AssertionError("entry form must never call the API")):
+            response = self.client.post(reverse("charts:entry_select", args=[self.chart.id]), {
+                "row": "0", "week": "1950-09-02", "recording_id": existing.id,
+                "new_discogs_0": "https://www.discogs.com/release/14001059",
+            })
+        self.assertEqual(response.status_code, 200)
+        match = DiscogsMatch.objects.get(recording=existing)
+        self.assertEqual(match.discogs_release_id, 14001059)
+        self.assertEqual(match.status, DiscogsMatch.MANUAL)
+
+    def test_plain_search_pick_links_nothing(self):
+        # An ordinary search pick carries no Discogs field at all.
+        existing = Recording.objects.create(
+            label=Label.objects.create(name="Chess"), catalog_number="1441", side="A",
+            song=Song.objects.create(title="Louisiana Blues"), credit_text="Muddy Waters")
+        self.client.post(reverse("charts:entry_select", args=[self.chart.id]), {
+            "row": "0", "week": "1950-09-02", "recording_id": existing.id})
+        self.assertFalse(DiscogsMatch.objects.filter(
+            recording=existing, status=DiscogsMatch.MANUAL).exists())
 
     def test_does_not_overwrite_an_existing_link(self):
         # get_or_create can hand back a recording someone already linked;
@@ -1179,6 +1224,80 @@ class DiscogsAuditTests(TestCase):
         # And following it really does show the row.
         queue = self.client.get(reverse("charts:discogs_queue"), {"status": "all", "q": "75126"})
         self.assertContains(queue, f'id="discogs-row-{self.recording.id}"')
+
+
+class DiscogsPendingDetailTests(TestCase):
+    """
+    Linked-but-not-enriched rows -- in practice, Discogs IDs typed into
+    the entry form, which never goes online. They used to count as
+    "settled" and so vanished from the queue without ever being enriched.
+    """
+
+    def setUp(self):
+        self.label = Label.objects.create(name="Premium")
+
+        def rec(cat, title):
+            return Recording.objects.create(
+                label=self.label, catalog_number=cat, side="B",
+                song=Song.objects.create(title=title), credit_text="Memphis Slim")
+
+        self.pending = DiscogsMatch.objects.create(
+            recording=rec("867", "Mother Earth"), status=DiscogsMatch.MANUAL,
+            discogs_release_id=5435918, linked_at=timezone.now())
+        self.done = DiscogsMatch.objects.create(
+            recording=rec("868", "Already Enriched"), status=DiscogsMatch.MANUAL,
+            discogs_release_id=1, raw_data={"id": 1}, linked_at=timezone.now())
+        self.master_only = DiscogsMatch.objects.create(
+            recording=rec("869", "Master Only"), status=DiscogsMatch.MANUAL,
+            discogs_master_id=2, linked_at=timezone.now())
+
+    def test_needs_detail_q_agrees_with_the_property(self):
+        # Two definitions of one idea only stay correct if they're checked
+        # against each other.
+        from_query = set(DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q()))
+        from_property = {m for m in DiscogsMatch.objects.all() if m.needs_detail}
+        self.assertEqual(from_query, from_property)
+        self.assertEqual(from_query, {self.pending})
+
+    def test_pending_rows_show_under_needs_attention_and_come_first(self):
+        response = self.client.get(reverse("charts:discogs_queue"))
+        shown = [m.id for m in response.context["page"]]
+        self.assertEqual(shown[0], self.pending.id)
+        self.assertNotIn(self.done.id, shown)          # finished -- stays out
+        self.assertNotIn(self.master_only.id, shown)   # can never be fetched
+
+    def test_pending_rows_are_not_counted_as_settled(self):
+        from .views import _discogs_progress
+        progress = _discogs_progress()
+        self.assertEqual(progress["needs_detail"], 1)
+        self.assertEqual(progress["settled"], 2)   # done + master_only, not pending
+
+    def test_pending_row_renders_a_self_triggering_fetch(self):
+        response = self.client.get(reverse("charts:discogs_queue"))
+        self.assertContains(response, 'hx-trigger="load"', count=1)
+
+    def test_a_failed_fetch_renders_retry_not_another_auto_trigger(self):
+        # Otherwise a dead connection or missing token would re-fire the
+        # load trigger on every swap, forever.
+        with mock.patch.object(discogs_api, "_request",
+                               side_effect=discogs_api.DiscogsError("no internet")):
+            response = self.client.post(
+                reverse("charts:discogs_fetch_detail", args=[self.pending.recording_id]))
+        self.assertContains(response, "no internet")
+        self.assertContains(response, "Retry fetching details")
+        self.assertNotContains(response, 'hx-trigger="load"')
+
+    def test_bulk_fetch_skips_master_only_rows_instead_of_stalling_on_them(self):
+        release = {
+            "id": 5435918, "title": "Mother Earth", "artists": [{"name": "Memphis Slim"}],
+            "labels": [{"name": "Premium", "catno": "867"}], "formats": [], "year": 1951,
+            "tracklist": [{"position": "B", "title": "Mother Earth"}],
+        }
+        with mock.patch.object(discogs_api, "_request", return_value=release):
+            self.client.post(reverse("charts:discogs_bulk"),
+                             {"action": "fetch_details", "querystring": ""})
+        self.pending.refresh_from_db()
+        self.assertFalse(self.pending.needs_detail)
 
 
 class DiscogsWorkflowTests(TestCase):

@@ -71,12 +71,33 @@ you're part-way through reviewing) stays exactly where it was.
                 {% if match.songwriters %}<div class="credit-line"><span class="credit-label">Written by</span> {{ match.songwriters }}</div>{% endif %}
                 {% if match.producers %}<div class="credit-line"><span class="credit-label">Produced by</span> {{ match.producers }}</div>{% endif %}
                 {% if match.genres %}<div class="credit-line"><span class="credit-label">Genre</span> {{ match.genres|join:", " }}{% if match.styles %} &middot; {{ match.styles|join:", " }}{% endif %}</div>{% endif %}
-                {% if match.needs_detail %}
+                {% comment %}
+                Linked but not yet enriched -- in practice almost always a
+                Discogs ID typed into the entry form, which never goes
+                online. Instead of waiting for a button press, it fetches
+                itself as soon as the row is on screen: hx-trigger="load"
+                fires once, the response replaces the whole row, and an
+                enriched row carries no trigger, so it doesn't repeat.
+
+                If the fetch FAILED, `error` is set and a plain retry button
+                renders instead. That's the whole reason for the "not error"
+                condition: without it, a dead connection or a missing token
+                would re-fire the load trigger on every swap, forever.
+                {% endcomment %}
+                {% if match.needs_detail and not error %}
+                    <span class="auto-fetch"
+                        hx-post="{% url 'charts:discogs_fetch_detail' match.recording_id %}"
+                        hx-trigger="load"
+                        hx-vals='{"querystring": "{{ querystring }}"}'
+                        hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
+                        fetching songwriters &amp; per-track detail&hellip;
+                    </span>
+                {% elif match.needs_detail %}
                     <button type="button" class="discogs-btn"
                         hx-post="{% url 'charts:discogs_fetch_detail' match.recording_id %}"
                         hx-vals='{"querystring": "{{ querystring }}"}'
                         hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
-                        Fetch full details (songwriters, etc.)
+                        Retry fetching details
                     </button>
                 {% endif %}
             </div>

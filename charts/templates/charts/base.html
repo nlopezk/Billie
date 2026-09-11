@@ -345,6 +345,12 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .inline-create-row:last-of-type { margin-bottom: 0; }
         .inline-create input { flex: 1; min-width: 8rem; }
         .inline-create .create-submit-btn { margin-top: 0.2rem; }
+        /* Artist boxes get their own row and may grow to 3-4 via "+ artist",
+           so let them wrap instead of crushing each other to 8rem. */
+        .inline-create-row.artist-row { flex-wrap: wrap; }
+        .add-artist-btn { flex: none; cursor: pointer; font-size: 0.8rem; white-space: nowrap; }
+        /* A queue row fetching its own detail on load (_discogs_row.html). */
+        .auto-fetch { display: inline-block; font-size: 0.8rem; color: var(--muted); font-style: italic; margin-top: 0.2rem; }
         .entry-actions { display: flex; justify-content: space-between; margin-top: 1rem; }
         .save-week-button { font-weight: 700; padding: 0.4rem 1rem; }
         .col-delete { text-align: center; }

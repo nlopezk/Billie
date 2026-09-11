@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Max, Min, Q
+from django.db.models import Case, Count, IntegerField, Max, Min, Q, Value, When
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -766,6 +766,51 @@ def entry_search(request, chart_id):
     })
 
 
+def _link_discogs_from_entry(recording, discogs_ref):
+    """
+    Record a hand-typed Discogs reference from the entry form against a
+    recording. Returns a list of plain-language notes for the resolved row.
+
+    Shared by entry_create (a brand-new recording) and entry_select (the
+    duplicate-check path, where you picked an EXISTING recording instead
+    of creating one). It used to live only in entry_create, so picking an
+    existing match off the duplicate-check list silently threw away
+    whatever Discogs ID had been typed into the create box.
+
+    NOT looked up here, deliberately: the entry form makes zero network
+    calls, so a chart week can always be entered offline (non-negotiable
+    #2 names a typed Discogs ID as the acceptable form and a live lookup
+    as the forbidden one). The link lands as status=MANUAL with
+    needs_detail True; those rows show under "Needs attention" on
+    /discogs/ and fetch their own details as that page loads.
+    """
+    notes = []
+    discogs_ref = (discogs_ref or "").strip()
+    if not discogs_ref:
+        return notes
+    release_id, master_id, parse_error = _parse_discogs_reference(discogs_ref)
+    if parse_error:
+        # Never block the chart data over a bad optional field.
+        notes.append(f"{parse_error} Saved without a Discogs link.")
+        return notes
+    match, _ = DiscogsMatch.objects.get_or_create(recording=recording)
+    if match.is_linked and match.reference_id != (release_id or master_id):
+        # A reused or picked recording may already carry a link someone
+        # decided on. Never silently replace it -- say so and leave it.
+        notes.append(
+            f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
+            f"left as-is -- change it from the Discogs page if that's wrong."
+        )
+        return notes
+    match.discogs_release_id = release_id
+    match.discogs_master_id = master_id
+    match.status = DiscogsMatch.MANUAL
+    match.confidence = ""
+    match.linked_at = timezone.now()
+    match.save()
+    return notes
+
+
 def entry_select(request, chart_id):
     # HTMX target of clicking a search result (or an ambiguous-tie pick).
     # Returns the same preview fragment entry_resolve uses, so a row looks
@@ -774,6 +819,10 @@ def entry_select(request, chart_id):
     row = request.POST.get("row", "0")
     week_str = request.POST.get("week")
     recording = get_object_or_404(Recording.objects.select_related("song", "label"), pk=request.POST.get("recording_id"))
+    # Only present when this pick came off the duplicate-check list, whose
+    # buttons carry the open create box along (hx-include) -- a Discogs ID
+    # typed there has to survive choosing an existing recording instead.
+    notes = _link_discogs_from_entry(recording, request.POST.get(f"new_discogs_{row}", ""))
 
     weeks_hint = peak_hint = None
     if week_str:
@@ -785,7 +834,7 @@ def entry_select(request, chart_id):
 
     return render(request, "charts/_entry_resolved.html", {
         "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "include_wks_hint_oob": True,
+        "include_wks_hint_oob": True, "notes": notes,
     })
 
 
@@ -938,32 +987,7 @@ def entry_create(request, chart_id):
             f"gets filed as one act."
         )
 
-    discogs_ref = request.POST.get(f"new_discogs_{row}", "").strip()
-    if discogs_ref:
-        release_id, master_id, parse_error = _parse_discogs_reference(discogs_ref)
-        if parse_error:
-            # Never block the recording over a bad optional field -- the
-            # chart data is what matters, the link can be fixed later.
-            notes.append(f"{parse_error} The recording was created without a Discogs link.")
-        else:
-            match, _ = DiscogsMatch.objects.get_or_create(recording=recording)
-            if match.is_linked and match.reference_id != (release_id or master_id):
-                # get_or_create above may have REUSED an existing
-                # recording that someone already linked. Never silently
-                # replace a link that was already decided -- say so and
-                # leave it, same "don't overwrite a human's call" rule
-                # as everywhere else in this project.
-                notes.append(
-                    f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
-                    f"left as-is -- change it from the Discogs page if that's wrong."
-                )
-            else:
-                match.discogs_release_id = release_id
-                match.discogs_master_id = master_id
-                match.status = DiscogsMatch.MANUAL
-                match.confidence = ""
-                match.linked_at = timezone.now()
-                match.save()
+    notes += _link_discogs_from_entry(recording, request.POST.get(f"new_discogs_{row}", ""))
 
     weeks_hint = peak_hint = None
     if week_str:
@@ -1180,17 +1204,18 @@ def _discogs_progress():
         DiscogsMatch.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n")
     )
     total = sum(counts.values())
-    settled = sum(counts.get(status, 0) for status in DiscogsMatch.SETTLED_STATUSES)
+    # Linked but not yet enriched -- see DiscogsMatch.needs_detail_q.
+    needs_detail = DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q()).count()
+    # A row still waiting on its detail fetch is NOT done, whatever its
+    # status says. Counting those as settled is what let entry-form links
+    # sit un-enriched: the progress bar called them finished.
+    settled = sum(counts.get(status, 0) for status in DiscogsMatch.SETTLED_STATUSES) - needs_detail
     return {
         "total": total,
         "settled": settled,
         "percent": round(100 * settled / total) if total else 0,
         "counts": counts,
-        # Confirmed/manual matches whose expensive detail fetch hasn't run
-        # yet -- surfaced as a "fetch these" prompt on the page.
-        "needs_detail": DiscogsMatch.objects.filter(
-            status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL], raw_data__isnull=True
-        ).count(),
+        "needs_detail": needs_detail,
     }
 
 
@@ -1325,10 +1350,7 @@ def discogs_audit(request):
         # Linked but never detail-fetched (bulk-confirm skips that step),
         # so their Artist/Song are release-level stand-ins. Surfaced as a
         # prompt rather than left as a silently-degraded display.
-        "needs_detail_count": DiscogsMatch.objects.filter(
-            status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL],
-            raw_data__isnull=True, discogs_release_id__isnull=False,
-        ).count(),
+        "needs_detail_count": DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q()).count(),
         "base_querystring": urlencode({k: v for k, v in {
             "status": status if status != "all" else "", "q": q,
             "mismatches": "1" if only_mismatches else "",
@@ -1349,8 +1371,14 @@ def discogs_queue(request):
     ).prefetch_related("candidates")
 
     if status == "todo":
-        # The default view: everything a human hasn't settled yet.
-        matches = matches.exclude(status__in=DiscogsMatch.SETTLED_STATUSES)
+        # The default view: everything not finished yet. That's unsettled
+        # rows PLUS linked rows still waiting on their detail fetch.
+        # Without the second half, a Discogs ID typed into the entry form
+        # (status=manual, therefore "settled") vanished from this page
+        # entirely and was never enriched, because nothing showed it.
+        matches = matches.filter(
+            ~Q(status__in=DiscogsMatch.SETTLED_STATUSES) | DiscogsMatch.needs_detail_q()
+        )
     elif status != "all":
         matches = matches.filter(status=status)
 
@@ -1363,9 +1391,16 @@ def discogs_queue(request):
                 | Q(recording__catalog_number__icontains=word)
             )
 
-    # suggested first (they're the ones actually awaiting a decision),
-    # then a stable alphabetical order within each status.
-    matches = matches.order_by("status", "recording__song__title", "recording__catalog_number")
+    # Rows waiting on a detail fetch go first: they fetch themselves as
+    # the page loads (see _discogs_row.html), so at the top you watch them
+    # fill in rather than finding them on page 3. Then suggested (awaiting
+    # a decision), then a stable alphabetical order within each status.
+    matches = matches.annotate(
+        detail_pending=Case(
+            When(DiscogsMatch.needs_detail_q(), then=Value(0)),
+            default=Value(1), output_field=IntegerField(),
+        )
+    ).order_by("detail_pending", "status", "recording__song__title", "recording__catalog_number")
 
     paginator = Paginator(matches, 25)
     page = paginator.get_page(request.GET.get("page"))
@@ -1757,10 +1792,12 @@ def discogs_bulk(request):
     elif action == "fetch_details":
         # Fill in songwriters/producers/etc for confirmed matches that
         # don't have them yet, a batch at a time.
+        # needs_detail_q, not a hand-written filter: the old one included
+        # master-only matches, which can never be fetched -- enough of them
+        # could fill a whole batch and make this button do nothing forever.
         pending = list(
-            DiscogsMatch.objects.filter(
-                status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL], raw_data__isnull=True
-            ).select_related("recording", "recording__song")[:DISCOGS_WEB_BATCH_SIZE]
+            DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q())
+            .select_related("recording", "recording__song")[:DISCOGS_WEB_BATCH_SIZE]
         )
         done = 0
         for match in pending:

@@ -19,8 +19,15 @@ create-form-{{ row }} OOB clear).
     <ul class="pick-list">
         {% for r in matches %}
         <li>
+            {% comment %}
+            hx-include carries the still-open create box along with the
+            pick, so a Discogs ID typed there survives choosing an existing
+            recording (entry_select reads it). Without it, picking a match
+            here silently discarded the typed ID.
+            {% endcomment %}
             <button type="button"
                 hx-post="{% url 'charts:entry_select' chart.id %}"
+                hx-include="#create-form-{{ row }}"
                 hx-vals='{"row": "{{ row }}", "recording_id": "{{ r.id }}", "week": "{{ week_date_str }}"}'
                 hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
                 {{ r.song }} &mdash; {{ r.credit_text }}
