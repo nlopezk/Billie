@@ -8,20 +8,45 @@ drift out of sync with each other.
 
 The <thead> lives IN here, not in the parent page, even though its
 column headers don't change per se: each header's sort link is built
-with the CURRENT genre/chart/q baked into its querystring (see
+with the CURRENT genre/chart/q/group baked into its querystring (see
 views._recordings_matrix_columns), so it has to re-render on every live
 filter update too -- otherwise clicking "sort by Peak" after typing a
 search would silently drop whatever you'd just typed.
+
+Two column labels come from `columns` rather than being written here,
+because they change with the grouping mode: collapsed to one row per
+recording, "Peak" is really "Best peak" (across charts) and "Chart"
+becomes "Charts" (how many). See views._recordings_matrix_query.
 {% endcomment %}
-<p class="matrix-summary" id="matrix-count">{{ total_rows }} row{{ total_rows|pluralize }}.</p>
+{% if group == "recording" %}
+<p class="matrix-summary" id="matrix-count">
+    {{ total_rows }} recording{{ total_rows|pluralize }}, one row each &mdash; merged across every chart.
+</p>
+{% else %}
+<p class="matrix-summary" id="matrix-count">{{ total_rows }} row{{ total_rows|pluralize }}, one per chart a recording made.</p>
+{% endif %}
 
 <div class="table-wrap">
 <table class="recordings-table">
     <colgroup>
+        {% comment %}
+        The first and fourth columns carry more in collapsed mode -- the
+        peak gains a small source-chart line under it, and the Chart cell
+        holds up to five badges instead of one name -- so both get a
+        little more room there and keep the tighter widths otherwise.
+        {% endcomment %}
+        {% if group == "recording" %}
+        <col style="width: 4rem;">
+        {% else %}
         <col style="width: 2.5rem;">
+        {% endif %}
         <col style="width: 12rem;">
         <col style="width: 8rem;">
+        {% if group == "recording" %}
+        <col style="width: 7.5rem;">
+        {% else %}
         <col style="width: 6.5rem;">
+        {% endif %}
         <col style="width: 8rem;">
         <col style="width: 3rem;">
         <col style="width: 4.5rem;">
@@ -30,12 +55,12 @@ search would silently drop whatever you'd just typed.
     </colgroup>
     <thead>
         <tr>
-            <th class="num"><a class="sort-link" href="{{ columns.peak.href }}">Peak<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
+            <th class="num"><a class="sort-link" href="{{ columns.peak.href }}">{{ columns.peak.label }}<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.song.href }}">Song<span class="sort-arrow">{{ columns.song.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.artist.href }}">Artist<span class="sort-arrow">{{ columns.artist.arrow }}</span></a></th>
-            <th><a class="sort-link" href="{{ columns.chart.href }}">Chart<span class="sort-arrow">{{ columns.chart.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.chart.href }}">{{ columns.chart.label }}<span class="sort-arrow">{{ columns.chart.arrow }}</span></a></th>
             <th>Label / catalog #</th>
-            <th class="num"><a class="sort-link" href="{{ columns.weeks.href }}">Weeks<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
+            <th class="num"{% if group == "recording" %} title="Calendar weeks on ANY chart -- a week spent on three charts at once counts once, not three times."{% endif %}><a class="sort-link" href="{{ columns.weeks.href }}">Weeks<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.first.href }}">First entry<span class="sort-arrow">{{ columns.first.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.last.href }}">Last entry<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
             {% comment %}
@@ -50,10 +75,34 @@ search would silently drop whatever you'd just typed.
     <tbody>
         {% for r in rows %}
         <tr>
-            <td class="pos num">{{ r.peak_position }}</td>
+            <td class="pos num">
+                {{ r.peak_position }}
+                {% comment %}
+                Collapsed, this number is the best position reached on ANY
+                of the charts below -- a value nobody printed. Naming the
+                chart it came from keeps that explicit instead of letting
+                a merged figure read like a printed one (CLAUDE.md
+                non-negotiable #4).
+                {% endcomment %}
+                {% if r.peak_chart_code %}
+                <span class="peak-source" title="Best position reached on any chart &mdash; this one came from {{ r.peak_chart_label }}">{{ r.peak_chart_code }}</span>
+                {% endif %}
+            </td>
             <td class="wrap">{{ r.recording__song__title }}</td>
             <td class="wrap">{{ r.recording__credit_text }}</td>
-            <td class="wrap">{{ r.chart_label }}</td>
+            <td class="wrap">
+                {% if group == "recording" %}
+                    {% comment %}
+                    One badge per chart this recording actually made, each
+                    carrying that chart's OWN peak on hover -- so the
+                    per-chart detail the collapsed row merged away is
+                    still a mouse-hover (not a page load) away.
+                    {% endcomment %}
+                    {% for b in r.chart_badges %}<span class="chart-badge" title="{{ b.label }} &mdash; peak {{ b.peak }}">{{ b.code }}</span>{% endfor %}
+                {% else %}
+                    {{ r.chart_label }}
+                {% endif %}
+            </td>
             <td>{{ r.catalog_display }}</td>
             <td class="num">{{ r.weeks_charted }}</td>
             {% comment %}
@@ -62,9 +111,15 @@ search would silently drop whatever you'd just typed.
             The LINK target still uses full Y-m-d, since that's the
             actual URL format chart_week's view parses -- only the text
             shown to the reader is shortened.
+
+            first_chart_id / last_chart_id, not chart_id: collapsed, a
+            recording's first and last weeks can come from two DIFFERENT
+            charts, and each date has to link to the chart week it
+            actually appeared in. In per-chart mode the view sets both to
+            this row's own chart, so the link is identical either way.
             {% endcomment %}
-            <td><a href="{% url 'charts:chart_week' r.chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a></td>
-            <td><a href="{% url 'charts:chart_week' r.chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
+            <td><a href="{% url 'charts:chart_week' r.first_chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a></td>
+            <td><a href="{% url 'charts:chart_week' r.last_chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
             <td class="discogs-cell">
                 {% if r.discogs_url %}
                     <span class="ref-id ref-{{ r.discogs_ref_type|lower }}" title="Discogs {{ r.discogs_ref_type }} ID">{{ r.discogs_ref_type|slice:":1" }}{{ r.discogs_ref_id }}</span>

@@ -131,6 +131,189 @@ class RecordingsMatrixTests(TestCase):
         self.assertTemplateNotUsed(live_update, "charts/recordings_matrix.html")
 
 
+class RecordingsMatrixCollapsedTests(TestCase):
+    """
+    The matrix's ?group=recording mode: one row per RECORDING instead of
+    one per (chart, recording). What's worth testing here isn't that the
+    rows collapse -- it's that collapsing them doesn't quietly turn each
+    column into a different, wrong number. Every test below is a thing
+    the obvious implementation gets wrong.
+    """
+
+    def setUp(self):
+        # TWO charts in the SAME genre, which is the case that motivated
+        # this mode: filtering to Country still showed one record three
+        # times, once per Country chart.
+        self.jukebox = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.retail = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.rnb = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.label = Label.objects.create(name="Capitol")
+        self.song = Song.objects.create(title="Shot Gun Boogie")
+        self.recording = Recording.objects.create(
+            label=self.label, catalog_number="1295", side="A",
+            song=self.song, credit_text="Tennessee Ernie",
+        )
+
+    def _entry(self, chart, week_date, position, recording=None, **kw):
+        return ChartEntry.objects.create(
+            chart=chart, week_date=week_date, position=position,
+            recording=recording or self.recording, **kw,
+        )
+
+    def _collapsed(self, **params):
+        params.setdefault("group", "recording")
+        return self.client.get(reverse("charts:recordings_matrix"), params)
+
+    def test_one_row_per_recording_however_many_charts(self):
+        w1, w2 = date(1951, 1, 6), date(1951, 1, 13)
+        self._entry(self.jukebox, w1, 3)
+        self._entry(self.retail, w1, 5)
+        self._entry(self.rnb, w2, 9)
+
+        # Default mode still gives one row per chart...
+        self.assertEqual(len(self.client.get(reverse("charts:recordings_matrix")).context["rows"]), 3)
+        # ...and the collapsed mode gives exactly one, with a count of
+        # how many charts went into it.
+        rows = self._collapsed().context["rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["chart_count"], 3)
+
+    def test_weeks_counts_calendar_weeks_not_rows(self):
+        # The headline trap. One record on three charts in the SAME week
+        # is three ChartEntry rows but ONE week charted -- summing the
+        # per-chart weeks (or counting rows) would report 4 weeks for a
+        # record that charted for 2.
+        w1, w2 = date(1951, 1, 6), date(1951, 1, 13)
+        self._entry(self.jukebox, w1, 3)
+        self._entry(self.retail, w1, 5)
+        self._entry(self.rnb, w1, 9)
+        self._entry(self.jukebox, w2, 2)
+
+        row = self._collapsed().context["rows"][0]
+        self.assertEqual(ChartEntry.objects.count(), 4)
+        self.assertEqual(row["weeks_charted"], 2)
+
+    def test_peak_is_best_across_charts_and_names_its_source_chart(self):
+        # Merged, "peak" is the best position reached on ANY chart -- a
+        # derived number nobody printed, so the row has to say which
+        # chart it came from (CLAUDE.md non-negotiable #4).
+        w1 = date(1951, 1, 6)
+        self._entry(self.jukebox, w1, 7)
+        self._entry(self.retail, w1, 2)
+
+        row = self._collapsed().context["rows"][0]
+        self.assertEqual(row["peak_position"], 2)
+        self.assertEqual(row["peak_chart_label"], str(self.retail))
+        self.assertEqual(row["peak_chart_code"], "CRt")
+
+    def test_first_and_last_span_charts_and_link_to_the_right_one(self):
+        # First and last appearance can come from two DIFFERENT charts.
+        # Each date still has to link to the chart week it actually
+        # appeared in -- linking both to one chart would produce a URL
+        # for a week that chart never printed this record in.
+        first, last = date(1950, 12, 16), date(1951, 2, 17)
+        self._entry(self.retail, first, 8)
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+        self._entry(self.jukebox, last, 4)
+
+        row = self._collapsed().context["rows"][0]
+        self.assertEqual(row["first_entry"], first)
+        self.assertEqual(row["last_entry"], last)
+        self.assertEqual(row["first_chart_id"], self.retail.id)
+        self.assertEqual(row["last_chart_id"], self.jukebox.id)
+        # And the rendered links point at those two different charts.
+        html = self._collapsed().content.decode()
+        self.assertIn(f'href="/{self.retail.id}/1950-12-16/"', html)
+        self.assertIn(f'href="/{self.jukebox.id}/1951-02-17/"', html)
+
+    def test_per_chart_breakdown_badges_keep_each_charts_own_peak(self):
+        # Collapsing hides the per-chart peaks, so they come back as the
+        # Charts column's hover badges rather than being lost.
+        w1 = date(1951, 1, 6)
+        self._entry(self.jukebox, w1, 1)
+        self._entry(self.retail, w1, 6)
+
+        row = self._collapsed().context["rows"][0]
+        self.assertEqual(
+            [(b["code"], b["peak"]) for b in row["chart_badges"]],
+            [("CJb", 1), ("CRt", 6)],
+        )
+
+    def test_filters_still_apply_and_scope_the_merge(self):
+        # genre=country must not merely hide the R&B row -- the R&B
+        # entries must be excluded from the surviving row's numbers too,
+        # or the merge would silently reach across the filter.
+        self._entry(self.jukebox, date(1951, 1, 6), 4)
+        self._entry(self.rnb, date(1951, 1, 13), 1)
+
+        row = self._collapsed(genre="country").context["rows"][0]
+        self.assertEqual(row["chart_count"], 1)
+        self.assertEqual(row["peak_position"], 4)  # NOT the R&B chart's 1
+        self.assertEqual(row["weeks_charted"], 1)
+
+    def test_default_mode_is_per_chart_and_a_bad_value_falls_back(self):
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+        self._entry(self.retail, date(1951, 1, 6), 1)
+
+        self.assertEqual(self.client.get(reverse("charts:recordings_matrix")).context["group"], "chart")
+        self.assertEqual(len(self.client.get(reverse("charts:recordings_matrix")).context["rows"]), 2)
+        junk = self.client.get(reverse("charts:recordings_matrix"), {"group": "nonsense"})
+        self.assertEqual(junk.context["group"], "chart")
+        self.assertEqual(len(junk.context["rows"]), 2)
+
+    def test_sorting_by_charts_column_does_not_un_collapse(self):
+        # ?sort=chart orders by chart__category, a column that isn't in
+        # the collapsed GROUP BY -- ordering by it anyway would re-join
+        # the chart table and split the merged rows back apart. Collapsed
+        # mode sorts by the chart COUNT instead.
+        one_chart = Recording.objects.create(
+            label=self.label, catalog_number="1296", side="A",
+            song=Song.objects.create(title="Mule Train"), credit_text="Tennessee Ernie",
+        )
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+        self._entry(self.retail, date(1951, 1, 6), 1)
+        self._entry(self.jukebox, date(1951, 1, 6), 2, recording=one_chart)
+
+        rows = self._collapsed(sort="chart", dir="desc").context["rows"]
+        self.assertEqual(len(rows), 2)  # still one row each, not three
+        # Descending by chart count: the 2-chart recording comes first.
+        self.assertEqual([r["chart_count"] for r in rows], [2, 1])
+
+    def test_mode_and_filters_ride_along_on_sort_links(self):
+        # Clicking a column heading is a plain link (full page load), so
+        # if it didn't carry ?group= and the filters, sorting a filtered
+        # collapsed view would bounce it back to unfiltered per-chart.
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+
+        columns = self._collapsed(genre="country", q="Boogie").context["columns"]
+        for key in ("peak", "song", "weeks"):
+            self.assertIn("group=recording", columns[key]["href"])
+            self.assertIn("genre=country", columns[key]["href"])
+            self.assertIn("q=Boogie", columns[key]["href"])
+
+    def test_headers_rename_the_two_columns_that_change_meaning(self):
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+
+        per_chart = self.client.get(reverse("charts:recordings_matrix")).context["columns"]
+        self.assertEqual(per_chart["peak"]["label"], "Peak")
+        self.assertEqual(per_chart["chart"]["label"], "Chart")
+
+        collapsed = self._collapsed().context["columns"]
+        self.assertEqual(collapsed["peak"]["label"], "Best peak")
+        self.assertEqual(collapsed["chart"]["label"], "Charts")
+
+    def test_htmx_live_filter_keeps_the_mode(self):
+        self._entry(self.jukebox, date(1951, 1, 6), 1)
+        self._entry(self.retail, date(1951, 1, 6), 1)
+
+        live = self.client.get(
+            reverse("charts:recordings_matrix"), {"group": "recording"}, HTTP_HX_REQUEST="true",
+        )
+        self.assertTemplateUsed(live, "charts/_recordings_matrix_results.html")
+        self.assertTemplateNotUsed(live, "charts/recordings_matrix.html")
+        self.assertEqual(len(live.context["rows"]), 1)
+
+
 class EntryCreateDuplicateCheckTests(TestCase):
     # entry_create's backstop check: search-first is the INTENDED workflow
     # (the search box handles the common case), so what's worth testing

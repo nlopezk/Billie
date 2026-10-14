@@ -117,9 +117,30 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   (`views.recordings_matrix`, linked from `chart_list.html` and `chart_week.html`). ONE
   page covering all 5 charts (an earlier same-day version was one matrix per chart —
   replaced same day once it became clear that didn't scale to "just show me everything").
-  One row per (chart, recording) pair a recording has actually charted on — never merged
-  across charts, since peak/weeks/first/last are only well-defined within a single chart
-  (see the big comment in `views._recordings_matrix_query`) — with filters across the top
+  **Two grouping modes**, picked with the "One row per" dropdown (`?group=`):
+  - `chart` (the default) — one row per (chart, recording) pair a recording has actually
+    charted on, never merged, since peak/weeks/first/last are only well-defined within a
+    single chart (see the docstring on `views._recordings_matrix_query`).
+  - `recording` (added 2026-10-14, because filtering to Country still showed the same
+    record three times, once per Country chart) — one row per recording, with its charts
+    merged. The mechanism is just dropping the chart columns out of the `.values()`, so
+    SQL's `GROUP BY` gets coarser; no subquery, no Python-side merge. What that does to
+    each column is the part worth knowing: **Peak becomes "Best peak"** — the lowest
+    position reached on *any* of its charts, which is a DERIVED number nobody printed, so
+    the column is relabelled and the chart that produced it is named under the number
+    (non-negotiable #4 — never pass a computed value off as a printed one). **Weeks stays
+    distinct `week_date`s**, so a week spent on three charts at once counts ONCE (summing
+    the per-chart weeks would claim 27 weeks for "Shot Gun Boogie", which charted for 10).
+    **First/last entry span every chart**, and each still links to the chart-week page it
+    really came from — which is why one extra aggregate query, re-grouped by
+    `(recording, chart)`, runs in this mode: it recovers which chart each merged number
+    came from, for the date links, for the "best peak" source, and for the Charts column's
+    per-chart peak badges (`CJb` = Country Jukebox, hover for the full name). Sorting by
+    the Charts column sorts by chart COUNT, deliberately: `chart__category` isn't in the
+    collapsed `GROUP BY`, and ordering by it would re-join the chart table and silently
+    un-collapse every row.
+
+  Both modes share the same filters across the top
   for genre (`Chart.category`), a specific chart, and free-text search (song/artist/label/
   catalog #, same word-AND/field-OR matching as the entry form's search), all combinable,
   plus sortable columns via `?sort=&dir=`. Genre + chart + search all live-filter via HTMX
@@ -128,10 +149,13 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   with `hx-push-url` keeping the address bar in sync so a filtered view stays bookmarkable/
   shareable. Weeks charted counts *distinct week_date*, not raw `ChartEntry` rows,
   specifically so the 2 accepted same-week printed-anomaly rows don't inflate it — this,
-  the per-(chart, recording) scoping, and the filters each have tests in `charts/tests.py`
-  (the rest of the app's test coverage claimed by the "Next step" bullet below does not
-  currently exist in that file — worth checking next session, since it may have been lost
-  rather than never written).
+  the per-(chart, recording) scoping, the filters, and all of the collapsed mode's
+  re-aggregation above each have tests in `charts/tests.py` (`RecordingsMatrixTests`,
+  `RecordingsMatrixCollapsedTests`). An earlier version of this bullet warned that the
+  rest of the app's test coverage was missing from `charts/tests.py`; that is no longer
+  true — the suite is 136 tests covering the entry form, credit splitting, and the whole
+  Discogs workflow, and it runs in well under a second because nothing in it touches the
+  network.
 - **Credit splitting, built 2026-08-21** — `/credits/` (`charts/credits.py`,
   `views.credit_*`, `credit_queue.html`). Turns a combined-credit Artist row
   ("Bing Crosby - Andrews Sisters", imported verbatim from the workbook's single

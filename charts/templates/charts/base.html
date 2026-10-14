@@ -115,6 +115,27 @@ chart_week.html) is a single line, not worth reaching for HTMX over.
         .recordings-table .discogs-cell { font-size: 0.9em; }
         .recordings-table .discogs-cell a { color: var(--up); }
         .recordings-table .discogs-cell a.needs-review { color: var(--new); }
+        /* "One row per recording" mode only. Each chart a recording made
+           shows as a compact code badge (CJb = Country Jukebox, CRt =
+           Country Retail) with the full chart name AND that chart's own
+           peak on hover -- codes because up to five of them have to
+           share one narrow cell, hover detail because collapsing the
+           rows is what hid those per-chart numbers in the first place. */
+        .chart-badge {
+            display: inline-block;
+            font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+            font-size: 0.7rem; font-weight: 600; line-height: 1;
+            border-radius: 3px; padding: 0.15rem 0.3rem; margin: 0 0.2rem 0.15rem 0;
+            background: rgba(128,128,128,0.15); color: var(--muted);
+            cursor: help;
+        }
+        /* The chart that produced a collapsed row's best peak, printed
+           small under the number itself: that peak is merged from
+           several charts, so its source is shown rather than implied. */
+        .recordings-table .peak-source {
+            display: block; font-size: 0.65rem; font-weight: 400;
+            color: var(--muted); cursor: help;
+        }
 
         /* Discogs review queue (discogs_queue.html + _discogs_row.html) */
         .discogs-table { font-size: 0.85rem; }

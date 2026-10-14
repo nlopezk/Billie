@@ -3,10 +3,16 @@
 {% comment %}
 charts/templates/charts/recordings_matrix.html
 
-The recordings matrix: every recording across every chart, one row per
-chart it charted on (see the big comment in views._recordings_matrix_query
-for why it's per-chart and not merged), filterable by genre/chart/search
-and sortable by column. Replaces the earlier one-matrix-per-chart design.
+The recordings matrix: every recording across every chart, filterable by
+genre/chart/search and sortable by column. Replaces the earlier
+one-matrix-per-chart design.
+
+Two shapes, chosen with the "One row per" dropdown (?group=):
+one row per CHART a recording made (the default -- every number is then
+scoped to a single chart, which is the only scope the magazine actually
+printed), or one row per RECORDING with its charts merged. See the big
+docstring on views._recordings_matrix_query for what merging does to each
+column and why both modes exist rather than one.
 
 The <form> below drives BOTH the initial page load's filter values (its
 genre/chart/q come straight from the URL query string, so this page is
@@ -26,8 +32,8 @@ normal, reloadable, bookmarkable/shareable filtered URL).
 {% block content %}
     <h1>Recordings</h1>
     <p class="subtitle">
-        Every recording, every chart it's appeared on, with peak position, weeks charted, and
-        first/last week &middot;
+        Every recording, with peak position, weeks charted, and first/last week &mdash;
+        {% if group == "recording" %}one row per recording, merged across charts{% else %}one row per chart it appeared on{% endif %} &middot;
         <a href="{% url 'charts:chart_list' %}">&larr; back to charts</a>
         &middot; <a href="{% url 'charts:discogs_queue' %}">Discogs matching &rarr;</a>
     </p>
@@ -68,6 +74,24 @@ normal, reloadable, bookmarkable/shareable filtered URL).
                 {% for c in all_charts %}
                 <option value="{{ c.id }}" {% if chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
                 {% endfor %}
+            </select>
+        </label>
+
+        {% comment %}
+        Grouping mode. A plain <select> inside the same form as the
+        filters, so it needs no wiring of its own: the form's existing
+        "change from:select" HTMX trigger live-swaps the results, and
+        hx-push-url puts ?group= in the address bar, which makes a
+        collapsed view bookmarkable and shareable like any other. The
+        column-header sort links carry it too (see
+        views._recordings_matrix_columns), so sorting cannot bounce you
+        back to the other mode.
+        {% endcomment %}
+        <label>
+            One row per
+            <select name="group" title="Recording + chart: one row for each chart a record made, every number scoped to that one chart (what the magazine printed). Recording: one row per record, merged across charts -- peak becomes the best reached anywhere.">
+                <option value="chart" {% if group != "recording" %}selected{% endif %}>Recording + chart</option>
+                <option value="recording" {% if group == "recording" %}selected{% endif %}>Recording</option>
             </select>
         </label>
 

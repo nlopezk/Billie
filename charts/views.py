@@ -161,31 +161,82 @@ RECORDINGS_MATRIX_SORTS = {
     "last": ("last_entry", "Last entry"),
 }
 
+# The matrix's two grouping modes (?group=...), chosen with the "One row
+# per" dropdown. See _recordings_matrix_query's docstring for what each
+# one means and why neither is simply a nicer version of the other.
+RECORDINGS_MATRIX_GROUPS = ("chart", "recording")
+
+# In "recording" mode two columns genuinely change meaning, so they need
+# a different sort field and a different header label. Everything else
+# sorts and reads identically in both modes, which is why only these two
+# are listed.
+RECORDINGS_MATRIX_COLLAPSED_SORTS = {
+    "chart": ("chart_count", "Charts"),
+    "peak": ("peak_position", "Best peak"),
+}
+
+# Short badges for "recording" mode's Charts column, which may have to
+# fit five chart names into one narrow cell: category initial + a
+# two-letter method, so "CJb" is Country Jukebox. The full name rides
+# along as the badge's hover title, so nothing is actually lost.
+_CHART_CODE_METHODS = {"jockeys": "Jk", "jukebox": "Jb", "retail": "Rt"}
+
+
+def _chart_code(chart):
+    # Falls back to the first two letters of an unmapped method instead
+    # of raising, so a chart added to the project later still renders.
+    method = _CHART_CODE_METHODS.get(chart.method, chart.method[:2].title())
+    return f"{chart.category[0].upper()}{method}"
+
 
 def _recordings_matrix_query(request):
     """
     Shared by recordings_matrix's full-page render and its own HTMX live-
     filter response (same view, see below): builds the filtered, sorted
-    (chart, recording) rows plus the current filter/sort state.
+    rows plus the current filter/sort/group state.
 
-    One row per CHART a recording has appeared on, not one row per
-    recording overall -- Peak/Weeks/First/Last are only ever well-defined
-    WITHIN a single chart (a record's peak on Country Jukebox and its
-    peak on R&B Retail are two unrelated numbers printed in two unrelated
-    magazines' pages -- merging them would invent a "peak" nobody ever
-    printed). Filtering by genre or a specific chart just narrows which
-    of those (chart, recording) rows show; grouping by (chart_id,
-    recording_id) via .values() below is what keeps every row's numbers
-    scoped to just that one chart, same guarantee the old per-chart-only
-    page had, without needing this chart to be fixed ahead of time.
+    TWO grouping modes, because they answer two different questions and
+    neither is just a better default for the other:
+
+    ?group=chart (the default) -- one row per CHART a recording appeared
+    on. Peak/Weeks/First/Last are each scoped to that ONE chart, which is
+    the only scope in which they are literally what the magazine printed:
+    a record's peak on Country Jukebox and its peak on Country Retail are
+    two unrelated numbers off two unrelated pages. Grouping by (chart_id,
+    recording_id) in the .values() below is what keeps them that way.
+
+    ?group=recording -- one row per RECORDING, however many charts it
+    made, for reading down a genre without the same record appearing
+    three times. Dropping the chart columns out of the .values() is the
+    entire mechanism: SQL's GROUP BY gets coarser and re-aggregates
+    across every chart. What that does to each number matters:
+
+      * Peak becomes BEST peak -- the lowest position reached on ANY of
+        its charts, labelled "Best peak" and shown with the chart that
+        produced it. It is a DERIVED number, not a printed one (nobody
+        ever printed a cross-chart peak), so per CLAUDE.md non-negotiable
+        #4 it is named for what it is rather than quietly passed off as
+        "the peak".
+      * Weeks counts DISTINCT week_dates across every chart, so a week a
+        record spent on three charts at once counts ONCE. Summing the
+        per-chart weeks instead would claim 27 weeks for "Shot Gun
+        Boogie", which charted for 10.
+      * First/Last entry span every chart -- the earliest and latest week
+        it appeared anywhere -- and each still links to the chart-week
+        page it actually came from, which is why the per-chart breakdown
+        query below exists.
     """
     genre = request.GET.get("genre", "")
     chart_id = request.GET.get("chart", "")
     q = request.GET.get("q", "").strip()
     sort = request.GET.get("sort", "peak")
     direction = request.GET.get("dir", "asc")
+    group = request.GET.get("group", "chart")
     if sort not in RECORDINGS_MATRIX_SORTS:
         sort = "peak"
+    if group not in RECORDINGS_MATRIX_GROUPS:
+        group = "chart"
+    collapsed = group == "recording"
 
     entries = ChartEntry.objects.all()
     if genre:
@@ -204,42 +255,55 @@ def _recordings_matrix_query(request):
             )
         entries = entries.filter(query)
 
-    rows = (
-        entries
-        .values(
-            "chart_id", "chart__category", "chart__method",
-            "recording_id", "recording__song__title", "recording__credit_text",
-            "recording__label__name", "recording__catalog_number", "recording__side",
-            # Discogs link state, for the matrix's status column. Pulled
-            # in via the existing join rather than a second query, and
-            # entirely from what's CACHED in our own database -- rendering
-            # this column makes no API call. Recordings with no
-            # DiscogsMatch row yet come back as None, which the template
-            # renders as an em-dash.
-            "recording__discogs__status",
-            "recording__discogs__discogs_release_id",
-            "recording__discogs__discogs_master_id",
-            "recording__discogs__matched_artist",
-            "recording__discogs__matched_catalog_number",
-            "recording__discogs__songwriters",
-        )
-        .annotate(
-            peak_position=Min("position"),
-            # distinct=True on week_date, not a plain Count("id"): the 2
-            # accepted printed-anomaly weeks (printed_anomaly_note / see
-            # docs/audit/same_recording_repeated.csv) have the SAME
-            # recording listed twice in the SAME week under two
-            # positions. A plain row count would say those charted one
-            # extra week they didn't; counting distinct week_dates means
-            # "Weeks" always answers "how many calendar weeks", whatever
-            # the row count behind it.
-            weeks_charted=Count("week_date", distinct=True),
-            first_entry=Min("week_date"),
-            last_entry=Max("week_date"),
-        )
-    )
+    # The columns that identify a row -- and therefore ARE the SQL GROUP
+    # BY. Everything here is per-recording except the three chart columns,
+    # which are prepended only in "chart" mode.
+    group_fields = [
+        "recording_id", "recording__song__title", "recording__credit_text",
+        "recording__label__name", "recording__catalog_number", "recording__side",
+        # Discogs link state, for the matrix's status column. Pulled in
+        # via the existing join rather than a second query, and entirely
+        # from what's CACHED in our own database -- rendering this column
+        # makes no API call. Recordings with no DiscogsMatch row yet come
+        # back as None, which the template renders as an em-dash. All of
+        # these are per-recording, so they stay valid collapsed too.
+        "recording__discogs__status",
+        "recording__discogs__discogs_release_id",
+        "recording__discogs__discogs_master_id",
+        "recording__discogs__matched_artist",
+        "recording__discogs__matched_catalog_number",
+        "recording__discogs__songwriters",
+    ]
+    if not collapsed:
+        group_fields = ["chart_id", "chart__category", "chart__method"] + group_fields
+
+    aggregates = {
+        "peak_position": Min("position"),
+        # distinct=True on week_date, not a plain Count("id"): the 2
+        # accepted printed-anomaly weeks (printed_anomaly_note / see
+        # docs/audit/same_recording_repeated.csv) have the SAME recording
+        # listed twice in the SAME week under two positions. A plain row
+        # count would say those charted one extra week they did not.
+        # Collapsed mode leans on this twice over -- there, a week spent
+        # on three charts is three rows sharing one week_date, and
+        # "Weeks" has to stay an answer to "how many calendar weeks".
+        "weeks_charted": Count("week_date", distinct=True),
+        "first_entry": Min("week_date"),
+        "last_entry": Max("week_date"),
+    }
+    if collapsed:
+        # Only meaningful once the chart columns are gone: in "chart"
+        # mode every row IS one chart, so this would be the constant 1.
+        aggregates["chart_count"] = Count("chart_id", distinct=True)
+
+    rows = entries.values(*group_fields).annotate(**aggregates)
 
     order_field, _ = RECORDINGS_MATRIX_SORTS[sort]
+    if collapsed and sort in RECORDINGS_MATRIX_COLLAPSED_SORTS:
+        # chart__category is not in the collapsed GROUP BY at all --
+        # ordering by it would drag the chart join back in and silently
+        # un-collapse the rows. "Charts" sorts by how many instead.
+        order_field, _ = RECORDINGS_MATRIX_COLLAPSED_SORTS[sort]
     if direction == "desc":
         order_field = "-" + order_field
     # chart__method as a SECOND sort key specifically when sorting by
@@ -248,16 +312,68 @@ def _recordings_matrix_query(request):
     # the final tiebreaker always, so rows sharing a value on the primary
     # sort come back in a stable, readable order across reloads.
     tiebreakers = ["recording__song__title"]
-    if sort == "chart":
+    if sort == "chart" and not collapsed:
         tiebreakers = ["chart__method"] + tiebreakers
     rows = list(rows.order_by(order_field, *tiebreakers))
 
     # .values()/.annotate() returns plain dicts, not Recording/Chart
-    # instances -- there's no catalog_display property or __str__ to
-    # reuse here, so both are built by hand, once, per row.
-    chart_labels = {c.id: str(c) for c in Chart.objects.all()}
+    # instances -- there is no catalog_display property or __str__ to
+    # reuse here, so both are built by hand, once, per row. Ordered by
+    # (category, method) so chart_order below matches the order charts
+    # are listed in everywhere else in the app.
+    charts_by_id = {c.id: c for c in Chart.objects.order_by("category", "method")}
+    chart_labels = {cid: str(c) for cid, c in charts_by_id.items()}
+    chart_order = {cid: i for i, cid in enumerate(charts_by_id)}
+
+    breakdown = {}
+    if collapsed:
+        # ONE extra aggregate query (not one per row), re-grouped by
+        # (recording, chart), to recover exactly what collapsing threw
+        # away: WHICH chart each merged number came from. That is needed
+        # for the Charts badges, for naming the chart behind "best peak",
+        # and so First/Last entry can still link to the real chart-week
+        # page instead of becoming dead text.
+        for item in (
+            entries
+            .values("recording_id", "chart_id")
+            .annotate(chart_peak=Min("position"), chart_first=Min("week_date"), chart_last=Max("week_date"))
+        ):
+            breakdown.setdefault(item["recording_id"], []).append(item)
+        for items in breakdown.values():
+            items.sort(key=lambda i: chart_order.get(i["chart_id"], len(chart_order)))
+
     for row in rows:
-        row["chart_label"] = chart_labels[row["chart_id"]]
+        if collapsed:
+            per_chart = breakdown.get(row["recording_id"], [])
+            row["chart_badges"] = [
+                {
+                    "code": _chart_code(charts_by_id[i["chart_id"]]),
+                    "label": chart_labels[i["chart_id"]],
+                    "chart_id": i["chart_id"],
+                    "peak": i["chart_peak"],
+                }
+                for i in per_chart
+            ]
+            # Which chart produced the best peak, and which produced the
+            # first and the last appearance. per_chart is already in
+            # chart display order and min()/next() both take the FIRST
+            # match, so a tie (the same peak on two charts, or two charts
+            # debuting it the same week) resolves stably rather than
+            # landing on whatever order SQL happened to return.
+            best = min(per_chart, key=lambda i: i["chart_peak"], default=None)
+            row["peak_chart_code"] = _chart_code(charts_by_id[best["chart_id"]]) if best else ""
+            row["peak_chart_label"] = chart_labels[best["chart_id"]] if best else ""
+            first_source = next((i for i in per_chart if i["chart_first"] == row["first_entry"]), None)
+            last_source = next((i for i in per_chart if i["chart_last"] == row["last_entry"]), None)
+            # first_chart_id/last_chart_id exist in BOTH modes (in "chart"
+            # mode they are just this row's own chart), so the template
+            # links a date the same way either way.
+            row["first_chart_id"] = first_source["chart_id"] if first_source else None
+            row["last_chart_id"] = last_source["chart_id"] if last_source else None
+        else:
+            row["chart_label"] = chart_labels[row["chart_id"]]
+            row["first_chart_id"] = row["chart_id"]
+            row["last_chart_id"] = row["chart_id"]
         parts = [row["recording__label__name"], row["recording__catalog_number"]]
         if row["recording__side"]:
             parts.append(row["recording__side"])
@@ -266,7 +382,7 @@ def _recordings_matrix_query(request):
         # string, not a request. Release preferred (the precise, common
         # case); Master is the fallback for a manually-entered reference
         # that could only be pinned down to the work, not the specific
-        # pressing (see DiscogsReferenceMixin). Blank when there's no
+        # pressing (see DiscogsReferenceMixin). Blank when there is no
         # link at all yet.
         release_id = row["recording__discogs__discogs_release_id"]
         master_id = row["recording__discogs__discogs_master_id"]
@@ -290,7 +406,7 @@ def _recordings_matrix_query(request):
             tooltip_lines.append(f"Written by: {row['recording__discogs__songwriters']}")
         row["discogs_tooltip"] = "\n".join(tooltip_lines) or "No details cached yet"
 
-    state = {"genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction}
+    state = {"genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction, "group": group}
     return rows, state
 
 
@@ -299,15 +415,25 @@ def _recordings_matrix_columns(state):
     # template: its target direction depends on whether IT is the
     # currently-active sort column (click again to flip asc/desc) or not
     # (click switches to it, defaulting to asc), AND it has to carry the
-    # CURRENT genre/chart/q filters forward too, or sorting would silently
-    # drop whatever you'd just filtered by. Keyed by sort key so the
-    # template can place each header exactly where it wants it, e.g.
-    # {{ columns.peak.href }}, rather than looping in a fixed order.
+    # CURRENT genre/chart/q filters and the grouping mode forward too, or
+    # sorting would silently drop whatever you had just filtered by (or
+    # bounce a collapsed view back to one-row-per-chart). Keyed by sort
+    # key so the template can place each header exactly where it wants
+    # it, e.g. {{ columns.peak.href }}, rather than looping in a fixed
+    # order.
+    collapsed = state["group"] == "recording"
     columns = {}
     for key, (_, label) in RECORDINGS_MATRIX_SORTS.items():
+        if collapsed and key in RECORDINGS_MATRIX_COLLAPSED_SORTS:
+            # "Peak" -> "Best peak", "Chart" -> "Charts": the header says
+            # what the collapsed number actually is.
+            _, label = RECORDINGS_MATRIX_COLLAPSED_SORTS[key]
         is_active = key == state["sort"]
         next_dir = "desc" if (is_active and state["dir"] == "asc") else "asc"
-        params = {"genre": state["genre"], "chart": state["chart"], "q": state["q"], "sort": key, "dir": next_dir}
+        params = {
+            "genre": state["genre"], "chart": state["chart"], "q": state["q"],
+            "group": state["group"], "sort": key, "dir": next_dir,
+        }
         columns[key] = {
             "label": label,
             "href": "?" + urlencode({k: v for k, v in params.items() if v}),
