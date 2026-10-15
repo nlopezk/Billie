@@ -1,0 +1,12 @@
+{% comment %}
+charts/templates/charts/_discogs_tabs.html
+
+The two views of the Discogs section, as tabs: the review queue ("what
+still needs deciding") and the audit ("which of the ones I linked are
+wrong"). Shared by both pages so they can't drift apart. `active` is
+passed by the including page: {% include ... with active="queue" %}.
+{% endcomment %}
+<nav class="tabs" aria-label="Discogs views">
+    <a href="{% url 'charts:discogs_queue' %}" class="{% if active == 'queue' %}active{% endif %}">Review queue</a>
+    <a href="{% url 'charts:discogs_audit' %}" class="{% if active == 'audit' %}active{% endif %}">Audit what's linked</a>
+</nav>

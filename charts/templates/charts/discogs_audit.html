@@ -16,17 +16,16 @@ Jordan And His Tympany Five" is an agreement, not a problem -- because
 an audit view that cries wolf on hundreds of rows is one nobody reads.
 {% endcomment %}
 {% block title %}Discogs audit{% endblock %}
-{% block extra_head %}
-<style>body { max-width: 1600px; }</style>
-{% endblock %}
 {% block content %}
-    <h1>Discogs audit</h1>
-    <p class="subtitle">
-        What's linked so far, ours vs Discogs, most recently linked first
-        &middot; <a href="{% url 'charts:discogs_queue' %}">&larr; back to the review queue</a>
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>Discogs matching</h1>
+            <p class="subtitle">What's linked so far, ours vs Discogs, most recently linked first.</p>
+        </div>
+    </div>
+    {% include "charts/_discogs_tabs.html" with active="audit" %}
 
-    <form class="matrix-filters" method="get" action="{% url 'charts:discogs_audit' %}">
+    <form class="filter-bar" method="get" action="{% url 'charts:discogs_audit' %}">
         {% comment %} Carry the current sort through, so filtering doesn't reset it. {% endcomment %}
         <input type="hidden" name="sort" value="{{ sort }}">
         <input type="hidden" name="dir" value="{{ dir }}">
@@ -42,44 +41,43 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
             Search
             <input type="search" name="q" value="{{ q }}" placeholder="ours or Discogs: song, artist, label, catalog #...">
         </label>
-        <label class="checkbox-label">
+        <label class="check">
             <input type="checkbox" name="mismatches" value="1" {% if only_mismatches %}checked{% endif %} onchange="this.form.submit()">
             Only rows with a disagreement
         </label>
-        <button type="submit" class="discogs-btn">Filter</button>
+        <button type="submit">Filter</button>
     </form>
 
-    <p class="matrix-summary">
+    <p class="summary">
         Showing {{ shown_count }} of {{ total_linked }} linked
         &middot; <strong>{{ mismatch_count }}</strong> with a disagreement worth a look
     </p>
 
     {% if needs_detail_count %}
     {% comment %}
-    Bulk-confirming is instant because it skips the per-release detail
-    fetch (see views.discogs_bulk). Those rows fall back to release-level
-    Artist/Song, marked "rel" in the table. This is the prompt to go get
-    the real per-side values -- and the songwriter/producer credits,
-    which have no release-level fallback at all.
+    Linked rows still missing their per-track detail -- in practice links
+    typed into the entry form (which never goes online) or a fetch that
+    failed. Their Artist/Song fall back to the whole release's, marked
+    "rel" in the table, and they have no songwriter credits at all. The
+    review queue lists them first and fetches each one as it loads.
     {% endcomment %}
-    <div class="discogs-message" style="border-color: var(--new); color: var(--new);">
+    <div class="alert alert-warning">
         <strong>{{ needs_detail_count }}</strong> linked
         match{{ needs_detail_count|pluralize:"es" }} {{ needs_detail_count|pluralize:"has,have" }}
         no per-track detail yet &mdash; their Artist/Song below are the whole release's,
         marked <span class="release-level-tag">rel</span>, and they have no songwriter credits.
-        Fetch them from the <a href="{% url 'charts:discogs_queue' %}">review queue</a>
-        ("Fetch details for next N"), or run
-        <code>python manage.py discogs_match --details</code> to do them all in one go.
+        Opening the <a href="{% url 'charts:discogs_queue' %}">review queue</a> fetches them automatically,
+        or run <code>python manage.py discogs_match --details</code> to do them all in one go.
     </div>
     {% endif %}
 
     <div class="table-wrap">
-    <table class="audit-table">
+    <table class="audit-table dense-table">
         <colgroup>
             <col style="width: 8.5rem;">
             <col style="width: 12rem;"><col style="width: 10rem;"><col style="width: 9rem;">
             <col style="width: 12rem;"><col style="width: 10rem;"><col style="width: 9rem;">
-            <col style="width: 4rem;">
+            <col style="width: 6.25rem;">
         </colgroup>
         <thead>
             <tr>
@@ -101,8 +99,8 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
             {% for row in page %}
             <tr class="{% if row.has_mismatch %}has-mismatch{% endif %}">
                 <td class="linked-at">
-                    {{ row.match.linked_at|date:"y-m-d H:i" }}
-                    <span class="status-badge status-{{ row.match.status }}">{{ row.match.get_status_display|truncatewords:1 }}</span>
+                    {{ row.match.linked_at|date:"y-m-d H:i" }}<br>
+                    <span class="status-badge status-{{ row.match.status }}">{% if row.match.status == "manual" %}Manual{% else %}{{ row.match.get_status_display }}{% endif %}</span>
                 </td>
 
                 <td class="wrap side-ours">{{ row.recording.song.title }}</td>
@@ -130,8 +128,8 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
                 </td>
 
                 <td class="audit-actions">
-                    <a href="{{ row.match.discogs_url }}" target="_blank" rel="noopener"
-                       title="Open {{ row.match.reference_type }} {{ row.match.reference_id }} on discogs.com">&nearr;</a>
+                    <a class="btn btn-sm btn-icon" href="{{ row.match.discogs_url }}" target="_blank" rel="noopener"
+                       title="Open {{ row.match.reference_type }} {{ row.match.reference_id }} on discogs.com" aria-label="Open on Discogs">&nearr;</a>
                     {% comment %}
                     status=all is REQUIRED here, not optional: every row
                     on this page is confirmed or manual by definition,
@@ -140,8 +138,8 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
                     lands on an empty queue -- which reads as the link
                     being broken. The #anchor jumps straight to the row.
                     {% endcomment %}
-                    <a href="{% url 'charts:discogs_queue' %}?status=all&amp;q={{ row.recording.catalog_number|urlencode }}#discogs-row-{{ row.recording.id }}"
-                       title="Open this in the review queue to change or reset it">fix</a>
+                    <a class="btn btn-sm" href="{% url 'charts:discogs_queue' %}?status=all&amp;q={{ row.recording.catalog_number|urlencode }}#discogs-row-{{ row.recording.id }}"
+                       title="Open this in the review queue to change or reset it">Fix</a>
                 </td>
             </tr>
             {% if row.match.note %}
@@ -151,23 +149,23 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
             </tr>
             {% endif %}
             {% empty %}
-            <tr><td colspan="8" style="color: var(--muted); text-align:center;">Nothing linked matches these filters.</td></tr>
+            <tr><td colspan="8" class="empty-row">Nothing linked matches these filters.</td></tr>
             {% endfor %}
         </tbody>
     </table>
     </div>
 
     {% if page.has_other_pages %}
-    <div class="nav-bar" style="margin-top:1rem;">
+    <div class="pager">
         <div>
             {% if page.has_previous %}
-                <a class="button" href="?{{ base_querystring }}&page={{ page.previous_page_number }}">&larr; previous</a>
+                <a class="btn" href="?{{ base_querystring }}&page={{ page.previous_page_number }}">&larr; Previous</a>
             {% endif %}
         </div>
-        <span class="muted">page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
         <div>
             {% if page.has_next %}
-                <a class="button" href="?{{ base_querystring }}&page={{ page.next_page_number }}">next &rarr;</a>
+                <a class="btn" href="?{{ base_querystring }}&page={{ page.next_page_number }}">Next &rarr;</a>
             {% endif %}
         </div>
     </div>

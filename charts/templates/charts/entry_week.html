@@ -3,12 +3,9 @@
 {% block title %}{% if is_edit %}Edit{% else %}Enter{% endif %} {{ chart }}{% if week_date %} &mdash; {{ week_date }}{% endif %}{% endblock %}
 {% block extra_head %}
 <script src="{% static 'charts/htmx.min.js' %}"></script>
-{% comment %} This page's table needs more room than the base 900px layout. {% endcomment %}
-<style>body { max-width: 1500px; }</style>
 {% endblock %}
 {% block content %}
 
-<h1>{% if is_edit %}Edit a saved week{% else %}Enter a week{% endif %}: {{ chart }}</h1>
 
 {% if week_date is None %}
     {% comment %}
@@ -17,25 +14,41 @@
     Not a case any of the 5 real charts hit today, but the schema allows
     adding a 6th chart later.
     {% endcomment %}
-    <p class="subtitle">This chart has no entries yet -- pick a starting week.</p>
-    <form method="get" action="">
+    <div class="page-header">
+        <div>
+            <h1>Enter a week: {{ chart }}</h1>
+            <p class="subtitle">This chart has no entries yet &mdash; pick a starting week.</p>
+        </div>
+    </div>
+    <form method="get" action="" class="page-actions">
         <input type="date" name="week" required>
-        <button type="submit">Start</button>
+        <button type="submit" class="btn-primary">Start</button>
     </form>
 {% else %}
-    <p class="subtitle">
-        Week ending {{ week_date|date:"F j, Y" }}
-        &middot; last week was {{ previous_week_date|date:"F j, Y" }}
-        {% if is_edit %}
-            &middot; editing what's already saved for this week
-            &middot; <a href="{% url 'charts:chart_week' chart.id week_date_str %}">&larr; back to browse</a>
-        {% else %}
-            &middot; <a href="{% url 'charts:entry_week' chart.id %}">change week</a>
-        {% endif %}
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>{% if is_edit %}Edit a saved week{% else %}Enter a week{% endif %}: {{ chart }}</h1>
+            <p class="subtitle">
+                Week ending <strong>{{ week_date|date:"F j, Y" }}</strong>
+                &middot; last week was {{ previous_week_date|date:"F j, Y" }}
+                {% if is_edit %}&middot; editing what's already saved{% endif %}
+            </p>
+        </div>
+        <div class="page-actions">
+            {% comment %}
+            Leaving the page, not part of entering -- so a plain secondary
+            button up here, well away from Save at the bottom.
+            {% endcomment %}
+            {% if is_edit %}
+                <a class="btn" href="{% url 'charts:chart_week' chart.id week_date_str %}">&larr; Back to browse</a>
+            {% else %}
+                <a class="btn" href="{% url 'charts:entry_week' chart.id %}">Change week</a>
+            {% endif %}
+        </div>
+    </div>
 
     {% if errors %}
-    <div class="entry-errors">
+    <div class="alert alert-error">
         <strong>Nothing was saved -- fix these and try again:</strong>
         <ul>
             {% for e in errors %}<li>{{ e }}</li>{% endfor %}
@@ -53,7 +66,19 @@
         {% for s in songs %}<option value="{{ s.title }}">{% endfor %}
     </datalist>
 
-    <form method="post" action="{% if is_edit %}{% url 'charts:entry_week_edit' chart.id week_date_str %}{% else %}{% url 'charts:entry_week' chart.id %}{% endif %}">
+    {% comment %}
+    The onkeydown stops the browser's built-in "Enter in a text field
+    submits the form" rule. Without it, pressing Enter in a last-week box
+    -- which is how you resolve a row (hx-trigger keyup[key=='Enter'] in
+    _entry_row.html) -- ALSO posted the whole half-entered week, landing
+    on a wall of "not resolved" errors, or saving the week outright once
+    every row happened to be resolved. Blocking keydown leaves keyup
+    alone, so the row still resolves; the week is saved only by the Save
+    button (CLAUDE.md: Enter commits a ROW). Enter on a focused BUTTON is
+    untouched -- event.target is the button there, not an input.
+    {% endcomment %}
+    <form method="post" action="{% if is_edit %}{% url 'charts:entry_week_edit' chart.id week_date_str %}{% else %}{% url 'charts:entry_week' chart.id %}{% endif %}"
+          onkeydown="if (event.key === 'Enter' && event.target.matches('input')) event.preventDefault();">
         {% csrf_token %}
         <input type="hidden" name="week_date" value="{{ week_date_str }}">
         <input type="hidden" id="total_rows" name="total_rows" value="{{ next_index }}">
@@ -62,9 +87,9 @@
             <colgroup>
                 <col style="width: 4.75rem;">
                 <col>
-                <col style="width: 6.5rem;">
+                <col style="width: 7.25rem;">
                 <col style="width: 11rem;">
-                <col style="width: 3rem;">
+                <col style="width: 3.5rem;">
             </colgroup>
             <thead>
                 <tr>
@@ -82,6 +107,10 @@
             </tbody>
         </table>
 
+        {% comment %}
+        Pinned to the bottom of the window (position: sticky in base.html),
+        so Save is always one click away however long the week is.
+        {% endcomment %}
         <div class="entry-actions">
             <button type="button" id="add-row-btn"
                 hx-get="{% url 'charts:entry_add_row' chart.id %}"
@@ -89,7 +118,7 @@
                 hx-target="#entry-rows" hx-swap="beforeend">
                 + Add row
             </button>
-            <button type="submit" class="save-week-button">{% if is_edit %}Save changes{% else %}Save week{% endif %}</button>
+            <button type="submit" class="btn-primary">{% if is_edit %}Save changes{% else %}Save week{% endif %}</button>
         </div>
     </form>
 {% endif %}

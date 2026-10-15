@@ -15,38 +15,38 @@ many rows at once and re-rendering honestly beats patching N rows.
 {% block title %}Discogs matching{% endblock %}
 {% block extra_head %}
 <script src="{% static 'charts/htmx.min.js' %}"></script>
-<style>body { max-width: 1500px; }</style>
 {% endblock %}
 {% block content %}
-    <h1>Discogs matching</h1>
-    <p class="subtitle">
-        Link each recording to its Discogs release, for the information Billboard never printed
-        &middot; <a href="{% url 'charts:discogs_audit' %}">audit what's linked &rarr;</a>
-        &middot; <a href="{% url 'charts:recordings_matrix' %}">recordings matrix &rarr;</a>
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>Discogs matching</h1>
+            <p class="subtitle">Link each recording to its Discogs release, for what Billboard never printed.</p>
+        </div>
+    </div>
+    {% include "charts/_discogs_tabs.html" with active="queue" %}
 
     {% if not has_token %}
     {% comment %}
     Everything on this page needs a token, so say so plainly and up front
     rather than letting every button fail one at a time.
     {% endcomment %}
-    <div class="entry-errors">
+    <div class="alert alert-error">
         <strong>No Discogs token configured.</strong>
-        <p style="margin:0.4rem 0 0">
+        <p>
             Generate a personal access token at
             <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a>
             &rarr; <em>Generate new token</em>, then create a file called <code>.env</code> in the
             project root containing:
         </p>
-        <pre style="margin:0.4rem 0 0">DISCOGS_TOKEN=your_token_here</pre>
-        <p style="margin:0.4rem 0 0">
+        <pre>DISCOGS_TOKEN=your_token_here</pre>
+        <p>
             <code>.env</code> is git-ignored, so the token never gets committed.
         </p>
     </div>
     {% endif %}
 
     {% for message in messages %}
-        <div class="discogs-message">{{ message }}</div>
+        <div class="alert alert-success">{{ message }}</div>
     {% endfor %}
 
     {% comment %} Progress across every recording on file. {% endcomment %}
@@ -55,7 +55,7 @@ many rows at once and re-rendering honestly beats patching N rows.
         <span class="progress-label">{{ progress.settled }} of {{ progress.total }} recordings settled ({{ progress.percent }}%)</span>
     </div>
 
-    <form class="matrix-filters" method="get" action="{% url 'charts:discogs_queue' %}">
+    <form class="filter-bar" method="get" action="{% url 'charts:discogs_queue' %}">
         <label>
             Status
             <select name="status" onchange="this.form.submit()">
@@ -70,7 +70,7 @@ many rows at once and re-rendering honestly beats patching N rows.
             Search
             <input type="search" name="q" value="{{ q }}" placeholder="song, artist, label, catalog #...">
         </label>
-        <button type="submit" class="discogs-btn">Filter</button>
+        <button type="submit">Filter</button>
     </form>
 
     {% comment %}
@@ -79,13 +79,13 @@ many rows at once and re-rendering honestly beats patching N rows.
     current querystring so the redirect lands back on the same filter/page.
     {% endcomment %}
     {% if has_token %}
-    <div class="discogs-batch">
+    <div class="batch-actions">
         {% if unmatched_count %}
         <form method="post" action="{% url 'charts:discogs_bulk' %}">
             {% csrf_token %}
             <input type="hidden" name="action" value="search_batch">
             <input type="hidden" name="querystring" value="{{ querystring }}">
-            <button type="submit" class="discogs-btn primary"
+            <button type="submit" class="btn-primary"
                 title="Roughly one second per recording -- this request stays open until it finishes">
                 Search next {{ batch_size }} unsearched ({{ unmatched_count }} left)
             </button>
@@ -98,7 +98,7 @@ many rows at once and re-rendering honestly beats patching N rows.
             <input type="hidden" name="action" value="confirm_exact">
             <input type="hidden" name="querystring" value="{{ querystring }}">
             {% for match_id in page_exact_ids %}<input type="hidden" name="match_id" value="{{ match_id }}">{% endfor %}
-            <button type="submit" class="discogs-btn"
+            <button type="submit"
                 title="Confirms only suggestions where BOTH label and catalog number matched exactly, and where the title relates to our song or artist. Also fetches each one's songwriters and per-track details, so roughly a second per match.">
                 Confirm &amp; fetch {{ page_exact_ids|length }} exact match{{ page_exact_ids|length|pluralize:"es" }} on this page
             </button>
@@ -110,8 +110,8 @@ many rows at once and re-rendering honestly beats patching N rows.
             {% csrf_token %}
             <input type="hidden" name="action" value="fetch_details">
             <input type="hidden" name="querystring" value="{{ querystring }}">
-            <button type="submit" class="discogs-btn"
-                title="Confirming is instant; this is the slower per-release fetch that fills in songwriters and producers.">
+            <button type="submit"
+                title="Fetches songwriters, producers and per-track detail for linked rows that do not have them yet -- links typed into the entry form, or a fetch that failed.">
                 Fetch details for next {{ batch_size }} ({{ progress.needs_detail }} pending)
             </button>
         </form>
@@ -120,12 +120,12 @@ many rows at once and re-rendering honestly beats patching N rows.
     {% endif %}
 
     <div class="table-wrap">
-    <table class="discogs-table">
+    <table class="discogs-table dense-table">
         <colgroup>
             <col style="width: 16rem;">
             <col style="width: 9rem;">
             <col>
-            <col style="width: 11rem;">
+            <col style="width: 9.5rem;">
         </colgroup>
         <thead>
             <tr>
@@ -139,23 +139,23 @@ many rows at once and re-rendering honestly beats patching N rows.
             {% for match in page %}
                 {% include "charts/_discogs_row.html" %}
             {% empty %}
-            <tr><td colspan="4" style="color: var(--muted); text-align:center;">Nothing here with these filters.</td></tr>
+            <tr><td colspan="4" class="empty-row">Nothing here with these filters.</td></tr>
             {% endfor %}
         </tbody>
     </table>
     </div>
 
     {% if page.has_other_pages %}
-    <div class="nav-bar" style="margin-top:1rem;">
+    <div class="pager">
         <div>
             {% if page.has_previous %}
-                <a class="button" href="?status={{ status }}&q={{ q }}&page={{ page.previous_page_number }}">&larr; previous</a>
+                <a class="btn" href="?status={{ status }}&q={{ q }}&page={{ page.previous_page_number }}">&larr; Previous</a>
             {% endif %}
         </div>
-        <span class="muted">page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
         <div>
             {% if page.has_next %}
-                <a class="button" href="?status={{ status }}&q={{ q }}&page={{ page.next_page_number }}">next &rarr;</a>
+                <a class="btn" href="?status={{ status }}&q={{ q }}&page={{ page.next_page_number }}">Next &rarr;</a>
             {% endif %}
         </div>
     </div>

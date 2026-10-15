@@ -318,6 +318,30 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   `CsrfViewMiddleware` 403s it. `base.html`'s `<body>` now carries
   `hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'`, which every descendant inherits —
   verified with `Client(enforce_csrf_checks=True)` (403 without the header, 200 with).
+- **UI consistency pass, 2026-10-15.** All styling lives in ONE stylesheet in
+  `charts/templates/charts/base.html`, organised as tokens -> base elements -> layout ->
+  components -> page-specific (see its header comment). Conventions to keep:
+  - **An action is a button, a link is for data.** "Enter a week", "Edit", "Fix", "Search"
+    are `<button>`/`<a class="btn">`; a chart name, a week date, a Discogs release are
+    links. Before this pass, most actions were underlined links in each page's subtitle.
+  - **No hard-coded colours or font sizes below the tokens.** Four sizes exist
+    (`--fs-xs/sm/control/base`); inputs, selects and buttons all share `--fs-control` and
+    `--control-h`, which is what makes a button line up with the box beside it. Button
+    variants: `.btn-primary` (one per screen), `.btn-ghost`, `.btn-danger`, `.btn-sm`,
+    `.btn-icon`. Every badge class shares one geometry; alerts are `.alert-success/
+    warning/error`.
+  - **Top nav bar** (Charts / Recordings / Discogs / Credits / Admin) replaces the
+    per-page "back to ... / ... ->" links; the active section comes from
+    `request.resolver_match.url_name`, so a new page only needs adding to the `if` there.
+    Discogs queue/audit are tabs (`_discogs_tabs.html`).
+  - **One page width** (`--page-width`) so the left edge never moves between pages;
+    reading pages opt into `{% block main_class %}page-narrow{% endblock %}`, which caps
+    content width without re-centring it. Dark mode has its own token values.
+  - **Bug fixed along the way:** pressing Enter in the entry form's last-week box (how a
+    row resolves) also submitted the whole week -- the browser's implicit form submission.
+    The form's `onkeydown` now blocks that; only the Save button saves a week.
+  - Visual checks were done with Playwright + Edge against a second dev server, with
+    every non-GET request aborted so nothing could write to `billboard.db`.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

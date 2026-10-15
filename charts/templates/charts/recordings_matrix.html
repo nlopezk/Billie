@@ -26,21 +26,18 @@ normal, reloadable, bookmarkable/shareable filtered URL).
 {% block title %}Recordings{% endblock %}
 {% block extra_head %}
 <script src="{% static 'charts/htmx.min.js' %}"></script>
-{% comment %} 8 columns want more room than the base 900px layout. {% endcomment %}
-<style>body { max-width: 1400px; }</style>
 {% endblock %}
 {% block content %}
-    <h1>Recordings</h1>
-    <p class="subtitle">
-        Every recording, with peak position, weeks charted, and first/last week &mdash;
-        {% if group == "recording" %}one row per recording, merged across charts{% else %}one row per chart it appeared on{% endif %} &middot;
-        <a href="{% url 'charts:chart_list' %}">&larr; back to charts</a>
-        &middot; <a href="{% url 'charts:discogs_queue' %}">Discogs matching &rarr;</a>
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>Recordings</h1>
+            <p class="subtitle">Every recording on file, with its peak, weeks charted, and first and last week.</p>
+        </div>
+    </div>
 
     <form
         id="matrix-filters"
-        class="matrix-filters"
+        class="filter-bar"
         method="get"
         action="{% url 'charts:recordings_matrix' %}"
         hx-get="{% url 'charts:recordings_matrix' %}"

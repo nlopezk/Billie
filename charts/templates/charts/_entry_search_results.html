@@ -23,8 +23,8 @@ instead (see _entry_create_form.html).
 {% else %}
     <p class="search-hint">no matches</p>
 {% endif %}
-<button type="button" class="create-new-link"
+<button type="button" class="create-new-btn"
     hx-get="{% url 'charts:entry_create_form' chart.id %}?row={{ row }}&week={{ week_date_str }}&q={{ query }}"
     hx-target="#create-form-{{ row }}" hx-swap="innerHTML">
-    + create new recording, never charted before
+    + Create a new recording (never charted before)
 </button>

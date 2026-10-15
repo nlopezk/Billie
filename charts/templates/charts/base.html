@@ -1,390 +1,644 @@
 {% comment %}
 charts/templates/charts/base.html
-Shared layout for the chart browser. Plain Django templates, no build
-step, no JS framework -- per CLAUDE.md's Stack section. The one bit of
-inline JS (select-onchange auto-submit on the week picker, in
-chart_week.html) is a single line, not worth reaching for HTMX over.
+
+Shared layout + the site's ONE stylesheet. Plain Django templates, no build
+step, no JS framework -- per CLAUDE.md's Stack section.
+
+How the stylesheet is organised (top to bottom), so a later change knows
+where it belongs:
+
+  1. Design tokens -- every colour, size, radius in ONE place, with a
+     dark-mode override block. Nothing further down hard-codes a colour
+     or a font size; it refers to a token. That's what keeps pages
+     consistent: two buttons can't drift to 0.8rem and 0.85rem when
+     neither of them is allowed to say a number at all.
+  2. Base elements -- body, headings, links, tables, form controls.
+  3. Layout -- the top nav bar, the page container, the page header.
+  4. Components -- buttons, badges, alerts, filter bar, pager, tabs.
+     These are the shared vocabulary every page is built from.
+  5. Page-specific styles -- only what genuinely belongs to one screen.
+
+The rule the components encode, and the reason for the 2026-10-15 pass:
+an ACTION is a button (enter a week, edit, fix, search, save); a link is
+for going to a piece of DATA (a chart name, a week, a Discogs release).
+Before that pass, most actions were underlined text links scattered
+through each page's subtitle, styled nine slightly different ways.
 {% endcomment %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Billboard Charts{% endblock %}</title>
     <style>
+        /* =================================================================
+           1. DESIGN TOKENS
+           ================================================================= */
         :root {
+            /* Tells the browser this page handles both schemes, so native
+               controls (scrollbars, date pickers, select menus) follow the
+               OS setting too -- the overrides below then swap OUR colours. */
             color-scheme: light dark;
-            --border: #d0d0d0;
-            --muted: #666;
-            --up: #1a7d1a;
-            --down: #b23b3b;
-            --new: #a06a00;
-            --tie: #6a4fbf;
+
+            /* Surfaces and text. --surface is the slightly-off background
+               for anything that sits "on" the page: the nav bar, filter
+               bars, table headers, hovered rows. */
+            --bg: #ffffff;
+            --surface: #f5f6f8;
+            --surface-strong: #eceef2;
+            --border: #dfe2e7;
+            --border-strong: #c3c8d0;
+            --text: #1c1f23;
+            --muted: #5d6570;
+
+            /* The ACTION colour: primary buttons, links, the active nav
+               item, focus rings. Deliberately NOT one of the semantic
+               colours below -- green means "up / confirmed / resolved" in
+               this app, so it can't also mean "click here". */
+            --accent: #2a5bd7;
+            --on-accent: #ffffff;
+
+            /* Semantic colours, each with one fixed meaning site-wide. */
+            --up: #1a7d1a;      /* moved up, confirmed, resolved, on file */
+            --down: #b23b3b;    /* moved down, error, delete, mismatch   */
+            --new: #9a6400;     /* debut, needs attention, will be created */
+            --tie: #6a4fbf;     /* tie, Master ref, informational        */
+
+            /* Type scale. Only these four sizes exist; every rule below
+               picks one. --fs-control is shared by EVERY input, select and
+               button, which is what makes a button exactly as tall as the
+               text box beside it. */
+            --fs-xs: 0.72rem;   /* badges, tags, tiny captions */
+            --fs-sm: 0.84rem;   /* dense tables, secondary text, small buttons */
+            --fs-control: 0.92rem;
+            --fs-base: 1rem;
+
+            /* One control height for inputs, selects and buttons alike,
+               plus a compact one for buttons inside table rows. */
+            --control-h: 2.1rem;
+            --control-h-sm: 1.75rem;
+
+            --radius: 6px;
+            --radius-sm: 4px;
+
+            /* Page widths. ONE container width for every page, so the nav
+               bar and every page's left edge sit in exactly the same place
+               as you move around. Reading pages (a chart week, the chart
+               list, credits) cap their CONTENT at --page-narrow instead of
+               narrowing the whole page -- see main.page-narrow below. */
+            --page-width: 1500px;
+            --page-narrow: 1040px;
         }
+
+        /* Dark mode: same tokens, lighter semantic colours. The light-mode
+           #5d6570 grey or #1a7d1a green on a near-black background would
+           fall well below readable contrast, which is what `color-scheme`
+           alone (set above, before this pass) silently produced. */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #15171b;
+                --surface: #1d2025;
+                --surface-strong: #262a31;
+                --border: #30353d;
+                --border-strong: #464c56;
+                --text: #e4e7eb;
+                --muted: #9aa3ae;
+                --accent: #7aa2ff;
+                --on-accent: #0b1430;
+                --up: #5cc25c;
+                --down: #f07474;
+                --new: #e3a948;
+                --tie: #a993f2;
+            }
+        }
+
+        /* =================================================================
+           2. BASE ELEMENTS
+           ================================================================= */
+
         /* border-box everywhere: a `width: Xrem` on an input/button/td
            means Xrem TOTAL (border+padding included), not Xrem of content
            PLUS whatever padding/border adds on top. Without this, a
            narrow table column sized exactly to fit its input (see the
            entry table's Pos/Wks-on/Anomaly-note columns) ends up a few
            pixels narrower than the input actually renders at, and the
-           overflow gets silently clipped by `overflow: hidden` on td --
-           which is what was cutting off the delete button and the
-           narrower inputs' placeholder text. */
+           overflow gets silently clipped by `overflow: hidden` on td. */
         *, *::before, *::after { box-sizing: border-box; }
+
         body {
+            margin: 0;
             font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-            max-width: 900px;
-            margin: 2rem auto;
-            padding: 0 1rem;
-            line-height: 1.4;
-        }
-        a { color: inherit; }
-        h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
-        .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; }
-        .nav-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap; }
-        .nav-bar a.button, .nav-bar select {
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 0.3rem 0.6rem;
-            text-decoration: none;
-            background: transparent;
-            color: inherit;
-            font: inherit;
-        }
-        /* Lets a wide table (e.g. the recordings matrix's 7 columns)
-           scroll horizontally on a narrow window instead of squeezing
-           every column unreadably thin or busting the page layout --
-           body itself never scrolls sideways, just this wrapper. */
-        .table-wrap { overflow-x: auto; }
-        table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-        th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; }
-        th { border-bottom: 2px solid var(--border); }
-        .pos { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
-        .movement { text-align: center; }
-        .movement.up { color: var(--up); }
-        .movement.down { color: var(--down); }
-        .movement.new { color: var(--new); font-weight: 600; }
-        .tie-badge {
-            display: inline-block;
-            font-size: 0.65rem;
-            line-height: 1;
-            border: 1px solid var(--tie);
-            color: var(--tie);
-            border-radius: 3px;
-            padding: 0.1rem 0.25rem;
-            margin-left: 0.3rem;
-            vertical-align: middle;
-        }
-        .anomaly-note {
-            font-size: 0.8rem;
-            color: var(--new);
-            display: block;
-            margin-top: 0.15rem;
-        }
-        /* Recordings matrix (recordings_matrix.html) */
-        .matrix-filters {
-            display: flex;
-            gap: 1rem;
-            align-items: flex-end;
-            flex-wrap: wrap;
-            margin-bottom: 1rem;
-            padding: 0.6rem 0.8rem;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-        }
-        .matrix-filters label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); }
-        .matrix-filters select, .matrix-filters input { font-size: 0.95rem; }
-        .matrix-filters .search-label { flex: 1; min-width: 12rem; }
-        .matrix-filters .search-label input { width: 100%; }
-        /* Smaller than the rest of the site -- this table has 8 columns
-           and up to ~1,500 rows, so it reads as a dense reference grid
-           rather than the same size text as the week-by-week browser. */
-        .recordings-table { font-size: 0.82rem; }
-        .recordings-table td { vertical-align: top; }
-        .recordings-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-        /* Song titles are the one column long enough to regularly run
-           past its column width. The base `td` rule (above) truncates
-           with an ellipsis -- overridden here so a long title WRAPS onto
-           a second line (the row just grows taller) instead of being cut
-           off, since losing part of a song's title is worse than a
-           slightly taller row. */
-        .recordings-table td.wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
-        th a.sort-link { color: inherit; text-decoration: none; }
-        th a.sort-link:hover { text-decoration: underline; }
-        th a.sort-link .sort-arrow { color: var(--tie); margin-left: 0.15rem; }
-        .matrix-summary { color: var(--muted); margin: 0 0 1rem; }
-        .recordings-table .discogs-cell { font-size: 0.9em; }
-        .recordings-table .discogs-cell a { color: var(--up); }
-        .recordings-table .discogs-cell a.needs-review { color: var(--new); }
-        /* "One row per recording" mode only. Each chart a recording made
-           shows as a compact code badge (CJb = Country Jukebox, CRt =
-           Country Retail) with the full chart name AND that chart's own
-           peak on hover -- codes because up to five of them have to
-           share one narrow cell, hover detail because collapsing the
-           rows is what hid those per-chart numbers in the first place. */
-        .chart-badge {
-            display: inline-block;
-            font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
-            font-size: 0.7rem; font-weight: 600; line-height: 1;
-            border-radius: 3px; padding: 0.15rem 0.3rem; margin: 0 0.2rem 0.15rem 0;
-            background: rgba(128,128,128,0.15); color: var(--muted);
-            cursor: help;
-        }
-        /* The chart that produced a collapsed row's best peak, printed
-           small under the number itself: that peak is merged from
-           several charts, so its source is shown rather than implied. */
-        .recordings-table .peak-source {
-            display: block; font-size: 0.65rem; font-weight: 400;
-            color: var(--muted); cursor: help;
+            font-size: var(--fs-base);
+            line-height: 1.45;
+            color: var(--text);
+            background: var(--bg);
         }
 
-        /* Discogs review queue (discogs_queue.html + _discogs_row.html) */
-        .discogs-table { font-size: 0.85rem; }
-        .discogs-table td { vertical-align: top; }
-        .discogs-recording .catalog-hint, .muted { color: var(--muted); }
-        .discogs-progress { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
-        .progress-bar { flex: 1; height: 0.5rem; background: rgba(128,128,128,0.2); border-radius: 3px; overflow: hidden; }
-        .progress-fill { height: 100%; background: var(--up); }
-        .progress-label { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
-        .discogs-batch { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-        .discogs-message {
-            border: 1px solid var(--up); color: var(--up);
-            border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.6rem; font-size: 0.9rem;
+        h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 0.3rem; }
+        h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+        code, pre { font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; font-size: 0.9em; }
+
+        /* Links are coloured, not underlined -- in tables full of song
+           titles and dates, a sea of underlines is the visual noise this
+           pass set out to remove. The underline returns on hover, and
+           always inside running prose (alerts) where a coloured word
+           alone could be missed. */
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .alert a { text-decoration: underline; }
+
+        .muted { color: var(--muted); }
+
+        /* Keyboard focus is visible everywhere, in the action colour. The
+           entry form is keyboard-first (CLAUDE.md), so where the cursor
+           is must never be a guess. :focus-visible means a mouse click
+           doesn't leave a ring behind, only keyboard navigation does. */
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+        /* ---- Tables ---- */
+        /* Lets a wide table scroll horizontally on a narrow window instead
+           of squeezing every column unreadably thin -- the page itself
+           never scrolls sideways, just this wrapper. */
+        .table-wrap { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+        th, td {
+            text-align: left;
+            padding: 0.45rem 0.6rem;
+            border-bottom: 1px solid var(--border);
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        .discogs-error { color: var(--down); margin: 0 0 0.4rem; font-size: 0.85rem; }
-        .discogs-btn { cursor: pointer; font-size: 0.8rem; margin: 0 0.2rem 0.2rem 0; }
-        .discogs-btn.primary { border-color: var(--up); color: var(--up); font-weight: 600; }
-        .discogs-btn.primary:hover { background: var(--up); color: white; }
-        .discogs-btn.subtle { color: var(--muted); }
-        .discogs-btn:hover { background: rgba(128,128,128,0.15); }
-        /* The Discogs Release/Master id -- shown as plain visible text
-           (not just the link href) specifically so several candidates'
-           ids can be compared at a glance, no hovering needed. */
-        .ref-id {
-            display: inline-block;
-            font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
-            font-size: 0.75rem;
+        /* Headers: small, muted, on the surface tint, and never wrapping
+           -- a two-line "Last / wk" header was one of the inconsistencies
+           this pass fixed. A header that doesn't fit gets an ellipsis
+           (and a wider column), not a second line. */
+        th {
+            font-size: var(--fs-sm);
             font-weight: 600;
-            border-radius: 3px;
-            padding: 0.1rem 0.3rem;
-            margin: 0 0.2rem 0.2rem 0;
-            background: rgba(128,128,128,0.15);
+            color: var(--muted);
+            background: var(--surface);
+            border-bottom: 1px solid var(--border-strong);
+            white-space: nowrap;
         }
+        tbody tr:hover > td { background: var(--surface); }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        /* For columns long enough to regularly overflow (song titles,
+           artist credits): WRAP onto a second line rather than truncate,
+           since losing part of a title is worse than a taller row. */
+        td.wrap { white-space: normal; text-overflow: clip; overflow-wrap: break-word; }
+        /* The "nothing matches these filters" row every table has. */
+        td.empty-row { color: var(--muted); text-align: center; padding: 1.5rem; }
+
+        /* ---- Form controls ----
+           Inputs, selects and buttons share ONE font size and ONE height,
+           so a button always lines up with the text box beside it. Before
+           this, buttons were 0.8rem in places where their inputs were
+           0.9rem, and every pairing sat a few pixels out of line. */
+        input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+        select, textarea {
+            font: inherit;
+            font-size: var(--fs-control);
+            min-height: var(--control-h);
+            padding: 0 0.55rem;
+            color: var(--text);
+            background: var(--bg);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+        }
+        textarea { padding: 0.4rem 0.55rem; }
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--accent);
+            outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+            outline-offset: 0;
+        }
+        input::placeholder { color: var(--muted); opacity: 0.8; }
+        input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; margin: 0; }
+
+        /* =================================================================
+           3. LAYOUT
+           ================================================================= */
+
+        /* The top bar. Replaces the old per-page subtitle links ("← back
+           to charts · Discogs matching → · ...") that differed on every
+           page -- the same five sections are now always one click away,
+           in the same place, with the current one highlighted. */
+        .site-header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1.75rem;
+        }
+        .container { max-width: var(--page-width); margin: 0 auto; padding: 0 1.25rem; }
+        .site-header .container { display: flex; align-items: center; gap: 1.5rem; min-height: 3.1rem; }
+        .brand { font-weight: 700; color: var(--text); white-space: nowrap; }
+        .brand:hover { text-decoration: none; }
+        .site-nav { display: flex; gap: 0.25rem; flex-wrap: wrap; flex: 1; }
+        .site-nav a, .site-header .nav-admin {
+            color: var(--muted);
+            font-size: var(--fs-control);
+            font-weight: 500;
+            padding: 0.35rem 0.7rem;
+            border-radius: var(--radius-sm);
+        }
+        .site-nav a:hover, .site-header .nav-admin:hover {
+            color: var(--text);
+            background: var(--surface-strong);
+            text-decoration: none;
+        }
+        .site-nav a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+        main { padding-bottom: 3rem; }
+        /* Reading pages cap their CONTENT width, not the page's, so they
+           keep the same left edge as every wide page (see --page-narrow). */
+        main.page-narrow > * { max-width: var(--page-narrow); }
+
+        /* Title on the left, the page's main actions on the right. Every
+           page uses this same block, so the primary action for a screen is
+           always in the same spot. */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+        .subtitle { color: var(--muted); margin: 0; }
+        .page-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+        /* =================================================================
+           4. COMPONENTS
+           ================================================================= */
+
+        /* ---- Buttons ----
+           ONE base style for every <button> and every <a class="btn">.
+           Variants only change colour or size, never the shape:
+             .btn-primary  the one main action on a screen (filled)
+             .btn-ghost    low-emphasis (Reset, Reopen, "It's one act")
+             .btn-danger   destructive (delete a row)
+             .btn-sm       compact, for buttons inside table rows
+             .btn-icon     square, for a single glyph (x, arrow)
+           A bare <button> with no class gets the default look, so even a
+           button nobody remembered to style still matches the rest. */
+        button, .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            min-height: var(--control-h);
+            padding: 0 0.8rem;
+            font: inherit;
+            font-size: var(--fs-control);
+            font-weight: 500;
+            line-height: 1.2;
+            color: var(--text);
+            background: var(--bg);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            white-space: nowrap;
+            text-decoration: none;
+        }
+        button:hover, .btn:hover { background: var(--surface-strong); text-decoration: none; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+        .btn-primary:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+        .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+        .btn-ghost:hover { color: var(--text); }
+        .btn-danger { color: var(--down); }
+        .btn-danger:hover { background: var(--down); border-color: var(--down); color: var(--bg); }
+        .btn-sm { min-height: var(--control-h-sm); padding: 0 0.55rem; font-size: var(--fs-sm); }
+        .btn-icon { width: var(--control-h); padding: 0; }
+        .btn-icon.btn-sm { width: var(--control-h-sm); }
+        /* "There's nothing before/after this" placeholders keep their spot
+           (so the layout doesn't jump) but can't be clicked. */
+        .btn[aria-disabled="true"], button:disabled { opacity: 0.45; pointer-events: none; }
+
+        /* ---- Badges ----
+           Every small label shares one geometry -- size, padding, radius --
+           and only its colour says what it is. The names stay specific
+           (.status-badge, .ref-id, ...) because the templates read better
+           that way, but they all start from this one rule. */
+        .tie-badge, .chart-badge, .ref-id, .status-badge, .confidence-badge,
+        .release-level-tag, .discogs-linked-tag {
+            display: inline-flex;
+            align-items: center;
+            font-size: var(--fs-xs);
+            font-weight: 600;
+            line-height: 1;
+            padding: 0.2rem 0.4rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid currentColor;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        /* Codes and IDs are monospace with a filled tint instead of an
+           outline, so "an identifier you compare by eye" reads
+           differently from "a status". */
+        .chart-badge, .ref-id {
+            font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+            border-color: transparent;
+            background: var(--surface-strong);
+        }
+        .chart-badge { color: var(--muted); cursor: help; margin: 0 0.2rem 0.2rem 0; }
         /* Release (the precise, common case -- search only ever looks for
            these) vs Master (only when a specific pressing couldn't be
-           pinned down) get distinct colors so the difference is visible
+           pinned down) get distinct colours so the difference is visible
            without reading the letter closely. */
         .ref-id.ref-release { color: var(--up); }
         .ref-id.ref-master { color: var(--tie); }
-        .status-badge, .confidence-badge {
-            display: inline-block; font-size: 0.7rem; line-height: 1;
-            border-radius: 3px; padding: 0.15rem 0.3rem; margin: 0 0.2rem 0.2rem 0;
-            border: 1px solid currentColor; white-space: nowrap;
-        }
-        .status-badge.status-unmatched { color: var(--muted); }
-        .status-badge.status-suggested { color: var(--new); font-weight: 600; }
-        .status-badge.status-confirmed, .status-badge.status-manual { color: var(--up); font-weight: 600; }
-        .status-badge.status-no_match, .status-badge.status-rejected { color: var(--muted); }
+        .tie-badge { color: var(--tie); margin-left: 0.3rem; }
+        .status-badge.status-unmatched, .status-badge.status-no_match, .status-badge.status-rejected { color: var(--muted); }
+        .status-badge.status-suggested { color: var(--new); }
+        .status-badge.status-confirmed, .status-badge.status-manual { color: var(--up); }
         .confidence-badge.confidence-exact { color: var(--up); }
         .confidence-badge.confidence-strong { color: var(--tie); }
         .confidence-badge.confidence-weak { color: var(--new); }
-        .candidate-list { list-style: none; margin: 0; padding: 0; }
-        .candidate-list li { display: flex; align-items: flex-start; gap: 0.3rem; margin-bottom: 0.25rem; }
-        .candidate-pick { flex: 1; text-align: left; cursor: pointer; font-size: 0.8rem; }
-        .candidate-pick:hover { background: rgba(26,125,26,0.15); border-color: var(--up); }
-        .candidate-peek { text-decoration: none; padding: 0.25rem; color: var(--muted); }
-        .discogs-linked a { font-weight: 600; color: var(--up); }
-        .credit-line { font-size: 0.8rem; margin-top: 0.2rem; }
-        .credit-label { color: var(--muted); }
-        .discogs-note { display: block; font-size: 0.75rem; color: var(--new); margin-top: 0.2rem; }
-        .ambiguous-tie-note { font-size: 0.75rem; color: var(--new); margin: 0 0 0.3rem; }
+        .release-level-tag { color: var(--new); margin-left: 0.25rem; font-style: normal; }
+        .discogs-linked-tag { color: var(--up); margin-left: 0.3rem; }
+        .discogs-linked-tag:hover { background: var(--up); color: var(--bg); text-decoration: none; }
 
-        /* Discogs audit (discogs_audit.html) -- ours vs Discogs, side by side */
-        .audit-table { font-size: 0.8rem; }
-        .audit-table td { vertical-align: top; }
-        .audit-table td.wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+        /* ---- Alerts ----
+           One shape for every message box: success (a batch finished),
+           warning (something needs attention), error (nothing was saved).
+           A tinted background plus a thick left edge in the same colour,
+           so the kind of message registers before you read it. */
+        .alert {
+            border: 1px solid;
+            border-left-width: 4px;
+            border-radius: var(--radius-sm);
+            padding: 0.65rem 0.9rem;
+            margin-bottom: 1rem;
+        }
+        .alert p { margin: 0.4rem 0 0; }
+        .alert pre { margin: 0.4rem 0 0; }
+        .alert ul { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+        .alert-success { border-color: var(--up); background: color-mix(in srgb, var(--up) 9%, transparent); }
+        .alert-warning { border-color: var(--new); background: color-mix(in srgb, var(--new) 9%, transparent); }
+        .alert-error { border-color: var(--down); background: color-mix(in srgb, var(--down) 9%, transparent); }
+        .alert-error > strong { color: var(--down); }
+
+        /* ---- Filter bar ----
+           The labelled row of selects + search box across the top of the
+           matrix, the Discogs queue and the audit. Small muted labels sit
+           ABOVE their control; the search box takes whatever width is left. */
+        .filter-bar {
+            display: flex;
+            gap: 0.9rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+            padding: 0.75rem 0.9rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .filter-bar label { display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--fs-sm); color: var(--muted); }
+        .filter-bar .search-label { flex: 1; min-width: 14rem; }
+        .filter-bar .search-label input { width: 100%; }
+        /* A checkbox reads left-to-right with its text beside it, not
+           stacked like the other labels, and sits on the controls' baseline. */
+        .filter-bar label.check { flex-direction: row; align-items: center; gap: 0.4rem; min-height: var(--control-h); color: var(--text); }
+
+        /* "1,284 rows" / "Showing N of M" line under a filter bar. */
+        .summary { color: var(--muted); margin: 0 0 0.75rem; }
+
+        /* ---- Tabs ----
+           Two views of the same thing (Discogs queue / audit). Replaces
+           the "audit what's linked →" / "← back to the review queue" pair
+           of text links with something that says "you're in one of two". */
+        .tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+        .tabs a {
+            padding: 0.5rem 0.9rem;
+            color: var(--muted);
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+        .tabs a:hover { color: var(--text); text-decoration: none; }
+        .tabs a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        /* ---- Pager ---- previous / "page 2 of 9" / next, below a table. */
+        .pager { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; }
+        .pager > div { min-width: 8rem; }
+        .pager > div:last-child { text-align: right; }
+
+        /* Sortable column headers: the whole header is the link, in the
+           header's own colour; the arrow marks the active sort. */
+        th a.sort-link { color: inherit; }
+        th a.sort-link:hover { color: var(--text); text-decoration: none; }
+        th a.sort-link .sort-arrow { color: var(--accent); margin-left: 0.2rem; }
+
+        /* HTMX shows/hides these automatically around an in-flight request
+           (it toggles the .htmx-request class on the indicator). */
+        .spinner { color: var(--muted); font-size: var(--fs-sm); opacity: 0; transition: opacity 0.2s; }
+        .htmx-request.spinner, .htmx-request .spinner { opacity: 1; }
+
+        .catalog-hint { color: var(--muted); font-size: 0.9em; }
+
+        /* =================================================================
+           5. PAGE-SPECIFIC
+           ================================================================= */
+
+        /* ---- Chart list (chart_list.html) ---- */
+        .chart-list-table td { vertical-align: middle; }
+        .chart-list-table .chart-name { font-weight: 600; }
+        .row-buttons { display: flex; gap: 0.4rem; justify-content: flex-end; }
+
+        /* ---- Chart week browser (chart_week.html) ---- */
+        .week-nav { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .week-nav .week-pickers { display: flex; gap: 0.5rem; }
+        .pos { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+        .movement { text-align: center; font-size: var(--fs-sm); }
+        .movement.up { color: var(--up); }
+        .movement.down { color: var(--down); }
+        /* "NEW" is set small and spaced so it fits the narrow movement
+           column whole -- it used to be cut to "N..." by the ellipsis. */
+        .movement.new { color: var(--new); font-weight: 700; font-size: var(--fs-xs); letter-spacing: 0.04em; }
+        .movement.same { color: var(--muted); }
+        .anomaly-note { font-size: var(--fs-sm); color: var(--new); display: block; margin-top: 0.15rem; }
+
+        /* ---- Recordings matrix (recordings_matrix.html) ----
+           Dense reference grid: up to ~1,800 rows, so smaller text than
+           the week-by-week browser. */
+        .dense-table { font-size: var(--fs-sm); }
+        .dense-table td { vertical-align: top; }
+        .recordings-table .discogs-cell a.needs-review { color: var(--new); }
+        /* The chart that produced a collapsed row's best peak, printed
+           small under the number itself: that peak is merged from
+           several charts, so its source is shown rather than implied. */
+        .recordings-table .peak-source { display: block; font-size: var(--fs-xs); font-weight: 400; color: var(--muted); cursor: help; }
+
+        /* ---- Discogs review queue (discogs_queue.html + _discogs_row.html) ---- */
+        .discogs-progress { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+        .progress-bar { flex: 1; height: 0.45rem; background: var(--surface-strong); border-radius: 999px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--up); }
+        .progress-label { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
+        .batch-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .discogs-error { color: var(--down); margin: 0 0 0.4rem; }
+        .discogs-note { display: block; font-size: var(--fs-xs); color: var(--new); margin-top: 0.25rem; }
+        .discogs-state .status-badge, .discogs-state .confidence-badge { margin: 0 0.2rem 0.2rem 0; }
+        .discogs-linked .discogs-title { font-weight: 600; }
+        .credit-line { margin-top: 0.2rem; }
+        .credit-label { color: var(--muted); display: inline-block; min-width: 5.5rem; }
+        .ambiguous-tie-note { color: var(--new); margin: 0 0 0.4rem; }
+        .candidate-list { list-style: none; margin: 0; padding: 0; }
+        .candidate-list li { display: flex; align-items: stretch; gap: 0.3rem; margin-bottom: 0.3rem; }
+        /* A candidate is one big pick-me button: its full description,
+           left-aligned and wrapping, rather than the base button's
+           centred single line. */
+        .candidate-pick {
+            flex: 1;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+            text-align: left;
+            white-space: normal;
+            height: auto;
+            padding: 0.35rem 0.55rem;
+            font-size: var(--fs-sm);
+            font-weight: 400;
+        }
+        .candidate-pick:hover { border-color: var(--up); background: color-mix(in srgb, var(--up) 10%, transparent); }
+        .manual-entry { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+        .manual-entry input { flex: 1; min-width: 8rem; }
+        /* Per-row actions stack in one column, all the same width, so the
+           column reads as a tidy list instead of buttons wrapping at
+           random points. */
+        .row-actions { display: flex; flex-direction: column; align-items: stretch; gap: 0.3rem; }
+        /* A queue row fetching its own detail on load (_discogs_row.html). */
+        .auto-fetch { display: inline-block; color: var(--muted); font-style: italic; margin-top: 0.25rem; }
+
+        /* ---- Discogs audit (discogs_audit.html) -- ours vs Discogs ---- */
         /* A faint tint separating the two halves, so which side you're
            reading is obvious without tracking back to the header. */
-        .audit-table .side-ours { background: rgba(128,128,128,0.05); }
-        .audit-table .side-theirs { background: rgba(106,79,191,0.06); }
-        .audit-table thead th.side-ours, .audit-table thead th.side-theirs { text-align: left; font-size: 0.75rem; }
+        .audit-table .side-ours { background: color-mix(in srgb, var(--muted) 5%, transparent); }
+        .audit-table .side-theirs { background: color-mix(in srgb, var(--tie) 7%, transparent); }
         /* The actual point of the page: a value that disagrees with ours. */
-        .audit-table td.mismatch {
-            background: rgba(178,59,59,0.18);
-            color: var(--down);
-            font-weight: 600;
-        }
-        .audit-table tr.has-mismatch td:first-child { border-left: 3px solid var(--down); }
-        .audit-table .linked-at { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.75rem; }
-        .audit-table .audit-actions { white-space: nowrap; font-size: 0.75rem; }
-        .audit-table .audit-actions a { margin-right: 0.3rem; }
+        .audit-table td.mismatch { background: color-mix(in srgb, var(--down) 16%, transparent); color: var(--down); font-weight: 600; }
+        .audit-table tr.has-mismatch td:first-child { box-shadow: inset 3px 0 0 var(--down); }
+        .audit-table .linked-at { font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .audit-table .linked-at .status-badge { margin-top: 0.2rem; }
+        /* Open + Fix side by side, never wrapped onto two lines. */
+        .audit-table .audit-actions { white-space: nowrap; }
         .audit-table tr.note-row td { border-top: none; padding-top: 0; }
         /* A release-level stand-in, not this side's own value -- dimmed
            and tagged so it's never mistaken for the precise thing. */
         .audit-table td.release-level { font-style: italic; opacity: 0.75; }
-        .release-level-tag {
-            display: inline-block; font-size: 0.6rem; line-height: 1; vertical-align: middle;
-            border: 1px solid var(--new); color: var(--new);
-            border-radius: 3px; padding: 0.1rem 0.2rem; margin-left: 0.2rem;
-            font-style: normal;
-        }
-        .checkbox-label { flex-direction: row !important; align-items: center; gap: 0.35rem !important; }
-        .manual-entry { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
-        .manual-entry input { flex: 1; font-size: 0.8rem; min-width: 8rem; }
-        /* HTMX shows/hides these automatically around an in-flight request
-           (it toggles the .htmx-request class on the indicator). */
-        .spinner { color: var(--muted); font-size: 0.8rem; opacity: 0; transition: opacity 0.2s; }
-        .htmx-request.spinner, .htmx-request .spinner { opacity: 1; }
 
-        /* Credit splitting (credit_queue.html) */
-        .credit-card { border: 1px solid var(--border); border-radius: 4px; padding: 0.7rem 0.9rem; margin-bottom: 0.8rem; }
-        .credit-card.strong { border-left: 3px solid var(--up); }
-        .credit-card-head { margin-bottom: 0.4rem; }
-        .credit-recordings { list-style: none; margin: 0 0 0.6rem; padding: 0; font-size: 0.85rem; }
+        /* ---- Credit splitting (credit_queue.html) ---- */
+        .credit-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; margin-bottom: 1rem; }
+        .credit-card.strong { box-shadow: inset 3px 0 0 var(--up); }
+        .credit-card-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+        .credit-card-head .artist-name { font-weight: 700; font-size: 1.05rem; }
+        .credit-recordings { list-style: none; margin: 0 0 0.8rem; padding: 0; font-size: var(--fs-sm); }
         .credit-recordings li { margin-bottom: 0.15rem; }
         .printed-as { color: var(--muted); font-style: italic; }
-        .credit-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-        .credit-split-form { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
-        .credit-split-label { font-size: 0.8rem; color: var(--muted); }
-        .credit-split-form input { min-width: 12rem; font-size: 0.9rem; }
+        /* The three possible outcomes, one per row, each with its label in
+           a fixed-width column so the inputs line up down the card. Before
+           this they flowed together in one wrapping line, and "It's one
+           act" kept landing on a row of its own. */
+        .credit-outcome { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.45rem; }
+        .credit-outcome:last-of-type { margin-bottom: 0; }
+        .credit-outcome .outcome-label { width: 10.5rem; flex: none; font-size: var(--fs-sm); color: var(--muted); }
+        .credit-outcome input { width: 13rem; }
         /* Green = resolves to an artist already on file; amber = splitting
            will create it. Visible before you commit, not after. */
-        .credit-split-form input.resolves { border-color: var(--up); }
-        .credit-split-form input.will-create { border-color: var(--new); }
-        .credit-hint { font-size: 0.75rem; margin: 0.4rem 0 0; }
+        .credit-outcome input.resolves { border-color: var(--up); }
+        .credit-outcome input.will-create { border-color: var(--new); }
+        .credit-hint { font-size: var(--fs-sm); margin: 0.6rem 0 0; }
         .credit-hint .ok { color: var(--up); margin-right: 0.7rem; }
         .credit-hint .new { color: var(--new); margin-right: 0.7rem; }
-        .confirmed-single-list { margin-top: 1.5rem; font-size: 0.85rem; color: var(--muted); }
+        .confirmed-single-list { margin-top: 1.5rem; font-size: var(--fs-sm); color: var(--muted); }
         .confirmed-single-list summary { cursor: pointer; }
         .confirmed-single-list ul { list-style: none; padding-left: 0; margin-top: 0.5rem; }
-        .confirmed-single-list li { margin-bottom: 0.25rem; }
+        .confirmed-single-list li { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
 
-        .chart-list-table td { vertical-align: top; }
-        .chart-list-table .date-range-cell { white-space: nowrap; }
-        .chart-list-table .enter-week-link { font-size: 0.85rem; }
-        footer { margin-top: 2rem; color: var(--muted); font-size: 0.85rem; }
-
-        /* Weekly entry form */
-        .entry-errors {
-            border: 1px solid var(--down);
-            color: var(--down);
-            border-radius: 4px;
-            padding: 0.6rem 0.8rem;
-            margin-bottom: 1rem;
-        }
-        .entry-errors ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+        /* ---- Weekly entry form (entry_week.html + _entry_*.html) ---- */
         table.entry-table td { vertical-align: top; padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        /* The entry table is a FORM, not a list to scan -- row hover
+           highlighting would just flicker under the mouse while typing. */
+        table.entry-table tbody tr:hover > td { background: transparent; }
         .entry-inputs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
         .entry-inputs input[type="number"] { width: 5.5rem; }
         .entry-inputs input[type="text"] { flex: 1; min-width: 10rem; }
         /* Pos, Wks-on, and Anomaly-note inputs each just fill their own
-           column now (widths come from entry-table's <colgroup> alone) --
-           this is what the box-sizing fix above makes safe to rely on. */
+           column (widths come from entry-table's <colgroup> alone) --
+           this is what the box-sizing rule above makes safe to rely on. */
         .col-pos input, .col-narrow input, .col-note input { width: 100%; }
-        .wks-hint {
-            display: block;
-            margin-top: 0.2rem;
-            font-size: 0.75rem;
-            color: var(--tie);
-            white-space: nowrap;
-        }
-        input, button, select { font: inherit; padding: 0.25rem 0.4rem; border: 1px solid var(--border); border-radius: 3px; background: transparent; color: inherit; }
+        .col-delete { text-align: center; }
+        .wks-hint { display: block; margin-top: 0.2rem; font-size: var(--fs-xs); color: var(--tie); white-space: nowrap; }
         .resolved-preview {
             margin-top: 0.4rem;
-            font-size: 1rem;
-            padding: 0.35rem 0.5rem;
-            border-radius: 4px;
+            padding: 0.35rem 0.55rem;
+            border-radius: var(--radius-sm);
             border: 1px solid transparent;
         }
         /* Once a row actually resolves to a recording, it's the single
            most important piece of information in that row -- give it a
            visibly "confirmed" look (tinted background, bordered) instead
-           of reading as plain body text that gets lost among the input
-           boxes around it. Not applied to .empty (nothing resolved) or
-           .ambiguous (a tie -- still needs a pick, not confirmed yet). */
+           of reading as plain body text lost among the input boxes. Not
+           applied to .empty (nothing resolved) or .ambiguous (a tie --
+           still needs a pick, not confirmed yet). */
         .resolved-preview:not(.empty):not(.ambiguous) {
-            background: rgba(26, 125, 26, 0.12);
+            background: color-mix(in srgb, var(--up) 11%, transparent);
             border-color: var(--up);
         }
-        .resolved-preview.empty .not-resolved { color: var(--muted); font-style: italic; }
+        /* The "not resolved yet" placeholder is one small muted line, not
+           a full-size row of text, so an unentered week doesn't look like
+           a wall of warnings before you've typed anything. */
+        .resolved-preview.empty { padding-top: 0.15rem; padding-bottom: 0; }
+        .resolved-preview.empty .not-resolved { color: var(--muted); font-style: italic; font-size: var(--fs-sm); }
+        .resolved-preview.ambiguous .not-resolved { color: var(--new); font-weight: 600; }
         .resolved-preview .resolved-check { color: var(--up); font-weight: 700; font-size: 1.15em; margin-right: 0.15rem; }
-        .resolved-preview .catalog-hint { color: var(--muted); font-size: 0.85em; }
-        /* A hand-typed Discogs link on a freshly created recording --
-           confirmation that it took, and a way straight to the release. */
-        .discogs-linked-tag {
-            display: inline-block; font-size: 0.75rem; text-decoration: none;
-            color: var(--up); border: 1px solid var(--up); border-radius: 3px;
-            padding: 0.05rem 0.3rem; margin-left: 0.3rem; vertical-align: middle;
-        }
-        .discogs-linked-tag:hover { background: var(--up); color: white; }
-        .discogs-inline-note { display: block; font-size: 0.75rem; color: var(--new); margin-top: 0.2rem; }
-        .resolved-preview.ambiguous .not-resolved { color: var(--new); font-style: normal; font-weight: 600; }
-        .pick-list, .search-results { list-style: none; margin: 0.3rem 0; padding: 0; }
-        .pick-list li, .search-results li { margin-bottom: 0.2rem; }
-        .pick-list button, .search-results button, .create-new-link {
-            display: block;
+        .discogs-inline-note { display: block; font-size: var(--fs-sm); color: var(--new); margin-top: 0.2rem; }
+        .pick-list, .search-results { list-style: none; margin: 0.35rem 0; padding: 0; }
+        .pick-list li, .search-results li { margin-bottom: 0.25rem; }
+        /* Search results and tie-picks are full-width, left-aligned list
+           buttons -- the base button is centred and single-line. */
+        .pick-list button, .search-results button, .create-new-btn, .confirm-create-btn {
+            display: flex;
             width: 100%;
+            justify-content: flex-start;
             text-align: left;
-            cursor: pointer;
+            white-space: normal;
+            height: auto;
+            padding: 0.35rem 0.6rem;
+            font-weight: 400;
         }
-        .pick-list button:hover, .search-results button:hover, .create-new-link:hover { background: rgba(128,128,128,0.15); }
-        .search-hint { color: var(--muted); font-size: 0.85rem; margin: 0.2rem 0; }
-        .create-new-link { font-size: 0.85rem; color: var(--muted); border-style: dashed; margin-top: 0.2rem; }
-        .confirm-create-btn {
-            display: block;
-            width: 100%;
-            font-size: 0.85rem;
-            color: var(--new);
-            border-color: var(--new);
-            margin-top: 0.3rem;
-            cursor: pointer;
-        }
-        .confirm-create-btn:hover { background: var(--new); color: white; }
+        .search-hint { color: var(--muted); font-size: var(--fs-sm); margin: 0.25rem 0; }
+        .create-new-btn { color: var(--muted); border-style: dashed; margin-top: 0.25rem; font-size: var(--fs-sm); }
+        .confirm-create-btn { color: var(--new); border-color: var(--new); margin-top: 0.35rem; font-size: var(--fs-sm); }
+        .confirm-create-btn:hover { background: var(--new); color: var(--bg); }
         .inline-create {
             border: 1px solid var(--tie);
-            border-radius: 4px;
-            padding: 0.5rem;
-            margin-top: 0.3rem;
+            border-radius: var(--radius);
+            padding: 0.6rem;
+            margin-top: 0.35rem;
+            background: color-mix(in srgb, var(--tie) 5%, transparent);
         }
-        .inline-create-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; }
-        .inline-create-title { margin: 0; font-size: 0.85rem; color: var(--tie); }
-        .inline-create-close {
-            color: var(--tie);
-            border-color: var(--tie);
-            width: 1.5rem;
-            height: 1.5rem;
-            line-height: 1;
-            padding: 0;
-            cursor: pointer;
-            flex: none;
-        }
-        .inline-create-close:hover { background: var(--tie); color: white; }
-        /* Two explicit rows -- Song/Artist/Credit (the WORK and who's
-           credited) on one line, Label/Catalog/Side (the physical
-           release) on the next -- rather than one flex-wrap blob where
-           only the narrowest field (Side) happened to wrap on its own. */
+        .inline-create-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+        .inline-create-title { margin: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--tie); }
+        /* Two explicit rows -- Song/Credit (the WORK and how it's billed)
+           on one line, Label/Catalog/Side (the physical release) on
+           another -- rather than one flex-wrap blob. */
         .inline-create-row { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
-        .inline-create-row:last-of-type { margin-bottom: 0; }
         .inline-create input { flex: 1; min-width: 8rem; }
-        .inline-create .create-submit-btn { margin-top: 0.2rem; }
-        /* Artist boxes get their own row and may grow to 3-4 via "+ artist",
-           so let them wrap instead of crushing each other to 8rem. */
+        /* Artist boxes may grow to 3-4 via "+ Artist", so let them wrap
+           instead of crushing each other to 8rem. */
         .inline-create-row.artist-row { flex-wrap: wrap; }
-        .add-artist-btn { flex: none; cursor: pointer; font-size: 0.8rem; white-space: nowrap; }
-        /* A queue row fetching its own detail on load (_discogs_row.html). */
-        .auto-fetch { display: inline-block; font-size: 0.8rem; color: var(--muted); font-style: italic; margin-top: 0.2rem; }
-        .entry-actions { display: flex; justify-content: space-between; margin-top: 1rem; }
-        .save-week-button { font-weight: 700; padding: 0.4rem 1rem; }
-        .col-delete { text-align: center; }
-        .delete-row-btn {
-            color: var(--down);
-            border-color: var(--down);
-            width: 1.8rem;
-            height: 1.8rem;
-            line-height: 1;
-            padding: 0;
-            cursor: pointer;
+        /* Save bar pinned to the bottom of the window. A typical week is
+           20-30 rows; without this, "Save week" sits below the fold and
+           saving means scrolling past the whole table first. */
+        .entry-actions {
+            position: sticky;
+            bottom: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 1rem;
+            padding: 0.75rem 0;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
         }
-        .delete-row-btn:hover { background: var(--down); color: white; }
     </style>
     {% block extra_head %}{% endblock %}
 </head>
@@ -396,7 +650,37 @@ queue's per-row buttons) gets rejected by CsrfViewMiddleware with a 403.
 Set once here rather than repeated on each button.
 {% endcomment %}
 <body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
-    {% block content %}{% endblock %}
-    <footer><a href="{% url 'charts:chart_list' %}">&larr; all charts</a> &middot; <a href="/admin/">admin</a></footer>
+    {% comment %}
+    The current section is worked out from the URL NAME of the page being
+    shown (request.resolver_match, available because the `request`
+    context processor is on in settings) -- no view has to remember to
+    pass anything, and a new page under an existing section only needs
+    its url name added to the right `if` here.
+    {% endcomment %}
+    {% with n=request.resolver_match.url_name %}
+    <header class="site-header">
+        <div class="container">
+            <a class="brand" href="{% url 'charts:chart_list' %}">Billboard Charts</a>
+            <nav class="site-nav" aria-label="Sections">
+                <a href="{% url 'charts:chart_list' %}"
+                   class="{% if n == 'chart_list' or n == 'chart_week' or n == 'chart_week_latest' or n == 'entry_week' or n == 'entry_week_edit' %}active{% endif %}">Charts</a>
+                <a href="{% url 'charts:recordings_matrix' %}"
+                   class="{% if n == 'recordings_matrix' %}active{% endif %}">Recordings</a>
+                <a href="{% url 'charts:discogs_queue' %}"
+                   class="{% if n == 'discogs_queue' or n == 'discogs_audit' %}active{% endif %}">Discogs</a>
+                <a href="{% url 'charts:credit_queue' %}"
+                   class="{% if n == 'credit_queue' %}active{% endif %}">Credits</a>
+            </nav>
+            <a class="nav-admin" href="/admin/">Admin</a>
+        </div>
+    </header>
+    {% endwith %}
+    {% comment %}
+    main_class lets a reading page opt into the narrow content width
+    (page-narrow) while keeping the same left edge as every other page.
+    {% endcomment %}
+    <main class="container {% block main_class %}{% endblock %}">
+        {% block content %}{% endblock %}
+    </main>
 </body>
 </html>

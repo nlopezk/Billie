@@ -16,7 +16,7 @@ box into the entry_create POST -- the button itself only carries row/week
 via hx-vals, not the actual data fields.
 
 The close (&times;) button is pure client-side removal, same pattern as
-the delete-row-btn in _entry_row.html -- no server round-trip, nothing
+the row-delete button in _entry_row.html -- no server round-trip, nothing
 was created, it just empties #create-form-{{ row }} back out. The
 search results above it (and its own "+ create new recording" link,
 _entry_search_results.html) live in a SEPARATE div and are untouched, so
@@ -25,7 +25,7 @@ closing this and reopening it (or searching again) both still work.
 <div class="inline-create">
     <div class="inline-create-header">
         <p class="inline-create-title">New recording (never charted before):</p>
-        <button type="button" class="inline-create-close" title="Cancel -- close without creating anything"
+        <button type="button" class="btn-icon btn-sm btn-ghost" title="Cancel -- close without creating anything" aria-label="Close"
             onclick="this.closest('.inline-create').remove()">&times;</button>
     </div>
     <div class="inline-create-row">
@@ -47,8 +47,8 @@ closing this and reopening it (or searching again) both still work.
         <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
         <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists"
             title="Only for a genuine collaboration between separately credited acts. Leave blank for a single act.">
-        <button type="button" class="add-artist-btn" title="Add another credited artist (3rd, 4th...)"
-            onclick="const box = this.parentNode.querySelector('input[name^=new_artist_]').cloneNode(); box.value = ''; box.required = false; box.placeholder = 'Another artist'; this.before(box); box.focus();">+ artist</button>
+        <button type="button" class="btn-sm" title="Add another credited artist (3rd, 4th...)"
+            onclick="const box = this.parentNode.querySelector('input[name^=new_artist_]').cloneNode(); box.value = ''; box.required = false; box.placeholder = 'Another artist'; this.before(box); box.focus();">+ Artist</button>
     </div>
     <div class="inline-create-row">
         <input type="text" name="new_label_{{ row }}" placeholder="Label" list="known-labels" required>
@@ -67,7 +67,7 @@ closing this and reopening it (or searching again) both still work.
         <input type="text" name="new_discogs_{{ row }}" placeholder="Discogs release URL or ID (optional)"
             title="If you already know this record's Discogs release, paste its URL or ID and it'll be linked. Nothing is looked up now -- the entry form never touches the network -- so its songwriter credits get fetched later from the Discogs page.">
     </div>
-    <button type="button" class="create-submit-btn"
+    <button type="button" class="btn-primary btn-sm"
         hx-post="{% url 'charts:entry_create' chart.id %}"
         hx-include="closest .inline-create"
         hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}"}'

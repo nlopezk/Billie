@@ -10,23 +10,31 @@ point: a naive split of "James - Sinatra" yields "James" and "Sinatra",
 neither of which is a canonical name you'd want on file. You fix them to
 "Harry James" and "Frank Sinatra" before anything is written.
 
+Each card offers the THREE possible outcomes (CLAUDE.md, "Credit
+splitting") as three rows, one form each, with their labels in one
+fixed-width column so the inputs line up down the card:
+  1. Split into separate acts
+  2. One act, whose canonical name is shorter than the billing
+  3. One act, name as printed
+
 Plain form POSTs, no HTMX -- each action changes several tables at once
 (re-crediting every affected recording, possibly creating artists,
 deleting the combined row), so re-rendering the page is both simpler and
 a more honest reflection of how much moved.
 {% endcomment %}
 {% block title %}Credit splitting{% endblock %}
-{% block extra_head %}<style>body { max-width: 1100px; }</style>{% endblock %}
+{% block main_class %}page-narrow{% endblock %}
 {% block content %}
-    <h1>Credit splitting</h1>
-    <p class="subtitle">
-        Artists whose name looks like two acts joined &middot;
-        <a href="{% url 'charts:chart_list' %}">&larr; back to charts</a>
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>Credit splitting</h1>
+            <p class="subtitle">Artists whose name looks like two acts joined, or one act billed with its band.</p>
+        </div>
+    </div>
 
-    {% for message in messages %}<div class="discogs-message">{{ message }}</div>{% endfor %}
+    {% for message in messages %}<div class="alert alert-success">{{ message }}</div>{% endfor %}
 
-    <p class="matrix-summary">
+    <p class="summary">
         <strong>{{ pending_count }}</strong> awaiting a decision
         {% if confirmed_single_count %}&middot; {{ confirmed_single_count }} already confirmed as single acts{% endif %}
     </p>
@@ -42,7 +50,7 @@ a more honest reflection of how much moved.
     {% for p in proposals %}
     <div class="credit-card {% if p.is_strong %}strong{% endif %}">
         <div class="credit-card-head">
-            <strong>{{ p.artist.canonical_name }}</strong>
+            <span class="artist-name">{{ p.artist.canonical_name }}</span>
             {% if p.is_strong %}
                 <span class="confidence-badge confidence-exact" title="Joined with ' - ', which is the delimiter the original workbook used for collaborations">likely collaboration</span>
             {% else %}
@@ -61,45 +69,45 @@ a more honest reflection of how much moved.
             {% endfor %}
         </ul>
 
-        <div class="credit-actions">
-            <form method="post" action="{% url 'charts:credit_split' p.artist.id %}" class="credit-split-form">
-                {% csrf_token %}
-                <span class="credit-split-label">Split into:</span>
-                {% for part in p.parts %}
-                    <input type="text" name="part" value="{{ part.text }}" list="known-artist-names"
-                           class="{% if part.resolved %}resolves{% else %}will-create{% endif %}"
-                           title="{% if part.resolved %}Already on file as artist #{{ part.resolved.id }}{% else %}Not on file -- splitting will create this artist{% endif %}">
-                {% endfor %}
-                {% comment %} Split into a 3rd/4th artist: clones a box, apply_split already takes any number. {% endcomment %}
-                <button type="button" class="add-artist-btn" title="Split into one more artist"
-                    onclick="const box = this.form.querySelector('input[name=part]').cloneNode(); box.value = ''; box.className = 'will-create'; box.title = 'New artist'; this.before(box); box.focus();">+ artist</button>
-                <button type="submit" class="discogs-btn primary">Split</button>
-            </form>
+        {% comment %} Outcome 1: genuinely separate acts. {% endcomment %}
+        <form method="post" action="{% url 'charts:credit_split' p.artist.id %}" class="credit-outcome">
+            {% csrf_token %}
+            <span class="outcome-label">Two or more acts:</span>
+            {% for part in p.parts %}
+                <input type="text" name="part" value="{{ part.text }}" list="known-artist-names"
+                       class="{% if part.resolved %}resolves{% else %}will-create{% endif %}"
+                       title="{% if part.resolved %}Already on file as artist #{{ part.resolved.id }}{% else %}Not on file -- splitting will create this artist{% endif %}">
+            {% endfor %}
+            {% comment %} Split into a 3rd/4th artist: clones a box, apply_split already takes any number. {% endcomment %}
+            <button type="button" title="Split into one more artist"
+                onclick="const box = this.form.querySelector('input[name=part]').cloneNode(); box.value = ''; box.className = 'will-create'; box.title = 'New artist'; this.before(box); box.focus();">+ Artist</button>
+            <button type="submit" class="btn-primary">Split</button>
+        </form>
 
-            {% comment %}
-            The third case, and the one that's easy to miss: ONE act,
-            but billed with a backing band ("Julia Lee And Her Boy
-            Friends" is Julia Lee). The canonical name is the shorter
-            one; the printed billing is kept as an ArtistAlias, which is
-            precisely what that table is for.
-            {% endcomment %}
-            <form method="post" action="{% url 'charts:credit_canonical' p.artist.id %}" class="credit-split-form">
-                {% csrf_token %}
-                <span class="credit-split-label">or canonical is:</span>
-                <input type="text" name="canonical" value="{{ p.leader }}" list="known-artist-names"
-                       class="{% if p.leader_resolved %}resolves{% elif p.has_leader_guess %}will-create{% endif %}"
-                       title="Use when the printed credit is one act plus its band. The full printed name is kept as an alias.">
-                <button type="submit" class="discogs-btn">Use as canonical</button>
-            </form>
+        {% comment %}
+        Outcome 2, the one that's easy to miss: ONE act, but billed with
+        a backing band ("Julia Lee And Her Boy Friends" is Julia Lee).
+        The canonical name is the shorter one; the printed billing is
+        kept as an ArtistAlias, which is precisely what that table is for.
+        {% endcomment %}
+        <form method="post" action="{% url 'charts:credit_canonical' p.artist.id %}" class="credit-outcome">
+            {% csrf_token %}
+            <span class="outcome-label">One act, canonical name:</span>
+            <input type="text" name="canonical" value="{{ p.leader }}" list="known-artist-names"
+                   class="{% if p.leader_resolved %}resolves{% elif p.has_leader_guess %}will-create{% endif %}"
+                   title="Use when the printed credit is one act plus its band. The full printed name is kept as an alias.">
+            <button type="submit">Use as canonical</button>
+        </form>
 
-            <form method="post" action="{% url 'charts:credit_keep' p.artist.id %}">
-                {% csrf_token %}
-                <button type="submit" class="discogs-btn subtle"
-                        title="This is one act's name, not two -- stop offering it here.">
-                    It's one act
-                </button>
-            </form>
-        </div>
+        {% comment %} Outcome 3: one act, and the name is fine exactly as it is. {% endcomment %}
+        <form method="post" action="{% url 'charts:credit_keep' p.artist.id %}" class="credit-outcome">
+            {% csrf_token %}
+            <span class="outcome-label">One act, name as printed:</span>
+            <button type="submit" title="This is one act's name, not two -- stop offering it here.">
+                Keep &ldquo;{{ p.artist.canonical_name }}&rdquo;
+            </button>
+        </form>
+
         <p class="credit-hint">
             {% for part in p.parts %}
                 {% if part.resolved %}<span class="ok">&check; {{ part.text }} on file</span>
@@ -111,14 +119,14 @@ a more honest reflection of how much moved.
 
     {% if confirmed_single %}
     <details class="confirmed-single-list">
-        <summary>{{ confirmed_single_count }} confirmed as single acts &mdash; reopen if one was a misclick</summary>
+        <summary>{{ confirmed_single_count }} confirmed as single acts &mdash; reopen one if it was a misclick</summary>
         <ul>
             {% for a in confirmed_single %}
             <li>
                 {{ a.canonical_name }}
-                <form method="post" action="{% url 'charts:credit_reopen' a.id %}" style="display:inline">
+                <form method="post" action="{% url 'charts:credit_reopen' a.id %}">
                     {% csrf_token %}
-                    <button type="submit" class="discogs-btn subtle">reopen</button>
+                    <button type="submit" class="btn-sm btn-ghost">Reopen</button>
                 </form>
             </li>
             {% endfor %}

@@ -1,51 +1,59 @@
 {% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/chart_list.html -- the home page.
+
+The chart NAME is a link (it's data: "go look at this chart"); the two
+things you DO with a chart are buttons in their own column. The old
+subtitle list of section links is gone -- the top nav bar in base.html
+covers all of them on every page now.
+{% endcomment %}
 {% block title %}Billboard Charts{% endblock %}
+{% block main_class %}page-narrow{% endblock %}
 {% block content %}
-    <h1>Billboard Charts</h1>
-    <p class="subtitle">
-        Pick a chart to browse it week by week
-        &middot; <a href="{% url 'charts:recordings_matrix' %}">all recordings, every chart &rarr;</a>
-        &middot; <a href="{% url 'charts:discogs_queue' %}">Discogs matching &rarr;</a>
-        &middot; <a href="{% url 'charts:credit_queue' %}">credit splitting &rarr;</a>
-    </p>
+    <div class="page-header">
+        <div>
+            <h1>Charts</h1>
+            <p class="subtitle">Pick a chart to browse it week by week.</p>
+        </div>
+    </div>
 
     <table class="chart-list-table">
         <colgroup>
-            <col style="width: 10rem;">
-            <col style="width: 14rem;">
-            <col style="width: 4.5rem;">
-            <col style="width: 6.5rem;">
-            <col style="width: 7rem;">
+            <col style="width: 13rem;">
+            <col>
+            <col style="width: 6rem;">
+            <col style="width: 15rem;">
         </colgroup>
         <thead>
             <tr>
                 <th>Chart</th>
                 <th>Date range on file</th>
-                <th>Entries</th>
-                <th></th>
+                <th class="num">Entries</th>
                 <th></th>
             </tr>
         </thead>
         <tbody>
             {% for row in charts %}
             <tr>
-                <td>
+                <td class="chart-name">
                     {% if row.entry_count %}
                         <a href="{% url 'charts:chart_week_latest' row.chart.id %}">{{ row.chart }}</a>
                     {% else %}
-                        {{ row.chart }} <span style="color: var(--muted)">(no entries yet)</span>
+                        {{ row.chart }} <span class="muted">(no entries yet)</span>
                     {% endif %}
                 </td>
-                <td class="date-range-cell">
-                    {% if row.first_week %}{{ row.first_week }} &ndash; {{ row.last_week }}{% else %}&mdash;{% endif %}
-                </td>
-                <td>{{ row.entry_count }}</td>
                 <td>
-                    {% if row.entry_count %}
-                        <a href="{% url 'charts:recordings_matrix' %}?chart={{ row.chart.id }}" class="enter-week-link">recordings &rarr;</a>
-                    {% endif %}
+                    {% if row.first_week %}{{ row.first_week }} &ndash; {{ row.last_week }}{% else %}<span class="muted">&mdash;</span>{% endif %}
                 </td>
-                <td><a href="{% url 'charts:entry_week' row.chart.id %}" class="enter-week-link">enter a week &rarr;</a></td>
+                <td class="num">{{ row.entry_count }}</td>
+                <td>
+                    <div class="row-buttons">
+                        {% if row.entry_count %}
+                            <a class="btn btn-sm" href="{% url 'charts:recordings_matrix' %}?chart={{ row.chart.id }}">Recordings</a>
+                        {% endif %}
+                        <a class="btn btn-sm" href="{% url 'charts:entry_week' row.chart.id %}">+ Enter a week</a>
+                    </div>
+                </td>
             </tr>
             {% endfor %}
         </tbody>

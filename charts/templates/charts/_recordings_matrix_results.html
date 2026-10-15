@@ -19,15 +19,15 @@ recording, "Peak" is really "Best peak" (across charts) and "Chart"
 becomes "Charts" (how many). See views._recordings_matrix_query.
 {% endcomment %}
 {% if group == "recording" %}
-<p class="matrix-summary" id="matrix-count">
+<p class="summary" id="matrix-count">
     {{ total_rows }} recording{{ total_rows|pluralize }}, one row each &mdash; merged across every chart.
 </p>
 {% else %}
-<p class="matrix-summary" id="matrix-count">{{ total_rows }} row{{ total_rows|pluralize }}, one per chart a recording made.</p>
+<p class="summary" id="matrix-count">{{ total_rows }} row{{ total_rows|pluralize }}, one per chart a recording made.</p>
 {% endif %}
 
 <div class="table-wrap">
-<table class="recordings-table">
+<table class="recordings-table dense-table">
     <colgroup>
         {% comment %}
         The first and fourth columns carry more in collapsed mode -- the
@@ -36,9 +36,9 @@ becomes "Charts" (how many). See views._recordings_matrix_query.
         little more room there and keep the tighter widths otherwise.
         {% endcomment %}
         {% if group == "recording" %}
-        <col style="width: 4rem;">
+        <col style="width: 5.25rem;">
         {% else %}
-        <col style="width: 2.5rem;">
+        <col style="width: 3.75rem;">
         {% endif %}
         <col style="width: 12rem;">
         <col style="width: 8rem;">
@@ -48,9 +48,9 @@ becomes "Charts" (how many). See views._recordings_matrix_query.
         <col style="width: 6.5rem;">
         {% endif %}
         <col style="width: 8rem;">
-        <col style="width: 3rem;">
-        <col style="width: 4.5rem;">
-        <col style="width: 4.5rem;">
+        <col style="width: 4.25rem;">
+        <col style="width: 5.5rem;">
+        <col style="width: 5.5rem;">
         <col style="width: 8rem;">
     </colgroup>
     <thead>
@@ -136,7 +136,7 @@ becomes "Charts" (how many). See views._recordings_matrix_query.
             </td>
         </tr>
         {% empty %}
-        <tr><td colspan="9" style="color: var(--muted); text-align: center;">No recordings match these filters.</td></tr>
+        <tr><td colspan="9" class="empty-row">No recordings match these filters.</td></tr>
         {% endfor %}
     </tbody>
 </table>

@@ -45,8 +45,8 @@ you're part-way through reviewing) stays exactly where it was.
                 been findable at the Master (song) level.
                 {% endcomment %}
                 <span class="ref-id ref-{{ match.reference_type|lower }}" title="Discogs {{ match.reference_type }} ID">{{ match.reference_type|slice:":1" }}{{ match.reference_id }}</span>
-                <a href="{{ match.discogs_url }}" target="_blank" rel="noopener">
-                    {% if match.matched_artist %}{{ match.matched_artist }} &mdash; {% endif %}{% if match.matched_title %}{{ match.matched_title }}{% else %}{{ match.reference_type }} {{ match.reference_id }}{% endif %} &nearr;
+                <a class="discogs-title" href="{{ match.discogs_url }}" target="_blank" rel="noopener">
+                    {% if match.matched_title %}{% if match.matched_artist %}{{ match.matched_artist }} &mdash; {% endif %}{{ match.matched_title }}{% else %}Open on Discogs{% endif %} &nearr;
                 </a>
                 {% if match.matched_label or match.matched_catalog_number %}
                     <span class="catalog-hint">({{ match.matched_label }} {{ match.matched_catalog_number }}{% if match.matched_year %}, {{ match.matched_year }}{% endif %}{% if match.matched_country %}, {{ match.matched_country }}{% endif %})</span>
@@ -61,10 +61,10 @@ you're part-way through reviewing) stays exactly where it was.
                 {% endcomment %}
                 {% comment %}
                 Falls back to the release's own values when the per-track
-                detail hasn't been fetched (bulk-confirm skips it), tagged
-                "rel" so a combined "Side A / Side B" title isn't mistaken
-                for this side's. The "Fetch full details" button below is
-                what replaces them with the real per-side values.
+                detail hasn't been fetched yet, tagged "rel" so a combined
+                "Side A / Side B" title isn't mistaken for this side's. The
+                self-fetch below (or its Retry button) is what replaces them
+                with the real per-side values.
                 {% endcomment %}
                 {% if match.display_artist %}<div class="credit-line"><span class="credit-label">Artist</span> {{ match.display_artist }}{% if not match.has_track_detail %}<span class="release-level-tag">rel</span>{% endif %}</div>{% endif %}
                 {% if match.display_title %}<div class="credit-line"><span class="credit-label">Song</span> {{ match.display_title }}{% if not match.has_track_detail %}<span class="release-level-tag">rel</span>{% endif %}</div>{% endif %}
@@ -93,7 +93,7 @@ you're part-way through reviewing) stays exactly where it was.
                         fetching songwriters &amp; per-track detail&hellip;
                     </span>
                 {% elif match.needs_detail %}
-                    <button type="button" class="discogs-btn"
+                    <button type="button" class="btn-sm"
                         hx-post="{% url 'charts:discogs_fetch_detail' match.recording_id %}"
                         hx-vals='{"querystring": "{{ querystring }}"}'
                         hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
@@ -123,7 +123,8 @@ you're part-way through reviewing) stays exactly where it was.
                         {% if candidate.artist %}{{ candidate.artist }} &mdash; {% endif %}{{ candidate.title }}
                         <span class="catalog-hint">({{ candidate.label }} {{ candidate.catalog_number }}{% if candidate.year %}, {{ candidate.year }}{% endif %}{% if candidate.country %}, {{ candidate.country }}{% endif %}{% if candidate.format %} &middot; {{ candidate.format }}{% endif %})</span>
                     </button>
-                    <a class="candidate-peek" href="{{ candidate.discogs_url }}" target="_blank" rel="noopener" title="Open on discogs.com to check before picking">&nearr;</a>
+                    <a class="btn btn-icon btn-sm" href="{{ candidate.discogs_url }}" target="_blank" rel="noopener"
+                       title="Open on discogs.com to check before picking" aria-label="Open on Discogs">&nearr;</a>
                 </li>
                 {% endfor %}
             </ul>
@@ -137,9 +138,9 @@ you're part-way through reviewing) stays exactly where it was.
         {% endcomment %}
         {% if not match.is_linked %}
         <div class="manual-entry">
-            <input type="text" name="discogs_ref" placeholder="or paste a Discogs release/master URL or ID"
+            <input type="text" name="discogs_ref" placeholder="Or paste a Discogs release/master URL or ID"
                    id="manual-{{ match.recording_id }}">
-            <button type="button" class="discogs-btn"
+            <button type="button" class="btn-sm"
                 hx-post="{% url 'charts:discogs_manual' match.recording_id %}"
                 hx-include="#manual-{{ match.recording_id }}"
                 hx-vals='{"querystring": "{{ querystring }}"}'
@@ -151,8 +152,13 @@ you're part-way through reviewing) stays exactly where it was.
     </td>
 
     <td class="discogs-actions">
+        {% comment %}
+        Stacked in one column, all the same width (.row-actions), with the
+        one action that moves a row forward -- Search -- as the primary.
+        {% endcomment %}
+        <div class="row-actions">
         {% if not match.is_linked %}
-            <button type="button" class="discogs-btn primary"
+            <button type="button" class="btn-primary btn-sm"
                 hx-post="{% url 'charts:discogs_search' match.recording_id %}"
                 hx-vals='{"querystring": "{{ querystring }}"}'
                 hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML"
@@ -163,7 +169,7 @@ you're part-way through reviewing) stays exactly where it was.
         {% endif %}
 
         {% if match.candidates.all %}
-            <button type="button" class="discogs-btn"
+            <button type="button" class="btn-sm"
                 hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
                 hx-vals='{"status": "rejected", "querystring": "{{ querystring }}"}'
                 hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
@@ -172,7 +178,7 @@ you're part-way through reviewing) stays exactly where it was.
         {% endif %}
 
         {% if not match.is_linked and match.status != "no_match" %}
-            <button type="button" class="discogs-btn"
+            <button type="button" class="btn-sm"
                 hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
                 hx-vals='{"status": "no_match", "querystring": "{{ querystring }}"}'
                 hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML">
@@ -181,7 +187,7 @@ you're part-way through reviewing) stays exactly where it was.
         {% endif %}
 
         {% if match.status != "unmatched" %}
-            <button type="button" class="discogs-btn subtle"
+            <button type="button" class="btn-sm btn-ghost"
                 hx-post="{% url 'charts:discogs_set_status' match.recording_id %}"
                 hx-vals='{"status": "unmatched", "querystring": "{{ querystring }}"}'
                 hx-target="#discogs-row-{{ match.recording_id }}" hx-swap="outerHTML"
@@ -189,5 +195,6 @@ you're part-way through reviewing) stays exactly where it was.
                 Reset
             </button>
         {% endif %}
+        </div>
     </td>
 </tr>

@@ -1,21 +1,40 @@
 {% extends "charts/base.html" %}
-{% block title %}{{ chart }} &mdash; {{ selected_week }}{% endblock %}
-{% block content %}
-    <h1>{{ chart }}</h1>
-    <p class="subtitle">
-        {% if era %}"{{ era.printed_name }}"{% endif %}
-        &middot; week ending {{ selected_week|date:"F j, Y" }}
-        &middot; <a href="{% url 'charts:entry_week' chart.id %}">enter a new week &rarr;</a>
-        &middot; <a href="{% url 'charts:entry_week_edit' chart.id selected_week|date:'Y-m-d' %}">edit this week</a>
-        &middot; <a href="{% url 'charts:recordings_matrix' %}?chart={{ chart.id }}">recordings matrix &rarr;</a>
-    </p>
+{% comment %}
+charts/templates/charts/chart_week.html -- one printed chart week, read-only.
 
-    <div class="nav-bar">
+The page's actions (edit this week, enter a new one, see this chart's
+recordings) are buttons in the page header; previous/next week are
+buttons in the week bar. Before, the first three were underlined links
+strung through the subtitle sentence.
+{% endcomment %}
+{% block title %}{{ chart }} &mdash; {{ selected_week }}{% endblock %}
+{% block main_class %}page-narrow{% endblock %}
+{% block content %}
+    <div class="page-header">
         <div>
+            <h1>{{ chart }}</h1>
+            <p class="subtitle">
+                {% if era %}&ldquo;{{ era.printed_name }}&rdquo; &middot; {% endif %}week ending {{ selected_week|date:"F j, Y" }}
+            </p>
+        </div>
+        <div class="page-actions">
+            <a class="btn" href="{% url 'charts:recordings_matrix' %}?chart={{ chart.id }}">Recordings</a>
+            <a class="btn" href="{% url 'charts:entry_week_edit' chart.id selected_week|date:'Y-m-d' %}">Edit this week</a>
+            <a class="btn btn-primary" href="{% url 'charts:entry_week' chart.id %}">+ Enter a new week</a>
+        </div>
+    </div>
+
+    <div class="week-nav">
+        <div>
+            {% comment %}
+            At either end of what's on file, the button stays in place but
+            disabled (aria-disabled), rather than vanishing or turning into
+            plain text -- so the bar doesn't change shape at the ends.
+            {% endcomment %}
             {% if prev_week %}
-                <a class="button" href="{% url 'charts:chart_week' chart.id prev_week|date:'Y-m-d' %}">&larr; {{ prev_week }}</a>
+                <a class="btn" href="{% url 'charts:chart_week' chart.id prev_week|date:'Y-m-d' %}">&larr; {{ prev_week }}</a>
             {% else %}
-                <span class="button" style="color: var(--muted)">&larr; (first week on file)</span>
+                <span class="btn" aria-disabled="true">&larr; First week on file</span>
             {% endif %}
         </div>
 
@@ -26,7 +45,7 @@
         not worth reaching for HTMX over per CLAUDE.md's "no build
         step" guidance.
         {% endcomment %}
-        <div style="display: flex; gap: 0.5rem;">
+        <div class="week-pickers">
             <select onchange="location.href=this.value" aria-label="Jump to year">
                 {% for year, first_week_of_year in year_options %}
                 <option value="{% url 'charts:chart_week' chart.id first_week_of_year|date:'Y-m-d' %}" {% if year == selected_week.year %}selected{% endif %}>
@@ -45,9 +64,9 @@
 
         <div>
             {% if next_week %}
-                <a class="button" href="{% url 'charts:chart_week' chart.id next_week|date:'Y-m-d' %}">{{ next_week }} &rarr;</a>
+                <a class="btn" href="{% url 'charts:chart_week' chart.id next_week|date:'Y-m-d' %}">{{ next_week }} &rarr;</a>
             {% else %}
-                <span class="button" style="color: var(--muted)">(last week on file) &rarr;</span>
+                <span class="btn" aria-disabled="true">Last week on file &rarr;</span>
             {% endif %}
         </div>
     </div>
@@ -59,22 +78,23 @@
         "row goes double width" bug: with the browser's default auto
         layout, a column is sized to fit its WIDEST cell across the whole
         table, so a single "1 TIE" cell was widening the Pos column
-        everywhere, tie or not.
+        everywhere, tie or not. The movement column is 3rem so "NEW" fits
+        whole; at 2.5rem it was being cut to "N...".
         {% endcomment %}
         <colgroup>
-            <col style="width: 3.5rem;">
-            <col style="width: 2.5rem;">
+            <col style="width: 4.5rem;">
+            <col style="width: 3rem;">
             <col>
             <col style="width: 11rem;">
-            <col style="width: 4rem;">
+            <col style="width: 4.5rem;">
         </colgroup>
         <thead>
             <tr>
-                <th class="pos">Pos</th>
+                <th>Pos</th>
                 <th class="movement"></th>
                 <th>Recording</th>
                 <th>Label / catalog #</th>
-                <th>Last wk</th>
+                <th class="num" title="Position last week, as printed">Last wk</th>
             </tr>
         </thead>
         <tbody>
@@ -91,14 +111,14 @@
                     {% else %}&mdash;
                     {% endif %}
                 </td>
-                <td>
+                <td class="wrap">
                     <strong>{{ row.entry.recording.song }}</strong> &mdash; {{ row.entry.recording.credit_text }}
                     {% if row.entry.printed_anomaly_note %}
                         <span class="anomaly-note" title="Printed anomaly, kept as-is -- see docs/audit/">&#9888; {{ row.entry.printed_anomaly_note }}</span>
                     {% endif %}
                 </td>
                 <td>{{ row.entry.recording.catalog_display }}</td>
-                <td>{% if row.entry.printed_last_week_position %}{{ row.entry.printed_last_week_position }}{% else %}&mdash;{% endif %}</td>
+                <td class="num">{% if row.entry.printed_last_week_position %}{{ row.entry.printed_last_week_position }}{% else %}<span class="muted">&mdash;</span>{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
