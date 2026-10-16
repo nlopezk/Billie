@@ -1,0 +1,13 @@
+{% comment %}
+The footnote under a ranking when the Top-N cut falls in the middle of a
+tie. Those extra rows aren't listed (in the #1 ranking, "top 10" could
+otherwise run to 40 records tied at one week), but they're counted here,
+so the cut never reads as "nobody else had that many".
+Expects: ranking (a dashboard._rank() result), unit ("week").
+{% endcomment %}
+{% if ranking.more_tied %}
+<p class="ranking-note">
+    + {{ ranking.more_tied }} more tied at {{ ranking.tied_value }} {{ unit }}{{ ranking.tied_value|pluralize }}, not shown
+    &mdash; raise &ldquo;Top&rdquo; to see them.
+</p>
+{% endif %}

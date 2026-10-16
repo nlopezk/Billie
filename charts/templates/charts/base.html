@@ -64,6 +64,13 @@ through each page's subtitle, styled nine slightly different ways.
             --new: #9a6400;     /* debut, needs attention, will be created */
             --tie: #6a4fbf;     /* tie, Master ref, informational        */
 
+            /* Data colour for graph bars (dashboard). Its own token rather
+               than --accent: a bar is data, not a button. Values are slot 1
+               of the dataviz reference palette, checked with its validator
+               against THIS page's surfaces (#ffffff light, #15171b dark):
+               lightness band, chroma floor and >= 3:1 contrast all pass. */
+            --series-1: #2a78d6;
+
             /* Type scale. Only these four sizes exist; every rule below
                picks one. --fs-control is shared by EVERY input, select and
                button, which is what makes a button exactly as tall as the
@@ -109,6 +116,7 @@ through each page's subtitle, styled nine slightly different ways.
                 --down: #f07474;
                 --new: #e3a948;
                 --tie: #a993f2;
+                --series-1: #3987e5;
             }
         }
 
@@ -148,6 +156,7 @@ through each page's subtitle, styled nine slightly different ways.
         .alert a { text-decoration: underline; }
 
         .muted { color: var(--muted); }
+        .nowrap { white-space: nowrap; }
 
         /* Keyboard focus is visible everywhere, in the action colour. The
            entry form is keyboard-first (CLAUDE.md), so where the cursor
@@ -194,7 +203,7 @@ through each page's subtitle, styled nine slightly different ways.
            so a button always lines up with the text box beside it. Before
            this, buttons were 0.8rem in places where their inputs were
            0.9rem, and every pairing sat a few pixels out of line. */
-        input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+        input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="range"]),
         select, textarea {
             font: inherit;
             font-size: var(--fs-control);
@@ -551,6 +560,131 @@ through each page's subtitle, styled nine slightly different ways.
         .confirmed-single-list ul { list-style: none; padding-left: 0; margin-top: 0.5rem; }
         .confirmed-single-list li { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
 
+        /* ---- Dashboard (dashboard.html + _dashboard_results.html) ---- */
+        /* Date range takes the spare width in the filter row; the other
+           controls keep their natural size. */
+        .dash-filter-bar .range-field { flex: 1; min-width: 20rem; display: flex; flex-direction: column; gap: 0.25rem; }
+        .range-heading { font-size: var(--fs-sm); color: var(--muted); }
+        .range-label { color: var(--text); font-weight: 600; margin-left: 0.4rem; font-variant-numeric: tabular-nums; }
+        .top-n-input { width: 4.5rem; }
+        /* Two stacked range inputs = one two-handle slider. Both inputs
+           are see-through and ignore the pointer EXCEPT on their thumbs,
+           so each handle can be grabbed even though the inputs overlap. */
+        .range-slider { position: relative; height: var(--control-h); }
+        .range-track {
+            position: absolute; left: 0; right: 0; top: 50%; height: 4px;
+            transform: translateY(-50%); background: var(--surface-strong); border-radius: 2px;
+        }
+        .range-fill { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 2px; }
+        .range-slider input[type="range"] {
+            position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+            background: none; pointer-events: none;
+            -webkit-appearance: none; appearance: none;
+        }
+        .range-slider input[type="range"]::-webkit-slider-runnable-track { background: transparent; }
+        .range-slider input[type="range"]::-webkit-slider-thumb {
+            pointer-events: auto; -webkit-appearance: none; appearance: none;
+            width: 18px; height: 18px; border-radius: 50%;
+            background: var(--bg); border: 2px solid var(--accent); cursor: grab;
+        }
+        .range-slider input[type="range"]::-moz-range-thumb {
+            pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
+            background: var(--bg); border: 2px solid var(--accent); cursor: grab;
+        }
+        .range-slider input[type="range"]:focus-visible { outline: none; }
+        .range-slider input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .range-slider input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+        /* Refetch keeps the frame: while new numbers load, the old ones
+           stay in place, dimmed -- no blank flash, no layout jump. */
+        .dash-results { transition: opacity 0.15s; }
+        .dash-results.htmx-request { opacity: 0.5; }
+
+        /* Headline numbers. Proportional figures (no tabular-nums): these
+           stand alone, and equal-width digits look loose at this size. */
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+        .kpi { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.9rem; cursor: help; }
+        .kpi-label { font-size: var(--fs-sm); color: var(--muted); }
+        .kpi-value { font-size: 1.75rem; font-weight: 600; line-height: 1.2; }
+
+        /* Graphs: the timeline gets the wide column, labels the narrow one. */
+        .viz-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+        @media (max-width: 1000px) { .viz-grid { grid-template-columns: minmax(0, 1fr); } }
+        .viz-card { margin: 0; border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; }
+        .viz-card h2 { margin: 0; font-size: 1rem; }
+        .viz-sub { margin: 0.15rem 0 0.8rem; font-size: var(--fs-sm); color: var(--muted); }
+
+        /* Column chart. The plot box has a fixed height; the x-axis is a
+           separate row UNDER it in normal flow, so the card grows to fit
+           its labels instead of clipping them. Left padding is the room
+           for the y tick labels. */
+        .viz-columns-wrap { padding-left: 2.25rem; }
+        .viz-plot { position: relative; height: 190px; }
+        /* Gridlines: hairline, solid, one step off the surface -- they're
+           furniture, the bars are the data. */
+        .viz-gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border); }
+        .viz-gridline span {
+            position: absolute; right: calc(100% + 0.4rem); transform: translateY(-50%);
+            font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums;
+        }
+        /* gap: 2px is the surface gap between touching bars. */
+        .viz-columns { position: absolute; inset: 0; display: flex; align-items: stretch; gap: 2px; }
+        .viz-col { flex: 1; min-width: 0; display: flex; align-items: flex-end; justify-content: center; cursor: default; outline: none; }
+        /* Capped at 24px wide so a short range doesn't turn into slabs;
+           4px rounded top, square at the baseline. */
+        .viz-bar { width: 100%; max-width: 24px; background: var(--series-1); border-radius: 4px 4px 0 0; }
+        .viz-col:hover, .viz-col:focus-visible { background: var(--surface); }
+        .viz-col:hover .viz-bar, .viz-col:focus-visible .viz-bar { filter: brightness(1.15); }
+        .viz-x-axis { display: flex; gap: 2px; margin-top: 0.3rem; border-top: 1px solid var(--border-strong); padding-top: 0.25rem; }
+        /* Same flex:1 slots as the bars, so each label sits under its own
+           column. A label is usually wider than its slot ("1949" under a
+           12px month); display:flex + justify-content:center centres it on
+           the bar and lets it overflow EQUALLY both sides -- plain
+           text-align:center would spill only to the right. Labels are
+           thinned out in dashboard._month_axis_label so they never collide. */
+        .viz-x-axis span {
+            flex: 1; min-width: 0; display: flex; justify-content: center;
+            font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: visible;
+        }
+
+        /* Horizontal bars: name | bar + value at its tip. */
+        .viz-hbars { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.4rem 0.7rem; align-items: center; }
+        .viz-hbar-name { font-size: var(--fs-sm); text-align: right; }
+        .viz-hbar-track { display: flex; align-items: center; gap: 0.4rem; min-height: 1.4rem; border-radius: var(--radius-sm); outline: none; }
+        .viz-hbar-track:hover, .viz-hbar-track:focus-visible { background: var(--surface); }
+        /* 14px thick (under the 24px cap); rounded data end, square base. */
+        .viz-hbar { height: 14px; background: var(--series-1); border-radius: 0 4px 4px 0; min-width: 2px; }
+        .viz-hbar-track:hover .viz-hbar, .viz-hbar-track:focus-visible .viz-hbar { filter: brightness(1.15); }
+        .viz-hbar-value { font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+        /* "Show as table": the accessible twin of each graph. */
+        .viz-table { margin-top: 0.75rem; font-size: var(--fs-sm); }
+        .viz-table summary { cursor: pointer; color: var(--muted); }
+        .viz-table-scroll { max-height: 16rem; overflow-y: auto; margin-top: 0.4rem; }
+
+        /* The shared hover tooltip: value first and strong, label after. */
+        .viz-tip {
+            position: absolute; z-index: 10; pointer-events: none;
+            background: var(--bg); color: var(--text);
+            border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            padding: 0.35rem 0.55rem; font-size: var(--fs-sm); white-space: nowrap;
+        }
+        .viz-tip strong { display: block; }
+        .viz-tip span { color: var(--muted); }
+
+        /* Rankings: three side by side, wrapping to fewer on narrow screens. */
+        .ranking-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 1rem; align-items: start; }
+        .ranking-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; }
+        .ranking-card h2 { margin: 0 0 0.6rem; font-size: 1rem; }
+        .ranking-table td { vertical-align: top; }
+        .ranking-table .rank { color: var(--muted); }
+        .ranking-title { font-weight: 600; }
+        .ranking-meta { display: block; color: var(--muted); font-size: var(--fs-xs); margin-top: 0.1rem; }
+        /* The number the list is ranked BY reads strongest in its row. */
+        .ranking-key { font-weight: 700; }
+        .ranking-note { margin: 0.5rem 0 0; font-size: var(--fs-xs); color: var(--muted); }
+
         /* ---- Weekly entry form (entry_week.html + _entry_*.html) ---- */
         table.entry-table td { vertical-align: top; padding-top: 0.5rem; padding-bottom: 0.5rem; }
         /* The entry table is a FORM, not a list to scan -- row hover
@@ -664,6 +798,8 @@ Set once here rather than repeated on each button.
             <nav class="site-nav" aria-label="Sections">
                 <a href="{% url 'charts:chart_list' %}"
                    class="{% if n == 'chart_list' or n == 'chart_week' or n == 'chart_week_latest' or n == 'entry_week' or n == 'entry_week_edit' %}active{% endif %}">Charts</a>
+                <a href="{% url 'charts:dashboard' %}"
+                   class="{% if n == 'dashboard' %}active{% endif %}">Dashboard</a>
                 <a href="{% url 'charts:recordings_matrix' %}"
                    class="{% if n == 'recordings_matrix' %}active{% endif %}">Recordings</a>
                 <a href="{% url 'charts:discogs_queue' %}"

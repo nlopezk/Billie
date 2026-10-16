@@ -28,6 +28,12 @@ urlpatterns = [
     # with the patterns below, since "recordings" never matches <int:...>.
     path("recordings/", views.recordings_matrix, name="recordings_matrix"),
 
+    # /dashboard/                              -- headline numbers, debuts over
+    # time, top labels, and the three Top-N rankings, all scoped by one
+    # filter row (date range, genre, chart). Read-only. Same top-level
+    # placement reasoning as recordings/ above.
+    path("dashboard/", views.dashboard, name="dashboard"),
+
     # --- credit splitting (combined-credit artists -> real collaborations) ---
     path("credits/", views.credit_queue, name="credit_queue"),
     path("credits/<int:artist_id>/split/", views.credit_split, name="credit_split"),

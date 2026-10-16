@@ -14,6 +14,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from . import credits as credits_lib
+from . import dashboard as dashboard_lib
 from . import discogs as discogs_api
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
@@ -1858,3 +1859,198 @@ class DiscogsTokenTests(TestCase):
             response = self.client.get(reverse("charts:discogs_queue"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Discogs token configured")
+
+
+# =============================================================================
+# Dashboard (charts/dashboard.py) -- every test targets one of the four
+# definitions in that module's docstring, i.e. a way the obvious query
+# would quietly produce the wrong number.
+# =============================================================================
+
+class DashboardTests(TestCase):
+    # Consecutive Saturdays -- every chart on file publishes on Saturday.
+    W1, W2, W3, W4 = date(1950, 1, 7), date(1950, 1, 14), date(1950, 1, 21), date(1950, 1, 28)
+
+    def setUp(self):
+        self.jukebox = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.retail = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.rnb = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.label = Label.objects.create(name="Decca")
+        self.tubb = Artist.objects.create(canonical_name="Ernest Tubb")
+        self.foley = Artist.objects.create(canonical_name="Red Foley")
+
+    def _recording(self, title, catalog, *artists):
+        rec = Recording.objects.create(
+            label=self.label, catalog_number=catalog, side="A",
+            song=Song.objects.create(title=title),
+            credit_text=" - ".join(a.canonical_name for a in artists),
+        )
+        for order, artist in enumerate(artists, start=1):
+            RecordingCredit.objects.create(recording=rec, artist=artist, credit_order=order)
+        return rec
+
+    def _entry(self, chart, week, position, rec):
+        return ChartEntry.objects.create(chart=chart, week_date=week, position=position, recording=rec)
+
+    def _build(self, **params):
+        return dashboard_lib.build(params)
+
+    def test_a_week_at_number_one_on_three_charts_counts_once(self):
+        # Definition 1. Three #1 ROWS, one calendar week -- counting rows
+        # (or chart-weeks) would claim 3 weeks at #1.
+        rec = self._recording("Slipping Around", "100", self.tubb)
+        for chart in (self.jukebox, self.retail, self.rnb):
+            self._entry(chart, self.W1, 1, rec)
+        self._entry(self.jukebox, self.W2, 1, rec)
+
+        row = self._build()["number_ones"]["rows"][0]
+        self.assertEqual(row["weeks_at_1"], 2)
+        self.assertEqual(row["weeks_on"], 2)
+
+    def test_a_tie_at_number_one_credits_both_records(self):
+        # Definition 2: 39 real chart-weeks on file have a tie at #1.
+        a = self._recording("A", "101", self.tubb)
+        b = self._recording("B", "102", self.foley)
+        self._entry(self.jukebox, self.W1, 1, a)
+        self._entry(self.jukebox, self.W1, 1, b)
+
+        rows = self._build()["number_ones"]["rows"]
+        self.assertEqual([(r["song"], r["weeks_at_1"], r["rank"]) for r in rows], [("A", 1, 1), ("B", 1, 1)])
+
+    def test_competition_ranking_and_the_tied_overflow_count(self):
+        # "1, 2, 2, 4" -- and with Top 2, the third record tied at the cut
+        # isn't listed but IS counted, so the cut can't mislead.
+        lead = self._recording("Lead", "110", self.tubb)
+        for i, week in enumerate((self.W1, self.W2, self.W3)):
+            self._entry(self.jukebox, week, 1 + i, lead)
+        tied = [self._recording(t, c, self.foley) for t, c in (("T1", "111"), ("T2", "112"), ("T3", "113"))]
+        for rec in tied:
+            self._entry(self.jukebox, self.W1, 5, rec)
+            self._entry(self.jukebox, self.W2, 5, rec)
+        last = self._recording("Last", "114", self.tubb)
+        self._entry(self.jukebox, self.W4, 9, last)
+
+        full = self._build(n="10")["top_recordings"]
+        self.assertEqual([r["rank"] for r in full["rows"]], [1, 2, 2, 2, 5])
+        cut = self._build(n="2")["top_recordings"]
+        self.assertEqual(len(cut["rows"]), 2)
+        self.assertEqual(cut["more_tied"], 2)
+        self.assertEqual(cut["tied_value"], 2)
+
+    def test_a_collaboration_credits_every_artist_on_it(self):
+        # Definition 3: structured credits, not the printed text -- the
+        # whole point of the /credits/ split work.
+        duet = self._recording("Goodnight Irene", "120", self.tubb, self.foley)
+        self._entry(self.jukebox, self.W1, 2, duet)
+
+        names = {a["name"] for a in self._build()["top_artists"]["rows"]}
+        self.assertEqual(names, {"Ernest Tubb", "Red Foley"})
+
+    def test_artist_weeks_present_vs_record_weeks(self):
+        # Two hits on at once: 2 calendar weeks present, but 4 record-weeks.
+        # And a week a hit spends on two charts still counts once.
+        hit1 = self._recording("Hit 1", "130", self.tubb)
+        hit2 = self._recording("Hit 2", "131", self.tubb)
+        for week in (self.W1, self.W2):
+            self._entry(self.jukebox, week, 1, hit1)
+            self._entry(self.retail, week, 1, hit1)
+            self._entry(self.jukebox, week, 3, hit2)
+
+        row = self._build()["top_artists"]["rows"][0]
+        self.assertEqual((row["weeks_on"], row["recordings"], row["record_weeks"]), (2, 2, 4))
+
+    def test_date_range_and_genre_scope_everything(self):
+        rec = self._recording("Country", "140", self.tubb)
+        rnb_rec = self._recording("R&B", "141", self.foley)
+        for week in (self.W1, self.W2, self.W3):
+            self._entry(self.jukebox, week, 1, rec)
+        self._entry(self.rnb, self.W2, 1, rnb_rec)
+
+        ctx = self._build(genre="country", **{"from": "1950-01-14", "to": "1950-01-21"})
+        self.assertEqual([r["song"] for r in ctx["top_recordings"]["rows"]], ["Country"])
+        self.assertEqual(ctx["top_recordings"]["rows"][0]["weeks_on"], 2)
+        self.assertEqual(ctx["range_weeks"], 2)
+
+    def test_dates_snap_onto_real_chart_weeks(self):
+        # A hand-typed Wednesday must land on a real Saturday, or the
+        # slider's week index would point at the wrong week.
+        rec = self._recording("X", "150", self.tubb)
+        for week in (self.W1, self.W2, self.W3):
+            self._entry(self.jukebox, week, 1, rec)
+
+        ctx = self._build(**{"from": "1950-01-11", "to": "1950-01-18"})
+        self.assertEqual((ctx["filters"]["date_from"], ctx["filters"]["date_to"]), (self.W2, self.W2))
+        # Backwards and out-of-range dates are corrected, not errors.
+        ctx = self._build(**{"from": "1960-01-01", "to": "1900-01-01"})
+        self.assertEqual((ctx["filters"]["date_from"], ctx["filters"]["date_to"]), (self.W1, self.W3))
+
+    def test_top_n_is_clamped(self):
+        weeks = [self.W1]
+        self.assertEqual(dashboard_lib.parse_filters({"n": "0"}, weeks)["n"], 1)
+        self.assertEqual(dashboard_lib.parse_filters({"n": "5000"}, weeks)["n"], dashboard_lib.MAX_TOP_N)
+        self.assertEqual(dashboard_lib.parse_filters({"n": "abc"}, weeks)["n"], dashboard_lib.DEFAULT_TOP_N)
+
+    def test_debuts_skip_the_charts_first_week_on_file(self):
+        # Definition 4. "Old" was already charting in the jukebox chart's
+        # first week on file -- its real debut is unknowable, so it isn't
+        # one. "New" first appears a week later: a real debut. "Crossover"
+        # moves from jukebox to retail -- its retail entry isn't a debut.
+        old = self._recording("Old", "160", self.tubb)
+        new = self._recording("New", "161", self.foley)
+        crossover = self._recording("Crossover", "162", self.tubb)
+        self._entry(self.jukebox, self.W1, 1, old)
+        self._entry(self.jukebox, self.W2, 1, old)
+        self._entry(self.jukebox, self.W2, 2, new)
+        self._entry(self.jukebox, self.W2, 3, crossover)
+        self._entry(self.retail, self.W3, 1, crossover)
+
+        debuts = self._build()["debuts"]
+        self.assertEqual(debuts["total"], 2)  # New + Crossover, each once
+        self.assertEqual(debuts["unit"], "week")  # a 3-week window
+        self.assertEqual([b["value"] for b in debuts["buckets"]], [0, 2, 0])
+
+    def test_a_debut_before_the_window_is_not_a_debut_inside_it(self):
+        rec = self._recording("Long Runner", "170", self.tubb)
+        filler = self._recording("Filler", "171", self.foley)
+        self._entry(self.jukebox, self.W1, 1, filler)  # the chart's first week
+        for week in (self.W2, self.W3, self.W4):
+            self._entry(self.jukebox, week, 2, rec)
+
+        ctx = self._build(**{"from": "1950-01-21", "to": "1950-01-28"})
+        self.assertEqual(ctx["debuts"]["total"], 0)
+
+    def test_label_chart_counts_record_weeks(self):
+        a = self._recording("A", "180", self.tubb)
+        b = self._recording("B", "181", self.foley)
+        for week in (self.W1, self.W2):
+            self._entry(self.jukebox, week, 1, a)
+            self._entry(self.retail, week, 1, a)  # same week, another chart: once
+            self._entry(self.jukebox, week, 2, b)
+
+        self.assertEqual(self._build()["labels"][0]["value"], 4)
+
+    def test_axis_labels_thin_out_so_they_never_collide(self):
+        label = dashboard_lib._month_axis_label
+        # Eight years of months: years only. A window starting in October
+        # must NOT also label its first slot, or "1942" prints on "1943".
+        self.assertEqual(label(date(1942, 10, 1), 0, 102), "")
+        self.assertEqual(label(date(1943, 1, 1), 3, 102), "1943")
+        self.assertEqual(label(date(1943, 2, 1), 4, 102), "")
+        # One year: every month gets named.
+        self.assertEqual(label(date(1949, 1, 1), 0, 12), "Jan 1949")
+        self.assertEqual(label(date(1949, 2, 1), 1, 12), "Feb")
+
+    def test_page_and_htmx_partial(self):
+        rec = self._recording("Page", "190", self.tubb)
+        self._entry(self.jukebox, self.W1, 1, rec)
+
+        page = self.client.get(reverse("charts:dashboard"))
+        self.assertTemplateUsed(page, "charts/dashboard.html")
+        live = self.client.get(reverse("charts:dashboard"), {"n": "5"}, HTTP_HX_REQUEST="true")
+        self.assertTemplateUsed(live, "charts/_dashboard_results.html")
+        self.assertTemplateNotUsed(live, "charts/dashboard.html")
+
+    def test_empty_database_renders(self):
+        response = self.client.get(reverse("charts:dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No chart weeks on file yet")

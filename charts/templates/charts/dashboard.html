@@ -1,0 +1,217 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/dashboard.html
+
+The dashboard: ONE filter row on top (date range, genre, chart, Top N)
+that scopes everything below it -- headline numbers, two graphs, three
+rankings -- so the numbers on the page always agree with each other.
+
+Live updates work like the recordings matrix: HTMX re-GETs this same URL
+on any filter change and swaps just #dash-results; hx-push-url keeps the
+address bar in sync, so a filtered dashboard is bookmarkable.
+
+The date range is a two-handle slider over the 437 Saturdays on file
+(dashboard.all_weeks -- one shared list, since every chart publishes
+weekly on Saturdays). A browser has no built-in two-handle slider, so
+it's the standard trick: two ordinary range inputs stacked on one track,
+each owning one handle. They work in week INDEXES (0..436); the hidden
+`from`/`to` inputs carry the actual ISO dates that get submitted.
+{% endcomment %}
+{% block title %}Dashboard{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Dashboard</h1>
+            <p class="subtitle">Who ruled the charts, and when &mdash; for any range of weeks.</p>
+        </div>
+    </div>
+
+    {% if has_data %}
+    {% comment %}
+    hx-trigger, piece by piece:
+      * change from:select.dash-filter -- Genre / Chart. The Year shortcut
+        select is deliberately NOT .dash-filter: it has to move the slider
+        handles BEFORE the request goes out, so its own script fires the
+        request (via range-changed) once the hidden dates are updated.
+      * range-changed -- custom event the slider script fires when a
+        handle is RELEASED (not on every pixel of a drag: 437 requests
+        per sweep would be absurd, and the labels already update live).
+      * input changed delay:500ms from:#top-n -- typing a new N.
+    hx-indicator puts .htmx-request on the results while they reload, and
+    the CSS dims them -- the old numbers stay put instead of flashing.
+    {% endcomment %}
+    <form id="dash-filters" class="filter-bar dash-filter-bar" method="get" action="{% url 'charts:dashboard' %}"
+          hx-get="{% url 'charts:dashboard' %}" hx-target="#dash-results" hx-push-url="true"
+          hx-indicator="#dash-results"
+          hx-trigger="change from:select.dash-filter, range-changed, input changed delay:500ms from:#top-n">
+
+        <input type="hidden" name="from" id="range-from" value="{{ filters.date_from|date:'Y-m-d' }}">
+        <input type="hidden" name="to" id="range-to" value="{{ filters.date_to|date:'Y-m-d' }}">
+
+        <div class="range-field">
+            <span class="range-heading">
+                Weeks
+                <span id="range-label" class="range-label">{{ filters.date_from|date:"M j, Y" }} &ndash; {{ filters.date_to|date:"M j, Y" }} &middot; {{ range_weeks }} week{{ range_weeks|pluralize }}</span>
+            </span>
+            <div class="range-slider">
+                <div class="range-track"><div class="range-fill" id="range-fill"></div></div>
+                {% comment %}
+                No `name` on either: they're the handles, not the data. The
+                hidden inputs above are what the form submits.
+                {% endcomment %}
+                <input type="range" id="range-lo" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ from_index }}" aria-label="First week">
+                <input type="range" id="range-hi" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ to_index }}" aria-label="Last week">
+            </div>
+        </div>
+
+        <label>
+            Year
+            <select id="year-preset" aria-label="Jump to a year">
+                <option value="" {% if not preset %}selected{% endif %}>Custom</option>
+                <option value="all" {% if preset == "all" %}selected{% endif %}>All weeks</option>
+                {% for y in year_options %}
+                <option value="{{ y.year }}" data-first="{{ y.first }}" data-last="{{ y.last }}" {% if preset == y.year|stringformat:"s" %}selected{% endif %}>{{ y.year }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Genre
+            <select name="genre" class="dash-filter">
+                <option value="">All genres</option>
+                {% for value, label in genre_choices %}
+                <option value="{{ value }}" {% if value == filters.genre %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Chart
+            <select name="chart" class="dash-filter">
+                <option value="">All charts</option>
+                {% for c in all_charts %}
+                <option value="{{ c.id }}" {% if filters.chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Top
+            <input type="number" name="n" id="top-n" value="{{ filters.n }}" min="1" max="100" class="top-n-input">
+        </label>
+    </form>
+
+    {{ week_points|json_script:"dash-weeks" }}
+    {% endif %}
+
+    <div id="dash-results" class="dash-results">
+        {% include "charts/_dashboard_results.html" %}
+    </div>
+
+    {# One shared tooltip for every graph mark, positioned by the script below. #}
+    <div id="dash-tip" class="viz-tip" role="tooltip" hidden><strong></strong><span></span></div>
+
+    <script>
+    (function () {
+        // ------------------------------------------------ date-range slider
+        const form = document.getElementById("dash-filters");
+        if (!form) return;  // no data on file -> no filter row at all
+        // [[iso, "Jan 8, 1944"], ...] -- display strings made server-side,
+        // see dashboard.build() for why JS never parses these dates itself.
+        const weeks = JSON.parse(document.getElementById("dash-weeks").textContent);
+        const lo = document.getElementById("range-lo");
+        const hi = document.getElementById("range-hi");
+        const fromInput = document.getElementById("range-from");
+        const toInput = document.getElementById("range-to");
+        const label = document.getElementById("range-label");
+        const fill = document.getElementById("range-fill");
+        const preset = document.getElementById("year-preset");
+        const last = weeks.length - 1;
+
+        function sync(moved) {
+            let a = Number(lo.value), b = Number(hi.value);
+            // Handles can meet but never cross: whichever one was dragged
+            // past the other gets stopped at it.
+            if (a > b) {
+                if (moved === lo) { a = b; lo.value = a; } else { b = a; hi.value = b; }
+            }
+            fromInput.value = weeks[a][0];
+            toInput.value = weeks[b][0];
+            const n = b - a + 1;
+            label.textContent = weeks[a][1] + " – " + weeks[b][1] + " · " + n + (n === 1 ? " week" : " weeks");
+            // The highlighted stretch of track between the two handles.
+            fill.style.left = (a / last * 100) + "%";
+            fill.style.right = (100 - b / last * 100) + "%";
+            // When both handles sit together at the far right, the LOW one
+            // must be on top or it could never be dragged back out from
+            // under the high one.
+            lo.style.zIndex = (a === b && a > last / 2) ? "3" : "1";
+        }
+
+        function changed() {
+            // A dragged range no longer matches a Year shortcut.
+            preset.value = "";
+            htmx.trigger(form, "range-changed");
+        }
+
+        lo.addEventListener("input", () => sync(lo));
+        hi.addEventListener("input", () => sync(hi));
+        // `change` fires on release (mouse) or per key press (arrow keys),
+        // which is the right moment to fetch.
+        lo.addEventListener("change", changed);
+        hi.addEventListener("change", changed);
+
+        preset.addEventListener("change", () => {
+            const opt = preset.selectedOptions[0];
+            if (preset.value === "all") { lo.value = 0; hi.value = last; }
+            else if (preset.value) { lo.value = opt.dataset.first; hi.value = opt.dataset.last; }
+            else return;  // "Custom" is just a label, nothing to jump to
+            sync(null);
+            htmx.trigger(form, "range-changed");
+        });
+
+        sync(null);
+
+        // ------------------------------------------------ graph tooltip
+        // ONE tooltip element for every bar, driven by event delegation on
+        // the results container -- which survives HTMX swapping its
+        // contents, so the listeners never need re-attaching. Text goes in
+        // with textContent, never innerHTML: label names are data.
+        const results = document.getElementById("dash-results");
+        const tip = document.getElementById("dash-tip");
+        const tipValue = tip.querySelector("strong");
+        const tipLabel = tip.querySelector("span");
+
+        function show(mark, x, y) {
+            tipValue.textContent = mark.dataset.tipValue;
+            tipLabel.textContent = mark.dataset.tipLabel;
+            tip.hidden = false;
+            // Keep it on screen: flip to the left of the pointer near the
+            // right edge.
+            const w = tip.offsetWidth;
+            const left = (x + 14 + w > window.innerWidth) ? x - 14 - w : x + 14;
+            tip.style.left = (left + window.scrollX) + "px";
+            tip.style.top = (y + 14 + window.scrollY) + "px";
+        }
+        function hide() { tip.hidden = true; }
+
+        results.addEventListener("pointermove", (e) => {
+            const mark = e.target.closest("[data-tip-value]");
+            if (mark) show(mark, e.clientX, e.clientY); else hide();
+        });
+        results.addEventListener("pointerleave", hide);
+        // Keyboard: the same details on focus as on hover, anchored to the mark.
+        results.addEventListener("focusin", (e) => {
+            const mark = e.target.closest("[data-tip-value]");
+            if (!mark) return;
+            const r = mark.getBoundingClientRect();
+            show(mark, r.left + r.width / 2, r.top);
+        });
+        results.addEventListener("focusout", hide);
+    })();
+    </script>
+{% endblock %}

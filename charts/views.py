@@ -26,6 +26,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from . import credits as credits_lib
+from . import dashboard as dashboard_lib
 from . import discogs as discogs_api
 from .forms import ChartEntryRowForm
 from .models import (
@@ -468,6 +469,23 @@ def recordings_matrix(request):
     if request.headers.get("HX-Request"):
         return render(request, "charts/_recordings_matrix_results.html", context)
     return render(request, "charts/recordings_matrix.html", context)
+
+
+def dashboard(request):
+    # Every number on the page comes from dashboard_lib.build() -- the
+    # counting rules live there, next to their tests, not in this view.
+    # Same one-URL, two-renders pattern as recordings_matrix above: the
+    # filter row's HTMX live update sends HX-Request and gets just the
+    # results partial back; a normal load, reload or bookmarked link gets
+    # the full page.
+    context = {
+        **dashboard_lib.build(request.GET),
+        "genre_choices": Chart.CATEGORY_CHOICES,
+        "all_charts": Chart.objects.order_by("category", "method"),
+    }
+    if request.headers.get("HX-Request"):
+        return render(request, "charts/_dashboard_results.html", context)
+    return render(request, "charts/dashboard.html", context)
 
 
 # =============================================================================

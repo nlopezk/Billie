@@ -330,7 +330,7 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     variants: `.btn-primary` (one per screen), `.btn-ghost`, `.btn-danger`, `.btn-sm`,
     `.btn-icon`. Every badge class shares one geometry; alerts are `.alert-success/
     warning/error`.
-  - **Top nav bar** (Charts / Recordings / Discogs / Credits / Admin) replaces the
+  - **Top nav bar** (Charts / Dashboard / Recordings / Discogs / Credits / Admin) replaces the
     per-page "back to ... / ... ->" links; the active section comes from
     `request.resolver_match.url_name`, so a new page only needs adding to the `if` there.
     Discogs queue/audit are tabs (`_discogs_tabs.html`).
@@ -342,6 +342,34 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     The form's `onkeydown` now blocks that; only the Save button saves a week.
   - Visual checks were done with Playwright + Edge against a second dev server, with
     every non-GET request aborted so nothing could write to `billboard.db`.
+- **Dashboard, built 2026-10-16** — `/dashboard/` (`charts/dashboard.py` for every
+  number, `views.dashboard` thin, `dashboard.html` + `_dashboard_results.html`). One
+  filter row (two-handle date slider over the 437 Saturdays on file + Year shortcuts,
+  Genre, Chart, Top N) scopes everything below it: five headline numbers, *Debuts per
+  month* (per week for ranges of 26 weeks or fewer), *Top labels*, and three Top-N rankings
+  (most weeks at #1, most weeks on chart, top artists). Live-updates via HTMX like the
+  matrix, bookmarkable via `hx-push-url`. Read-only. The definitions are the part to
+  keep — they're in `dashboard.py`'s docstring and each has a test in `DashboardTests`:
+  - **A week is a calendar week**: `Count("week_date", distinct=True)`, never rows. A
+    record at #1 on three charts one Saturday has ONE week at #1. Same rule as the
+    collapsed matrix, so the two pages agree.
+  - **Ties credit everyone** (39 chart-weeks have a tie at #1), and rankings use
+    competition ranking ("1, 2, 2, 4"). When the Top-N cut lands mid-tie, the extra
+    rows aren't listed but a footnote counts them.
+  - **Artists come from `RecordingCredit`**, not `credit_text` — a collaboration credits
+    both acts. Ranked by *weeks present*; *record-weeks* (each hit's weeks summed) rides
+    along as a column because the two genuinely diverge: on all data Louis Jordan leads
+    on weeks present (337) but Eddy Arnold on record-weeks (645).
+  - **Debuts exclude records already on a chart in that chart's first week on file**
+    (their real debut predates the data). Note the debut graph still rises in 1948–49
+    when ALL charts are selected, partly because the Retail charts begin on file then —
+    more charts tracked means more first appearances, not necessarily more releases.
+  - The graphs are **plain HTML/CSS, built server-side** — no chart library, nothing from
+    a CDN, so the page is fully offline like the rest. Bar colour is its own token
+    (`--series-1`), validated with the dataviz palette checker against both page surfaces.
+    Each graph has a "Show as table" twin; marks are focusable with a shared tooltip.
+  - Verified against a brute-force recount in plain Python sets: zero mismatches on all
+    data and on Country/1950.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

@@ -1,0 +1,202 @@
+{% comment %}
+charts/templates/charts/_dashboard_results.html
+
+Everything below the filter row: headline numbers, the two graphs, and
+the three rankings. Rendered by {% include %} on a full page load and
+directly as the HTMX response to a filter change -- one template, so the
+two can't drift (same pattern as the recordings matrix).
+
+Every number here comes from charts/dashboard.py; see its docstring for
+the four definitions that decide what they mean (a week is a CALENDAR
+week, ties credit everyone, artists come from structured credits,
+debuts exclude records already charting when the data starts).
+
+The graphs are plain HTML/CSS bars, built server-side -- no chart
+library, nothing fetched from the internet, so the page works offline
+like the rest of the app (CLAUDE.md non-negotiable #2), and it picks up
+the site's colour tokens and dark mode for free. Each graph has a
+"Show as table" twin with the exact same numbers, so no value is only
+reachable by hovering.
+{% endcomment %}
+{% if not has_data %}
+    <p class="summary">No chart weeks on file yet.</p>
+{% else %}
+
+{# Matrix links from the rankings keep the dashboard's genre/chart scope. #}
+{% with scope="&genre="|add:filters.genre|add:"&chart="|add:filters.chart %}
+
+<section class="kpi-row" aria-label="Headline numbers">
+    {% for k in kpis %}
+    <div class="kpi" title="{{ k.hint }}">
+        <div class="kpi-label">{{ k.label }}</div>
+        <div class="kpi-value">{{ k.value }}</div>
+    </div>
+    {% endfor %}
+</section>
+
+<div class="viz-grid">
+    {# ---------------------------------------------------------- debuts #}
+    <figure class="viz-card">
+        <figcaption>
+            <h2>Debuts per {{ debuts.unit }}</h2>
+            <p class="viz-sub">
+                {{ debuts.total }} record{{ debuts.total|pluralize }} entering the selected charts for the first time.
+                Records already on a chart in its first week on file aren&rsquo;t counted &mdash; they debuted before the data starts.
+            </p>
+        </figcaption>
+        <div class="viz-columns-wrap">
+            {% comment %}
+            Gridlines and their tick labels sit absolutely-positioned behind
+            the bars, each at `bottom: <tick as % of the axis top>`. The
+            axis top is a "nice" number >= the tallest bar
+            (dashboard._nice_axis), so the top gridline is always a clean
+            round count.
+            {% endcomment %}
+            <div class="viz-plot">
+                {% for t in debuts.ticks %}
+                <div class="viz-gridline" style="bottom: {{ t.pct }}%;"><span>{{ t.value }}</span></div>
+                {% endfor %}
+                <div class="viz-columns">
+                    {% for b in debuts.buckets %}
+                    {% comment %}
+                    The whole column (full plot height), not just the painted
+                    bar, is the hover/focus target -- a month with 1 debut is
+                    a 2px sliver nobody could land on otherwise. data-tip-*
+                    feed the shared tooltip (dashboard.html's script).
+                    {% endcomment %}
+                    <div class="viz-col" tabindex="0" data-tip-value="{{ b.value }} debut{{ b.value|pluralize }}" data-tip-label="{{ b.label }}"
+                         aria-label="{{ b.label }}: {{ b.value }} debut{{ b.value|pluralize }}">
+                        <div class="viz-bar" style="height: {{ b.height_pct }}%;"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="viz-x-axis">
+                {% for b in debuts.buckets %}<span>{{ b.axis_label }}</span>{% endfor %}
+            </div>
+        </div>
+        <details class="viz-table">
+            <summary>Show as table</summary>
+            <div class="viz-table-scroll">
+                <table class="dense-table">
+                    <thead><tr><th>{{ debuts.unit|capfirst }}</th><th class="num">Debuts</th></tr></thead>
+                    <tbody>
+                        {% for b in debuts.buckets %}<tr><td>{{ b.label }}</td><td class="num">{{ b.value }}</td></tr>{% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </figure>
+
+    {# ---------------------------------------------------------- labels #}
+    <figure class="viz-card">
+        <figcaption>
+            <h2>Top labels</h2>
+            <p class="viz-sub">By record-weeks: each record&rsquo;s weeks on chart, added up.</p>
+        </figcaption>
+        {% if labels %}
+        <div class="viz-hbars">
+            {% for l in labels %}
+            <span class="viz-hbar-name">{{ l.label }}</span>
+            <div class="viz-hbar-track" tabindex="0" data-tip-value="{{ l.value_display }} record-weeks" data-tip-label="{{ l.label }}"
+                 aria-label="{{ l.label }}: {{ l.value_display }} record-weeks">
+                <div class="viz-hbar" style="width: {{ l.width_pct }}%;"></div>
+                {# Value at the bar's tip, in text colour -- never the bar's colour. #}
+                <span class="viz-hbar-value">{{ l.value_display }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+            <p class="summary">Nothing charted in this range.</p>
+        {% endif %}
+    </figure>
+</div>
+
+{# ------------------------------------------------------------- rankings #}
+<div class="ranking-grid">
+
+    <section class="ranking-card">
+        <h2>Most weeks at No. 1</h2>
+        <table class="dense-table ranking-table">
+            <colgroup><col style="width: 2.5rem;"><col><col style="width: 4rem;"><col style="width: 5rem;"></colgroup>
+            <thead><tr>
+                <th class="num">#</th><th>Recording</th>
+                <th class="num" title="Calendar weeks at #1 on any selected chart">At #1</th>
+                <th class="num" title="Calendar weeks on any selected chart, any position (the tie-break)">On chart</th>
+            </tr></thead>
+            <tbody>
+                {% for r in number_ones.rows %}
+                <tr>
+                    <td class="num rank">{{ r.rank }}</td>
+                    <td class="wrap">
+                        <a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ r.matrix_query|urlencode }}{{ scope }}">{{ r.song }}</a>
+                        <span class="ranking-meta">{{ r.credit_text }} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
+                    </td>
+                    <td class="num ranking-key">{{ r.weeks_at_1 }}</td>
+                    <td class="num muted">{{ r.weeks_on }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" class="empty-row">No #1 records in this range.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% include "charts/_dashboard_tie_note.html" with ranking=number_ones unit="week" %}
+    </section>
+
+    <section class="ranking-card">
+        <h2>Most weeks on chart</h2>
+        <table class="dense-table ranking-table">
+            <colgroup><col style="width: 2.5rem;"><col><col style="width: 4rem;"><col style="width: 4rem;"></colgroup>
+            <thead><tr>
+                <th class="num">#</th><th>Recording</th>
+                <th class="num" title="Calendar weeks on any selected chart, any position">Weeks</th>
+                <th class="num" title="Best position reached in the range, on any selected chart (the tie-break)">Peak</th>
+            </tr></thead>
+            <tbody>
+                {% for r in top_recordings.rows %}
+                <tr>
+                    <td class="num rank">{{ r.rank }}</td>
+                    <td class="wrap">
+                        <a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ r.matrix_query|urlencode }}{{ scope }}">{{ r.song }}</a>
+                        <span class="ranking-meta">{{ r.credit_text }} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
+                    </td>
+                    <td class="num ranking-key">{{ r.weeks_on }}</td>
+                    <td class="num muted">{{ r.peak }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" class="empty-row">Nothing charted in this range.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% include "charts/_dashboard_tie_note.html" with ranking=top_recordings unit="week" %}
+    </section>
+
+    <section class="ranking-card">
+        <h2>Top artists</h2>
+        <table class="dense-table ranking-table">
+            <colgroup><col style="width: 2.5rem;"><col><col style="width: 4rem;"><col style="width: 3.5rem;"><col style="width: 4.5rem;"></colgroup>
+            <thead><tr>
+                <th class="num">#</th><th>Artist</th>
+                <th class="num" title="Calendar weeks with at least one of their records on a selected chart (the ranking)">Weeks</th>
+                <th class="num" title="Different records that charted">Recs</th>
+                <th class="num" title="Each record's weeks added up -- three hits on at once count three times per week (the tie-break)">Rec-wks</th>
+            </tr></thead>
+            <tbody>
+                {% for a in top_artists.rows %}
+                <tr>
+                    <td class="num rank">{{ a.rank }}</td>
+                    <td class="wrap"><a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ a.name|urlencode }}{{ scope }}">{{ a.name }}</a></td>
+                    <td class="num ranking-key">{{ a.weeks_on }}</td>
+                    <td class="num muted">{{ a.recordings }}</td>
+                    <td class="num muted">{{ a.record_weeks }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="empty-row">Nothing charted in this range.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% include "charts/_dashboard_tie_note.html" with ranking=top_artists unit="week" %}
+    </section>
+</div>
+{% endwith %}
+{% endif %}
