@@ -39,6 +39,16 @@ search pick, never opening the create box at all).
         <strong>{{ recording.song }}</strong> &mdash; {{ recording.credit_text }}
         <span class="catalog-hint">({{ recording.catalog_display }})</span>
         {% comment %}
+        Set only when the row was resolved WITHOUT a typed last-week number
+        (views._last_week_hint): says this pick is a carryover, and from
+        where. The chart browser works this out from the data anyway, so
+        nothing is lost by leaving the box empty -- typing what the
+        magazine printed just adds a cross-check.
+        {% endcomment %}
+        {% if last_week_hint %}
+            <span class="lw-hint" title="Where this record was on last week's chart on file. Type the printed last-week number in the box if you want it cross-checked.">last week #{{ last_week_hint }}</span>
+        {% endif %}
+        {% comment %}
         Confirmation that a hand-typed Discogs link took (or a plain-
         language reason it didn't). Reads recording.discogs, the
         one-to-one DiscogsMatch -- absent for the overwhelming majority

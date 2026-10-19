@@ -2054,3 +2054,115 @@ class DashboardTests(TestCase):
         response = self.client.get(reverse("charts:dashboard"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No chart weeks on file yet")
+
+
+# =============================================================================
+# Chart browser movement -- from last week's chart ON FILE, not from
+# whether a last-week number was typed (views.classify_movement).
+# =============================================================================
+
+class ChartWeekMovementTests(TestCase):
+    W1, W2, W3, W4 = date(1951, 3, 17), date(1951, 3, 24), date(1951, 3, 31), date(1951, 4, 7)
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jockeys", publication_weekday=5)
+        self.label = Label.objects.create(name="Victor")
+        self.recs = {}
+
+    def _rec(self, title):
+        if title not in self.recs:
+            self.recs[title] = Recording.objects.create(
+                label=self.label, catalog_number=str(100 + len(self.recs)), side="A",
+                song=Song.objects.create(title=title), credit_text="Somebody",
+            )
+        return self.recs[title]
+
+    def _entry(self, week, position, title, typed_lw=None, **kw):
+        return ChartEntry.objects.create(
+            chart=self.chart, week_date=week, position=position, recording=self._rec(title),
+            printed_last_week_position=typed_lw, **kw,
+        )
+
+    def _rows(self, week):
+        response = self.client.get(reverse("charts:chart_week", args=[self.chart.id, week.isoformat()]))
+        return {r["entry"].recording.song.title: r for r in response.context["rows"]}, response
+
+    def test_carryover_without_a_typed_number_is_not_new(self):
+        # The 2026-10-18 report: a week entered by search, no last-week
+        # numbers typed, read as all NEW though the records were carryovers.
+        self._entry(self.W3, 1, "Stays")
+        self._entry(self.W3, 4, "Climbs")
+        self._entry(self.W3, 2, "Falls")
+        self._entry(self.W4, 1, "Stays")
+        self._entry(self.W4, 2, "Climbs")
+        self._entry(self.W4, 5, "Falls")
+
+        rows, _ = self._rows(self.W4)
+        self.assertEqual(rows["Stays"]["movement"], "same")
+        self.assertEqual(rows["Climbs"]["movement"], "up")
+        self.assertEqual(rows["Falls"]["movement"], "down")
+        self.assertEqual(rows["Climbs"]["last_on_file"], 4)
+        self.assertFalse(any(r["conflict"] for r in rows.values()))
+
+    def test_new_versus_re_entry(self):
+        self._entry(self.W1, 3, "Comes back")
+        self._entry(self.W2, 1, "Filler")      # W2 on file, without "Comes back"
+        self._entry(self.W3, 1, "Filler")
+        self._entry(self.W3, 2, "Comes back")
+        self._entry(self.W3, 3, "Brand new")
+
+        rows, _ = self._rows(self.W3)
+        self.assertEqual(rows["Comes back"]["movement"], "re")
+        self.assertEqual(rows["Brand new"]["movement"], "new")
+
+    def test_a_typed_number_that_disagrees_is_flagged_and_kept(self):
+        self._entry(self.W3, 6, "Mismatch")
+        self._entry(self.W3, 1, "Phantom filler")
+        self._entry(self.W4, 3, "Mismatch", typed_lw=7)   # data says 6
+        self._entry(self.W4, 4, "Phantom", typed_lw=2)    # not on W3 at all
+        self._entry(self.W4, 1, "Phantom filler", typed_lw=1)  # agrees
+
+        rows, response = self._rows(self.W4)
+        self.assertTrue(rows["Mismatch"]["conflict"])
+        self.assertTrue(rows["Phantom"]["conflict"])
+        self.assertFalse(rows["Phantom filler"]["conflict"])
+        # Movement follows the data; the printed number itself is untouched.
+        self.assertEqual(rows["Mismatch"]["movement"], "up")
+        self.assertEqual(ChartEntry.objects.get(week_date=self.W4, position=3).printed_last_week_position, 7)
+        self.assertEqual(response.context["conflict_count"], 2)
+        self.assertContains(response, "disagree with last week")
+
+    def test_previous_week_not_on_file(self):
+        # W2 missing (a gap): the typed number is the only evidence.
+        self._entry(self.W1, 1, "Old")
+        self._entry(self.W3, 2, "Typed", typed_lw=5)
+        self._entry(self.W3, 4, "Untyped")
+
+        rows, _ = self._rows(self.W3)
+        self.assertEqual(rows["Typed"]["movement"], "up")
+        self.assertEqual(rows["Untyped"]["movement"], "unknown")
+        self.assertFalse(rows["Typed"]["conflict"])  # nothing on file to disagree WITH
+
+    def test_the_charts_first_week_on_file_is_unknown_not_new(self):
+        self._entry(self.W1, 1, "Already there")
+        rows, _ = self._rows(self.W1)
+        self.assertEqual(rows["Already there"]["movement"], "unknown")
+
+    def test_a_record_listed_twice_last_week_uses_its_best_position(self):
+        # The accepted Savoy 731 printing anomaly: one record, two rows, one week.
+        self._entry(self.W3, 3, "Double", printed_anomaly_note="printed twice")
+        self._entry(self.W3, 7, "Double", printed_anomaly_note="printed twice")
+        self._entry(self.W4, 3, "Double", typed_lw=3)
+
+        rows, _ = self._rows(self.W4)
+        self.assertEqual(rows["Double"]["last_on_file"], 3)
+        self.assertFalse(rows["Double"]["conflict"])
+
+    def test_entry_form_search_pick_shows_where_it_was_last_week(self):
+        rec = self._rec("Carried over")
+        self._entry(self.W3, 6, "Carried over")
+        response = self.client.post(reverse("charts:entry_select", args=[self.chart.id]), {
+            "row": "0", "recording_id": str(rec.id), "week": self.W4.isoformat(),
+        })
+        self.assertEqual(response.context["last_week_hint"], 6)
+        self.assertContains(response, "last week #6")

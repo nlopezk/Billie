@@ -370,6 +370,29 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     Each graph has a "Show as table" twin; marks are focusable with a shared tooltip.
   - Verified against a brute-force recount in plain Python sets: zero mismatches on all
     data and on Country/1950.
+- **Movement comes from the data, not from typed last-week numbers (fixed 2026-10-18).**
+  The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
+  which is only filled when a last-week number is *typed* — so a week entered by search
+  (Country Jockeys 1951-04-07) read as ten debuts when nine were carryovers; 131 entries
+  across the database were shown wrongly as NEW. Now `views.last_week_on_file()` is the
+  single source of "was it on the chart last week?" and `views.classify_movement()`
+  turns it into up / down / same / **new** (never on this chart before) / **re**
+  (re-entry: on it before, not last week) / **unknown** (previous week not on file — a
+  gap or the chart's first week; *not* "new", since nothing says it wasn't there). With
+  no previous week on file, a typed number is the only evidence and is used.
+  - **The printed field is never written or changed.** Not typed → "Last wk" shows the
+    on-file position in muted italics (with a key under the table), so a computed number
+    can't pass for a transcribed one. Typed and disagreeing → ⚠ with both numbers on
+    hover, plus a count above the table (non-negotiable #4).
+  - **Those disagreements are real and worth an audit pass someday:** of ~9,100 typed
+    last-week numbers, 8,613 agree with the previous week on file, 388 give a different
+    number and 101 name a record that isn't on the previous week's chart at all. They
+    cluster (R&B Jukebox 1943-08-07 alone has 5), so they're more likely a handful of
+    weeks to re-check than scattered typos — cause not yet investigated. Not resolved;
+    surfaced on each week's page for checking against the magazine.
+  - The entry form shows "last week #N" on a row picked by search (or an edited week
+    saved without a number) — `views._last_week_hint`; a hint only, the box is never
+    filled from it. Tests: `ChartWeekMovementTests`.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

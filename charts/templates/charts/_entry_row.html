@@ -42,7 +42,7 @@ easy to reverse if a later chart era does print it.
         </div>
         <div id="search-results-{{ row.index }}" class="search-results-box"></div>
         <div id="create-form-{{ row.index }}"></div>
-        {% include "charts/_entry_resolved.html" with row=row.index recording=row.recording weeks_hint=row.weeks_hint peak_hint=row.peak_hint %}
+        {% include "charts/_entry_resolved.html" with row=row.index recording=row.recording weeks_hint=row.weeks_hint peak_hint=row.peak_hint last_week_hint=row.last_week_hint %}
     </td>
     <td class="col-narrow">
         <input type="number" name="printed_weeks_on_chart_{{ row.index }}" placeholder="optional" min="1"

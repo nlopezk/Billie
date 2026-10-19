@@ -463,6 +463,15 @@ through each page's subtitle, styled nine slightly different ways.
            column whole -- it used to be cut to "N..." by the ellipsis. */
         .movement.new { color: var(--new); font-weight: 700; font-size: var(--fs-xs); letter-spacing: 0.04em; }
         .movement.same { color: var(--muted); }
+        /* RE-entry: same small caps as NEW, in the informational colour --
+           it's notable, but it's not a debut. */
+        .movement.re { color: var(--tie); font-weight: 700; font-size: var(--fs-xs); letter-spacing: 0.04em; }
+        /* "Last wk" when nothing was typed: computed from the data, so it
+           looks it -- muted italics, never mistakable for a printed value. */
+        .lw-computed { color: var(--muted); font-style: italic; cursor: help; }
+        /* A typed last-week number that disagrees with the data. */
+        .table-key { font-size: var(--fs-sm); color: var(--muted); margin: 0.6rem 0 0; }
+        .lw-conflict { color: var(--down); font-weight: 700; cursor: help; white-space: nowrap; }
         .anomaly-note { font-size: var(--fs-sm); color: var(--new); display: block; margin-top: 0.15rem; }
 
         /* ---- Recordings matrix (recordings_matrix.html) ----
@@ -722,6 +731,8 @@ through each page's subtitle, styled nine slightly different ways.
         .resolved-preview.empty .not-resolved { color: var(--muted); font-style: italic; font-size: var(--fs-sm); }
         .resolved-preview.ambiguous .not-resolved { color: var(--new); font-weight: 600; }
         .resolved-preview .resolved-check { color: var(--up); font-weight: 700; font-size: 1.15em; margin-right: 0.15rem; }
+        /* "last week #6" on a row picked by search: a carryover, from the data. */
+        .lw-hint { font-size: var(--fs-xs); color: var(--tie); font-weight: 600; margin-left: 0.35rem; white-space: nowrap; cursor: help; }
         .discogs-inline-note { display: block; font-size: var(--fs-sm); color: var(--new); margin-top: 0.2rem; }
         .pick-list, .search-results { list-style: none; margin: 0.35rem 0; padding: 0; }
         .pick-list li, .search-results li { margin-bottom: 0.25rem; }
