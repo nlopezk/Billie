@@ -1,0 +1,190 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/lastweek_audit.html -- the last-week check.
+
+Every printed (typed) last-week number that disagrees with the previous
+week ON FILE -- the same test as the ⚠ marks on each week's page
+(views.classify_movement), so the two always agree. Read-only; all the
+reasoning is in charts/lastweek_audit.py, whose docstring explains why
+whole-week STRETCHES are reported once with evidence, while INDIVIDUAL
+rows each get a likely cause.
+
+The explanation strings (`why`, stretch `facts`) are built as small bits
+of HTML (bold names, dashes) with every piece of data already escaped in
+lastweek_audit.py, which is what makes |safe correct here and nowhere else.
+{% endcomment %}
+{% block title %}Last-week check{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Last-week check</h1>
+            <p class="subtitle">Printed last-week numbers that disagree with the previous week on file, and the likely reason.</p>
+        </div>
+    </div>
+
+    <form class="filter-bar" method="get">
+        <label>
+            Chart
+            <select name="chart" onchange="this.form.submit()">
+                <option value="">All charts</option>
+                {% for c in chart_options %}
+                <option value="{{ c.id }}" {% if chart_filter == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </form>
+
+    {% if not total %}
+        <p class="summary">Every printed last-week number agrees with the previous week on file.</p>
+    {% else %}
+    <p class="summary">
+        <strong>{{ total }}</strong> printed last-week number{{ total|pluralize }} disagree:
+        <strong>{{ stretch_rows }}</strong> inside {{ stretches|length }} stretch{{ stretches|length|pluralize:"es" }} of whole weeks,
+        <strong>{{ individual|length }}</strong> individual{% if noted %}, and {{ noted|length }} already noted as printing anomalies{% endif %}.
+    </p>
+
+    <div class="alert alert-warning">
+        <strong>How to clear one.</strong>
+        Check the magazine, then fix whichever side is wrong with <em>Edit</em>: this week&rsquo;s last-week
+        number, or last week&rsquo;s chart. The row disappears from this page by itself once the two agree.
+        If the magazine really printed it that way, write an <em>Anomaly note</em> on the entry in the edit
+        form &mdash; it moves to &ldquo;Already noted&rdquo; and stays flagged as a printing quirk, not an error.
+    </div>
+    {% endif %}
+
+    {# ------------------------------------------------------------ stretches #}
+    {% if stretches %}
+    <h2>Whole weeks that don&rsquo;t match</h2>
+    <p class="section-note">
+        In these runs of weeks most of the last-week column disagrees, so the cause is the whole week, not
+        individual rows &mdash; per-row guesses would be coincidence here, so none are made.
+    </p>
+    {% for s in stretches %}
+    <section class="audit-card">
+        <div class="audit-card-head">
+            <h3>{{ s.chart }} &middot; {{ s.start|date:"M j, Y" }} &ndash; {{ s.end|date:"M j, Y" }}</h3>
+            <span class="muted">{{ s.week_count }} week{{ s.week_count|pluralize }} in a row &middot; {{ s.row_count }} disagreements</span>
+        </div>
+        <ul class="audit-facts">
+            {% for f in s.facts %}<li>{{ f|safe }}</li>{% endfor %}
+        </ul>
+        <p class="audit-check">
+            <strong>What to check:</strong> open one of these weeks beside the magazine. Are the position numbers
+            on file the numbers printed beside each record, or just the order of the lines? Were the last-week
+            numbers read from the right column? If the magazine&rsquo;s last-week numbers do match its own previous
+            week, it&rsquo;s the positions on file for this stretch that need correcting, not the last-week numbers.
+        </p>
+        {% for w in s.weeks %}
+        {% comment %}
+        One collapsible block per week, anchored by date so a week page's
+        "See why" button lands on it (the script at the bottom opens it).
+        {% endcomment %}
+        <details class="audit-week" id="week-{{ w.week|date:'Y-m-d' }}">
+            <summary>
+                <span class="audit-week-date">{{ w.week|date:"M j, Y" }}</span>
+                <span class="muted">{{ w.rows|length }} of {{ w.typed_total }} printed numbers disagree</span>
+                {% if w.copied %}<span class="status-badge status-suggested" title="This week's last-week column repeats the previous week's, row for row">copied?</span>{% endif %}
+                <span class="audit-week-actions">
+                    <a class="btn btn-sm" href="{% url 'charts:chart_week' w.chart w.week|date:'Y-m-d' %}">View</a>
+                    <a class="btn btn-sm" href="{% url 'charts:entry_week_edit' w.chart w.week|date:'Y-m-d' %}">Edit</a>
+                </span>
+            </summary>
+            <table class="dense-table">
+                <colgroup><col style="width: 3rem;"><col><col style="width: 5.5rem;"><col style="width: 7rem;"><col style="width: 30%;"></colgroup>
+                <thead><tr>
+                    <th class="num">Pos</th><th>Recording</th>
+                    <th class="num" title="As typed from the magazine">Printed LW</th>
+                    <th class="num" title="Its position on last week's chart on file">On file LW</th>
+                    <th title="The record that sat at the PRINTED last-week number on last week's chart on file">Who was at that # last week</th>
+                </tr></thead>
+                <tbody>
+                    {% for r in w.rows %}
+                    <tr>
+                        <td class="num">{{ r.position }}</td>
+                        <td class="wrap"><strong>{{ r.song }}</strong> <span class="muted">&mdash; {{ r.credit_text }}</span></td>
+                        <td class="num lw-conflict">{{ r.typed }}</td>
+                        <td class="num">{% if r.on_file %}{{ r.on_file }}{% else %}<span class="muted">not on it</span>{% endif %}</td>
+                        <td class="wrap muted">{{ r.at_typed_last_week|join:"; "|default:"&mdash;" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% endfor %}
+    </section>
+    {% endfor %}
+    {% endif %}
+
+    {# ----------------------------------------------------------- individual #}
+    {% if individual %}
+    <h2>Individual disagreements</h2>
+    <p class="section-note">
+        {% for label, n in cause_counts %}{{ label }} <strong>{{ n }}</strong>{% if not forloop.last %} &middot; {% endif %}{% endfor %}
+    </p>
+    <div class="table-wrap">
+    <table class="dense-table audit-individual">
+        <colgroup>
+            <col style="width: 9rem;"><col style="width: 3rem;"><col style="width: 15rem;">
+            <col style="width: 5.5rem;"><col style="width: 4.5rem;"><col><col style="width: 11.5rem;">
+        </colgroup>
+        <thead><tr>
+            <th>Chart &middot; week</th><th class="num">Pos</th><th>Recording</th>
+            <th class="num" title="As typed from the magazine">Printed</th>
+            <th class="num" title="Its position on last week's chart on file">On file</th>
+            <th>Likely cause</th><th></th>
+        </tr></thead>
+        <tbody>
+            {% for r in individual %}
+            <tr {% ifchanged r.chart r.week %}id="week-{{ r.week|date:'Y-m-d' }}"{% endifchanged %}>
+                <td>
+                    <span class="audit-chart-name muted">{{ r.chart_obj }}</span>
+                    <a href="{% url 'charts:chart_week' r.chart r.week|date:'Y-m-d' %}">{{ r.week|date:"M j, Y" }}</a>
+                </td>
+                <td class="num">{{ r.position }}</td>
+                <td class="wrap"><strong>{{ r.song }}</strong><span class="ranking-meta">{{ r.credit_text }} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span></td>
+                <td class="num lw-conflict">{{ r.typed }}</td>
+                <td class="num">{% if r.on_file %}{{ r.on_file }}{% else %}<span class="muted">not on it</span>{% endif %}</td>
+                <td class="wrap">
+                    <span class="status-badge status-suggested">{{ r.cause_label }}</span>
+                    <span class="audit-why">{{ r.why|safe }}</span>
+                </td>
+                <td>
+                    <div class="row-buttons">
+                        <a class="btn btn-sm" href="{% url 'charts:entry_week_edit' r.chart r.week|date:'Y-m-d' %}" title="Edit this week ({{ r.week|date:'M j' }})">Edit week</a>
+                        <a class="btn btn-sm" href="{% url 'charts:entry_week_edit' r.chart r.prev_week|date:'Y-m-d' %}" title="Edit the previous week ({{ r.prev_week|date:'M j' }})">Edit last wk</a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+
+    {# ---------------------------------------------------------------- noted #}
+    {% if noted %}
+    <details class="confirmed-single-list">
+        <summary>{{ noted|length }} already noted as printing anomalies</summary>
+        <table class="dense-table">
+            <tbody>
+                {% for r in noted %}
+                <tr>
+                    <td><a href="{% url 'charts:chart_week' r.chart r.week|date:'Y-m-d' %}">{{ r.week|date:"M j, Y" }}</a> #{{ r.position }}</td>
+                    <td class="wrap">{{ r.song }} &mdash; printed {{ r.typed }}, on file {{ r.on_file|default:"not on it" }}</td>
+                    <td class="wrap muted">{{ r.note }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </details>
+    {% endif %}
+
+    <script>
+    // Arriving from a week page's "See why" (#week-YYYY-MM-DD): open that
+    // week's collapsed block so the link doesn't land on a closed summary.
+    (function () {
+        const target = location.hash && document.getElementById(location.hash.slice(1));
+        if (target && target.tagName === "DETAILS") target.open = true;
+    })();
+    </script>
+{% endblock %}

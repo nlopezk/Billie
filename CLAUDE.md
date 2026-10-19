@@ -384,12 +384,32 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     on-file position in muted italics (with a key under the table), so a computed number
     can't pass for a transcribed one. Typed and disagreeing → ⚠ with both numbers on
     hover, plus a count above the table (non-negotiable #4).
-  - **Those disagreements are real and worth an audit pass someday:** of ~9,100 typed
-    last-week numbers, 8,613 agree with the previous week on file, 388 give a different
-    number and 101 name a record that isn't on the previous week's chart at all. They
-    cluster (R&B Jukebox 1943-08-07 alone has 5), so they're more likely a handful of
-    weeks to re-check than scattered typos — cause not yet investigated. Not resolved;
-    surfaced on each week's page for checking against the magazine.
+  - **Those disagreements are listed and diagnosed at `/audit/last-week/`** (built
+    2026-10-18; `charts/lastweek_audit.py`, button on the chart list, and a "See why"
+    button in each week's warning). Of ~9,100 typed last-week numbers, 489 disagree with
+    the previous week on file. They split into two very different things, reported
+    differently on purpose:
+    - **460 sit in three unbroken stretches of R&B Jukebox** (1943-08-07 for 9 weeks,
+      1943-10-16 for 42, 1944-08-12 for 15), where most of each week's column is wrong.
+      Evidence gathered (all in the page): the SET of carryovers agrees (526 typed vs 529
+      records really on the previous week) so only the numbers are off; no other week on
+      file matches the columns (not a mis-dated week); only 2 weeks look copied down from
+      the week above; and — the strongest signal — positions on file in these weeks
+      **never tie (0 of 66 weeks), while the rest of R&B Jukebox ties in ~75% of weeks**.
+      Leading hypothesis, unconfirmed: positions in these stretches were entered as the
+      order of lines on the page rather than the printed position numbers. Needs one week
+      checked against the magazine before anything is changed; per-row guesses are
+      deliberately NOT made inside stretches (they'd be coincidence).
+    - **29 individual cases**, each with a likely cause: missing from last week (on the
+      chart two weeks ago and this week but not in between — 9), different version of the
+      same song at that position (5, incl. Elton Britt's "Someday", a known reissue pair),
+      swapped pair, tie counting, one place off, lookalike digit, matches two weeks back,
+      wrong record picked, debut with a last-week number.
+    - Nothing is changed by the page. A row clears itself once the data agrees; a genuine
+      misprint is acknowledged by writing a `printed_anomaly_note` on the entry, which moves
+      it to an "already noted" list — the existing field, so no schema change. Tests:
+      `LastWeekAuditTests` (one per cause, plus: total equals the week pages' ⚠ count,
+      and titles are escaped inside the HTML explanations).
   - The entry form shows "last week #N" on a row picked by search (or an edited week
     saved without a number) — `views._last_week_hint`; a hint only, the box is never
     filled from it. Tests: `ChartWeekMovementTests`.

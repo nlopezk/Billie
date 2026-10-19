@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
+from . import lastweek_audit as lastweek_audit_lib
 from . import discogs as discogs_api
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
@@ -2166,3 +2167,119 @@ class ChartWeekMovementTests(TestCase):
         })
         self.assertEqual(response.context["last_week_hint"], 6)
         self.assertContains(response, "last week #6")
+
+
+# =============================================================================
+# Last-week check (charts/lastweek_audit.py)
+# =============================================================================
+
+class LastWeekAuditTests(TestCase):
+    # Consecutive Saturdays.
+    WEEKS = [date(1946, 11, 2) + timedelta(days=7 * i) for i in range(10)]
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.label = Label.objects.create(name="Decca")
+        self.recs = {}
+
+    def _rec(self, title, artist="Somebody"):
+        key = (title, artist)
+        if key not in self.recs:
+            self.recs[key] = Recording.objects.create(
+                label=self.label, catalog_number=str(500 + len(self.recs)), side="A",
+                song=Song.objects.create(title=title), credit_text=artist,
+            )
+        return self.recs[key]
+
+    def _e(self, week_i, position, title, lw=None, artist="Somebody", note=""):
+        return ChartEntry.objects.create(
+            chart=self.chart, week_date=self.WEEKS[week_i], position=position,
+            recording=self._rec(title, artist), printed_last_week_position=lw, printed_anomaly_note=note,
+        )
+
+    def _cause(self, title):
+        rows = [r for r in lastweek_audit_lib.build({})["individual"] if r["song"] == title]
+        self.assertEqual(len(rows), 1, f"expected one individual row for {title!r}")
+        return rows[0]["cause"]
+
+    def test_swapped_pair(self):
+        self._e(0, 1, "A")
+        self._e(0, 2, "B")
+        self._e(1, 1, "A", lw=2)   # file: A was 1, B was 2 -- typed the other way round
+        self._e(1, 2, "B", lw=1)
+        self.assertEqual(self._cause("A"), "swapped")
+        self.assertEqual(self._cause("B"), "swapped")
+
+    def test_tie_counting(self):
+        # Last week: 1, 2, 2, 4 on file; the printed number counted the tie
+        # as one place, so the 4th record reads as #3.
+        self._e(0, 1, "A")
+        self._e(0, 2, "B")
+        self._e(0, 2, "C")
+        self._e(0, 4, "D")
+        self._e(1, 1, "D", lw=3)
+        self.assertEqual(self._cause("D"), "ranking")
+
+    def test_other_version_of_the_same_song(self):
+        self._e(0, 4, "Someday", artist="Elton Britt")
+        self._e(1, 5, "Someday", lw=4, artist="Vaughn Monroe")  # other pressing/version
+        self.assertEqual(self._cause("Someday"), "other_version")
+
+    def test_missing_from_last_week(self):
+        self._e(0, 4, "Skipped")
+        self._e(1, 1, "Filler")                  # week 1 entered WITHOUT "Skipped"
+        self._e(2, 4, "Skipped", lw=4)
+        self.assertEqual(self._cause("Skipped"), "missing")
+
+    def test_off_by_one_and_lookalike_digit(self):
+        self._e(0, 4, "Off")
+        self._e(0, 3, "Digit")
+        self._e(1, 1, "Off", lw=5)
+        self._e(1, 2, "Digit", lw=8)             # 3 read as 8
+        self.assertEqual(self._cause("Off"), "off_by_one")
+        self.assertEqual(self._cause("Digit"), "digit")
+
+    def test_no_such_position_and_wrong_record(self):
+        self._e(0, 1, "Dropped off")
+        self._e(1, 1, "Ghost", lw=9)             # no #9 last week
+        self._e(1, 2, "Mixup", lw=1)             # last week's #1 isn't on this week's chart
+        self.assertEqual(self._cause("Ghost"), "no_position")
+        self.assertEqual(self._cause("Mixup"), "wrong_record")
+
+    def test_a_whole_week_mismatch_is_one_stretch_not_individual_guesses(self):
+        for i, t in enumerate("ABCDE", start=1):
+            self._e(0, i, t)
+        # Week 1: all five typed numbers scrambled -- a "column week".
+        for pos, (t, lw) in enumerate([("A", 3), ("B", 5), ("C", 1), ("D", 2), ("E", 4)], start=1):
+            self._e(1, pos, t, lw=lw)
+        for pos, t in enumerate("ABCDE", start=1):
+            self._e(2, pos, t, lw=[3, 5, 4, 1, 2][pos - 1])  # and again next week
+        ctx = lastweek_audit_lib.build({})
+        self.assertEqual(len(ctx["stretches"]), 1)
+        self.assertEqual(ctx["stretches"][0]["week_count"], 2)
+        self.assertEqual(ctx["individual"], [])
+
+    def test_counts_match_the_week_pages_conflict_marks(self):
+        # Same definition as views.classify_movement -- the two pages must agree.
+        self._e(0, 1, "A")
+        self._e(0, 2, "B")
+        self._e(1, 1, "A", lw=1)                 # agrees
+        self._e(1, 2, "B", lw=5)                 # disagrees
+        self._e(1, 3, "C", lw=7)                 # disagrees (not on last week)
+        week_page = self.client.get(reverse("charts:chart_week", args=[self.chart.id, self.WEEKS[1].isoformat()]))
+        self.assertEqual(lastweek_audit_lib.build({})["total"], week_page.context["conflict_count"])
+
+    def test_a_noted_anomaly_moves_to_already_noted(self):
+        self._e(0, 1, "A")
+        self._e(1, 1, "A", lw=4, note="Misprinted in the magazine")
+        ctx = lastweek_audit_lib.build({})
+        self.assertEqual(ctx["individual"], [])
+        self.assertEqual(len(ctx["noted"]), 1)
+
+    def test_titles_are_escaped_inside_explanations(self):
+        self._e(0, 1, "<b>Bold</b> & Co")
+        self._e(1, 2, "Mixup", lw=1)
+        response = self.client.get(reverse("charts:lastweek_audit"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "&lt;b&gt;Bold&lt;/b&gt; &amp; Co")
+        self.assertNotContains(response, "<b>Bold</b> & Co")

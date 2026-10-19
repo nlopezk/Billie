@@ -82,6 +82,7 @@ strung through the subtitle sentence.
         <strong>{{ conflict_count }}</strong> printed last-week number{{ conflict_count|pluralize }} on this week
         disagree{{ conflict_count|pluralize:"s," }} with last week&rsquo;s chart on file &mdash; marked &#9888; below.
         Hover one to see both numbers.
+        <a class="btn btn-sm" href="{% url 'charts:lastweek_audit' %}?chart={{ chart.id }}#week-{{ selected_week|date:'Y-m-d' }}">See why &rarr;</a>
     </div>
     {% endif %}
 

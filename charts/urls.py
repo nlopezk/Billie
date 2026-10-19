@@ -34,6 +34,11 @@ urlpatterns = [
     # placement reasoning as recordings/ above.
     path("dashboard/", views.dashboard, name="dashboard"),
 
+    # /audit/last-week/                        -- every typed last-week number
+    # that disagrees with the previous week on file, with the likely cause.
+    # Read-only; fixes happen in the entry form's edit page.
+    path("audit/last-week/", views.lastweek_audit, name="lastweek_audit"),
+
     # --- credit splitting (combined-credit artists -> real collaborations) ---
     path("credits/", views.credit_queue, name="credit_queue"),
     path("credits/<int:artist_id>/split/", views.credit_split, name="credit_split"),

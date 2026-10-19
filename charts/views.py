@@ -27,6 +27,7 @@ from django.utils import timezone
 
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
+from . import lastweek_audit as lastweek_audit_lib
 from . import discogs as discogs_api
 from .forms import ChartEntryRowForm
 from .models import (
@@ -564,6 +565,17 @@ def dashboard(request):
     if request.headers.get("HX-Request"):
         return render(request, "charts/_dashboard_results.html", context)
     return render(request, "charts/dashboard.html", context)
+
+
+def lastweek_audit(request):
+    # Every typed last-week number that disagrees with the previous week on
+    # file, grouped into whole-week stretches and individual cases, each
+    # with its likely cause -- all worked out in charts/lastweek_audit.py.
+    # Read-only: the owner fixes the data in the entry form's edit page, and
+    # a row disappears from here by itself once the two sides agree.
+    context = lastweek_audit_lib.build(request.GET)
+    context["chart_options"] = Chart.objects.order_by("category", "method")
+    return render(request, "charts/lastweek_audit.html", context)
 
 
 # =============================================================================
