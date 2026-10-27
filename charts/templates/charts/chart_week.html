@@ -12,7 +12,21 @@ strung through the subtitle sentence.
 {% block content %}
     <div class="page-header">
         <div>
-            <h1>{{ chart }}</h1>
+            {% comment %}
+            The title IS the chart switcher: a dropdown styled as the page
+            heading, so changing chart doesn't mean going back to the chart
+            list. Each option goes to the SAME week on that chart, or its
+            closest week if it has no entry that week -- labelled with the
+            date when it differs (views.chart_switch_options). Navigates on
+            change with one line of JS, like the Year/Week pickers below.
+            {% endcomment %}
+            <h1>
+                <select class="title-select" aria-label="Switch chart" onchange="location.href=this.value">
+                    {% for o in chart_options %}
+                    <option value="{{ o.url }}" {% if o.selected %}selected{% endif %}>{{ o.chart }}{% if o.other_week %} &mdash; closest week: {{ o.other_week|date:"M j, Y" }}{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </h1>
             <p class="subtitle">
                 {% if era %}&ldquo;{{ era.printed_name }}&rdquo; &middot; {% endif %}week ending {{ selected_week|date:"F j, Y" }}
             </p>

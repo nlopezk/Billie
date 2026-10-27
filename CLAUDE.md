@@ -340,6 +340,10 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   - **Bug fixed along the way:** pressing Enter in the entry form's last-week box (how a
     row resolves) also submitted the whole week -- the browser's implicit form submission.
     The form's `onkeydown` now blocks that; only the Save button saves a week.
+  - **The week page's title is a chart switcher** (2026-10-26): a `<select>` styled as the
+    h1 (`.title-select`, `field-sizing: content` so the arrow hugs the name). Each option
+    goes to the SAME week on that chart, or its closest week on file, labelled with that
+    date when it differs (`views.chart_switch_options`; `ChartSwitcherTests`).
   - Visual checks were done with Playwright + Edge against a second dev server, with
     every non-GET request aborted so nothing could write to `billboard.db`.
 - **Dashboard, built 2026-10-16** — `/dashboard/` (`charts/dashboard.py` for every

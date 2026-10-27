@@ -13,6 +13,7 @@
 #     above discogs_queue().
 
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
@@ -99,6 +100,39 @@ def classify_movement(position, printed, on_file, prev_on_file, charted_before):
         movement = "unknown"
     conflict = prev_on_file and printed is not None and printed != on_file
     return movement, conflict
+
+
+def chart_switch_options(current_chart, week):
+    """The week page's chart dropdown: one option per chart, each pointing
+    at the SAME week on that chart, so switching charts compares like with
+    like instead of dumping you on that chart's latest week.
+
+    If the other chart has no entry for this exact week (it started later,
+    or ended earlier), the option points at its CLOSEST week on file and
+    says so in its label -- a different date is never a silent surprise.
+    Charts with nothing on file yet are left out: there's no page to go to.
+    """
+    weeks_by_chart = defaultdict(list)
+    # One query for every chart's weeks (~1,300 small rows) rather than one
+    # query per chart.
+    for chart_id, w in ChartEntry.objects.values_list("chart_id", "week_date").distinct():
+        weeks_by_chart[chart_id].append(w)
+    options = []
+    for chart in Chart.objects.order_by("category", "method"):
+        weeks = weeks_by_chart.get(chart.id)
+        if not weeks:
+            continue
+        # Exact week if it's on file; otherwise the nearest one either side
+        # (ties go to the earlier week -- min() keeps the first it finds).
+        target = week if week in weeks else min(sorted(weeks), key=lambda w: abs((w - week).days))
+        options.append({
+            "chart": chart,
+            "url": reverse("charts:chart_week", args=[chart.id, target.isoformat()]),
+            "selected": chart.id == current_chart.id,
+            # Shown in the option label only when the date would change.
+            "other_week": None if target == week else target,
+        })
+    return options
 
 
 def chart_list(request):
@@ -207,6 +241,7 @@ def chart_week(request, chart_id, week_date=None):
 
     context = {
         "chart": chart,
+        "chart_options": chart_switch_options(chart, selected_week),
         "era": era,
         "selected_week": selected_week,
         "prev_week": prev_week,

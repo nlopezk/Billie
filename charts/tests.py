@@ -2283,3 +2283,43 @@ class LastWeekAuditTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "&lt;b&gt;Bold&lt;/b&gt; &amp; Co")
         self.assertNotContains(response, "<b>Bold</b> & Co")
+
+
+# =============================================================================
+# Chart switcher on the week page (views.chart_switch_options)
+# =============================================================================
+
+class ChartSwitcherTests(TestCase):
+    W1, W2, W3 = date(1948, 5, 8), date(1948, 5, 15), date(1948, 5, 22)
+
+    def setUp(self):
+        self.jukebox = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.retail = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.empty = Chart.objects.create(category="rnb", method="retail", publication_weekday=5)
+        rec = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="1", side="A",
+            song=Song.objects.create(title="Song"), credit_text="Somebody",
+        )
+        for w in (self.W1, self.W2, self.W3):
+            ChartEntry.objects.create(chart=self.jukebox, week_date=w, position=1, recording=rec)
+        # Retail starts a week later, like the real Retail charts (May 1948).
+        for w in (self.W2, self.W3):
+            ChartEntry.objects.create(chart=self.retail, week_date=w, position=1, recording=rec)
+
+    def _options(self, chart, week):
+        response = self.client.get(reverse("charts:chart_week", args=[chart.id, week.isoformat()]))
+        return {o["chart"].id: o for o in response.context["chart_options"]}
+
+    def test_switching_keeps_the_same_week(self):
+        options = self._options(self.jukebox, self.W2)
+        self.assertEqual(options[self.retail.id]["url"], reverse("charts:chart_week", args=[self.retail.id, "1948-05-15"]))
+        self.assertIsNone(options[self.retail.id]["other_week"])
+        self.assertTrue(options[self.jukebox.id]["selected"])
+
+    def test_a_week_the_other_chart_lacks_goes_to_its_closest_and_says_so(self):
+        options = self._options(self.jukebox, self.W1)
+        self.assertEqual(options[self.retail.id]["other_week"], self.W2)
+        self.assertEqual(options[self.retail.id]["url"], reverse("charts:chart_week", args=[self.retail.id, "1948-05-15"]))
+
+    def test_a_chart_with_nothing_on_file_is_left_out(self):
+        self.assertNotIn(self.empty.id, self._options(self.jukebox, self.W2))

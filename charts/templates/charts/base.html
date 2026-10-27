@@ -453,6 +453,23 @@ through each page's subtitle, styled nine slightly different ways.
         .row-buttons { display: flex; gap: 0.4rem; justify-content: flex-end; }
 
         /* ---- Chart week browser (chart_week.html) ---- */
+        /* The week page's heading doubles as the chart switcher: a select
+           dressed as an h1 -- same size and weight, no box until you hover,
+           with the browser's own arrow kept so it still reads as a menu. */
+        .title-select {
+            font: inherit; font-size: 1.5rem; font-weight: 700; line-height: 1.2;
+            min-height: 0; height: auto; padding: 0.1rem 0.3rem; margin-left: -0.3rem;
+            border: 1px solid transparent; border-radius: var(--radius-sm);
+            background: transparent; color: var(--text); cursor: pointer;
+            max-width: 100%;
+            /* Size to the chart name SHOWING, not the longest option
+               ("...closest week: Dec 10, 1949"), so the arrow sits right
+               after the title. Browsers without it just get a wider box. */
+            field-sizing: content;
+        }
+        .title-select:hover { border-color: var(--border-strong); background: var(--surface); }
+        /* The open menu lists plain option text at a normal size. */
+        .title-select option { font-size: var(--fs-control); font-weight: 400; }
         .week-nav { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
         .week-nav .week-pickers { display: flex; gap: 0.5rem; }
         .pos { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
