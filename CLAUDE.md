@@ -583,3 +583,17 @@ python manage.py test               # run the test suite
 Ask before changing the data model. The database already contains hand-entered weeks that
 represent real hours of work — schema changes must come with a migration that preserves
 every existing row.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues on nlopezk/Billie (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.
