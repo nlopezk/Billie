@@ -73,6 +73,35 @@ class NewRecording:
         return [name for name, value in required if not value]
 
 
+# The side a flip-side is on, given the side it's the flip of. An "AB"
+# listing spans both sides, so its flip-side is unknown -- left blank.
+FLIP = {"A": "B", "B": "A"}
+
+
+def flip_side_draft(recording):
+    """A NewRecording for the other side of `recording`'s release, ready
+    for the create box: same label, catalog #, printed credit, artists and
+    Discogs link, the side flipped, and the song title BLANK -- the one
+    thing that's always different. Everything stays editable.
+    """
+    match = getattr(recording, "discogs", None)
+    discogs_ref = ""
+    if match is not None and match.is_linked:
+        discogs_ref = (
+            str(match.discogs_release_id) if match.discogs_release_id
+            else f"master/{match.discogs_master_id}"
+        )
+    return NewRecording(
+        song_title="",
+        artist_names=[c.artist.canonical_name for c in recording.credits.select_related("artist").order_by("credit_order")],
+        credit_text=recording.credit_text,
+        label_name=recording.label.name,
+        catalog_number=recording.catalog_number,
+        side=FLIP.get(recording.side, ""),
+        discogs_ref=discogs_ref,
+    )
+
+
 def possible_duplicates(new):
     """Recordings already on file that `new` might really be, or [].
 

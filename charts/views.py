@@ -523,6 +523,10 @@ def _link_discogs_from_entry(recording, discogs_ref):
     note = discogs_workflow.link_manually(match, release_id, master_id, overwrite=False)
     if note:
         notes.append(note)
+    elif discogs_workflow.enrich_from_cache(match):
+        # Its release was already fetched for another side -- read from
+        # that copy on disk, so the link is complete with no network call.
+        notes.append("Discogs details filled in from its flip-side's release, already on file.")
     return notes
 
 
@@ -568,12 +572,27 @@ def _render_resolved(request, chart, row, week_str, recording, notes):
 def entry_create_form(request, chart_id):
     # HTMX target of "+ create new recording" in the search-results
     # fragment -- swaps in the inline create sub-form for that row.
+    #
+    # ?flip_of=<recording id> (the "+ flip-side" button on a search
+    # result) opens it pre-filled as the OTHER side of that recording's
+    # release -- see entry_recording.flip_side_draft. Otherwise only the
+    # song title is pre-filled, from what was typed in the search box.
     chart = get_object_or_404(Chart, pk=chart_id)
     row = request.GET.get("row", "0")
     week_str = request.GET.get("week", "")
-    prefill = request.GET.get("q", "")
+    flip_of = None
+    if request.GET.get("flip_of", "").isdigit():
+        flip_of = Recording.objects.select_related("song", "label").filter(pk=request.GET["flip_of"]).first()
+    if flip_of:
+        draft = entry_recording_lib.flip_side_draft(flip_of)
+    else:
+        draft = entry_recording_lib.NewRecording(song_title=request.GET.get("q", ""))
     return render(request, "charts/_entry_create_form.html", {
-        "chart": chart, "row": row, "week_date_str": week_str, "prefill_song": prefill,
+        "chart": chart, "row": row, "week_date_str": week_str,
+        "draft": draft, "flip_of": flip_of,
+        # One box per artist already known, plus an empty second box when
+        # there's only one -- the same two boxes a blank form starts with.
+        "artist_boxes": (draft.artist_names + [""] * 2)[:max(2, len(draft.artist_names))],
         "labels": Label.objects.order_by("name"),
         "artists": Artist.objects.order_by("canonical_name"),
         "songs": Song.objects.order_by("title"),

@@ -15,6 +15,13 @@ hx-include="closest .inline-create" is what pulls every field in this
 box into the entry_create POST -- the button itself only carries row/week
 via hx-vals, not the actual data fields.
 
+Opened from a search result's "+ flip-side" button, every field arrives
+pre-filled from that recording's release (views.entry_create_form,
+entry_recording.flip_side_draft): label, catalog #, the flipped side,
+credit, artists and Discogs link. Only the song title is left blank, and
+it gets the cursor (autofocus -- HTMX focuses it after the swap), so a
+B-side is: type the title, Enter. All of it stays editable.
+
 The close (&times;) button is pure client-side removal, same pattern as
 the row-delete button in _entry_row.html -- no server round-trip, nothing
 was created, it just empties #create-form-{{ row }} back out. The
@@ -24,13 +31,17 @@ closing this and reopening it (or searching again) both still work.
 {% endcomment %}
 <div class="inline-create">
     <div class="inline-create-header">
+        {% if flip_of %}
+        <p class="inline-create-title">Flip-side of {{ flip_of.catalog_display }} (&ldquo;{{ flip_of.song }}&rdquo;):</p>
+        {% else %}
         <p class="inline-create-title">New recording (never charted before):</p>
+        {% endif %}
         <button type="button" class="btn-icon btn-sm btn-ghost" title="Cancel -- close without creating anything" aria-label="Close"
             onclick="this.closest('.inline-create').remove()">&times;</button>
     </div>
     <div class="inline-create-row">
-        <input type="text" name="new_song_{{ row }}" placeholder="Song title" list="known-songs" value="{{ prefill_song }}" required>
-        <input type="text" name="new_credit_text_{{ row }}" placeholder="Credit as printed on the chart (optional)"
+        <input type="text" name="new_song_{{ row }}" placeholder="Song title" list="known-songs" value="{{ draft.song_title }}" required{% if flip_of %} autofocus{% endif %}>
+        <input type="text" name="new_credit_text_{{ row }}" placeholder="Credit as printed on the chart (optional)" value="{% if flip_of %}{{ draft.credit_text }}{% endif %}"
             title="How this release is actually billed on the page -- e.g. &quot;Bing Crosby - Andrews Sisters&quot;. Leave blank to use the artist names below, joined with &quot; - &quot;.">
     </div>
     {% comment %}
@@ -44,16 +55,23 @@ closing this and reopening it (or searching again) both still work.
     artist in ONE box.
     {% endcomment %}
     <div class="inline-create-row artist-row">
-        <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" required>
-        <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists"
+        {% for name in artist_boxes %}
+        {% if forloop.first %}
+        <input type="text" name="new_artist_{{ row }}" placeholder="Artist (canonical name)" list="known-artists" value="{{ name }}" required>
+        {% elif forloop.counter == 2 %}
+        <input type="text" name="new_artist_{{ row }}" placeholder="Second artist (only if a collaboration)" list="known-artists" value="{{ name }}"
             title="Only for a genuine collaboration between separately credited acts. Leave blank for a single act.">
+        {% else %}
+        <input type="text" name="new_artist_{{ row }}" placeholder="Another artist" list="known-artists" value="{{ name }}">
+        {% endif %}
+        {% endfor %}
         <button type="button" class="btn-sm" title="Add another credited artist (3rd, 4th...)"
             onclick="const box = this.parentNode.querySelector('input[name^=new_artist_]').cloneNode(); box.value = ''; box.required = false; box.placeholder = 'Another artist'; this.before(box); box.focus();">+ Artist</button>
     </div>
     <div class="inline-create-row">
-        <input type="text" name="new_label_{{ row }}" placeholder="Label" list="known-labels" required>
-        <input type="text" name="new_catalog_{{ row }}" placeholder="Catalog #" required>
-        <input type="text" name="new_side_{{ row }}" placeholder="Side" maxlength="4" title="A, B, or AB for a song listed as spanning both sides (e.g. &quot;Parts I and II&quot;)" style="width: 3.5rem; flex: none;">
+        <input type="text" name="new_label_{{ row }}" placeholder="Label" list="known-labels" value="{{ draft.label_name }}" required>
+        <input type="text" name="new_catalog_{{ row }}" placeholder="Catalog #" value="{{ draft.catalog_number }}" required>
+        <input type="text" name="new_side_{{ row }}" placeholder="Side" maxlength="4" value="{{ draft.side }}" title="A, B, or AB for a song listed as spanning both sides (e.g. &quot;Parts I and II&quot;)" style="width: 3.5rem; flex: none;">
     </div>
     {% comment %}
     Optional Discogs link, typed by hand. Explicitly a TYPED value, never
@@ -64,7 +82,7 @@ closing this and reopening it (or searching again) both still work.
     section fetches the songwriters and per-track detail for it later.
     {% endcomment %}
     <div class="inline-create-row">
-        <input type="text" name="new_discogs_{{ row }}" placeholder="Discogs release URL or ID (optional)"
+        <input type="text" name="new_discogs_{{ row }}" placeholder="Discogs release URL or ID (optional)" value="{{ draft.discogs_ref }}"
             title="If you already know this record's Discogs release, paste its URL or ID and it'll be linked. Nothing is looked up now -- the entry form never touches the network -- so its songwriter credits get fetched later from the Discogs page.">
     </div>
     <button type="button" class="btn-primary btn-sm"

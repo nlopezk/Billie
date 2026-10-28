@@ -470,6 +470,20 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   it's usually a typo but sometimes really printed that way (4 such releases on file, e.g.
   Decca 14505). `entry_recording.flip_sides(recording)` is the shared "other sides of this
   release" lookup.
+- **"+ flip-side" in the entry form, 2026-10-27.** 194 releases on file have both sides,
+  and 190 of them are billed identically, so typing a B-side from scratch was mostly
+  re-typing. Each search result now has a **+ flip-side** button (Tab/Enter reachable):
+  search "Capitol 304", press it on the A-side, and the create box opens with label,
+  catalog #, the FLIPPED side (A↔B; blank for "AB"), credit, artists and Discogs link
+  filled in, and the cursor in the empty song title (`entry_recording.flip_side_draft`,
+  `?flip_of=` on `entry_create_form`). Everything stays editable. **Its Discogs details
+  come from the cache, offline:** both sides of a 78 are one Discogs release, so the
+  release JSON the other side already fetched contains this side's track too —
+  `discogs_workflow.enrich_from_cache()` reads it via `discogs.release_detail()` (the
+  parsing half of `fetch_release_detail`, split out). Checked on the real data: for all
+  189 releases with both sides enriched, reading one side from the other's cached JSON
+  gives exactly what the real fetch stored. No cached copy → the link just still needs
+  details, as before. The entry form still makes zero network calls.
 - **Discogs match workflow, 2026-10-27** — `charts/discogs_workflow.py`. Every step a
   `DiscogsMatch` goes through is one function: `ensure_matches`, `search` /
   `store_shortlist`, `sole_exact_candidate`, `confirm`, `link_manually(..., overwrite=)`,

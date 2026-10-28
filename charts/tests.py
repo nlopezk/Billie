@@ -462,6 +462,133 @@ class EntryRecordingPageSmokeTests(TestCase):
 # review workflow's state transitions -- not Discogs' behaviour.
 
 
+class FlipSideTests(TestCase):
+    """The "+ flip-side" shortcut: a release's other side, pre-filled from
+    the side already on file, and its Discogs details read from the release
+    JSON that side already fetched -- no network (non-negotiable #2)."""
+
+    RELEASE_JSON = {
+        "id": 4025819, "title": "Slipping Around / My Tennessee Baby",
+        "artists": [{"name": "Ernest Tubb"}], "labels": [{"name": "Decca", "catno": "46173"}],
+        "formats": [{"name": "Shellac"}], "year": 1949, "country": "US",
+        "genres": ["Folk, World, & Country"], "styles": ["Honky Tonk"],
+        "tracklist": [
+            {"position": "A", "title": "Slipping Around",
+             "extraartists": [{"name": "Floyd Tillman", "role": "Written-By"}]},
+            {"position": "B", "title": "My Tennessee Baby",
+             "extraartists": [{"name": "Cliff Stone", "role": "Written-By"}]},
+        ],
+    }
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.a_side = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="46173", side="A",
+            song=Song.objects.create(title="Slipping Around"), credit_text="Ernest Tubb",
+        )
+        RecordingCredit.objects.create(
+            recording=self.a_side, artist=Artist.objects.create(canonical_name="Ernest Tubb"), credit_order=1,
+        )
+
+    def _link_a_side(self, enriched=True):
+        return DiscogsMatch.objects.create(
+            recording=self.a_side, status=DiscogsMatch.CONFIRMED, discogs_release_id=4025819,
+            raw_data=self.RELEASE_JSON if enriched else None, linked_at=timezone.now(),
+        )
+
+    # ---- the draft
+
+    def test_draft_copies_the_release_and_flips_the_side(self):
+        self._link_a_side()
+        draft = entry_recording_lib.flip_side_draft(self.a_side)
+        self.assertEqual(draft.song_title, "")            # the one thing that's always different
+        self.assertEqual(draft.side, "B")
+        self.assertEqual((draft.label_name, draft.catalog_number), ("Decca", "46173"))
+        self.assertEqual(draft.artist_names, ["Ernest Tubb"])
+        self.assertEqual(draft.credit_text, "Ernest Tubb")
+        self.assertEqual(draft.discogs_ref, "4025819")
+
+    def test_draft_side_flips_both_ways_and_ab_is_left_blank(self):
+        for side, flipped in (("A", "B"), ("B", "A"), ("AB", ""), ("", "")):
+            self.a_side.side = side
+            self.assertEqual(entry_recording_lib.flip_side_draft(self.a_side).side, flipped, side)
+
+    def test_draft_has_no_discogs_ref_when_the_side_is_not_linked(self):
+        self.assertEqual(entry_recording_lib.flip_side_draft(self.a_side).discogs_ref, "")
+
+    # ---- enriching from the cache
+
+    def _b_side_linked(self):
+        b_side, _ = entry_recording_lib.create_recording(entry_recording_lib.NewRecording(
+            song_title="My Tennessee Baby", artist_names=["Ernest Tubb"], credit_text="Ernest Tubb",
+            label_name="Decca", catalog_number="46173", side="B",
+        ))
+        match = DiscogsMatch.objects.create(recording=b_side)
+        discogs_workflow.link_manually(match, 4025819, None, overwrite=False)
+        return match
+
+    def test_a_flip_side_is_enriched_from_the_release_already_cached(self):
+        self._link_a_side()
+        match = self._b_side_linked()
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("no network allowed")):
+            self.assertTrue(discogs_workflow.enrich_from_cache(match))
+        match.refresh_from_db()
+        self.assertFalse(match.needs_detail)
+        # ITS OWN track, not the A-side's.
+        self.assertEqual(match.matched_track_title, "My Tennessee Baby")
+        self.assertEqual(match.songwriters, "Cliff Stone")
+
+    def test_without_a_cached_copy_it_simply_still_needs_details(self):
+        self._link_a_side(enriched=False)
+        match = self._b_side_linked()
+        self.assertFalse(discogs_workflow.enrich_from_cache(match))
+        self.assertTrue(match.needs_detail)
+
+    def test_release_detail_reads_json_without_fetching(self):
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("no network allowed")):
+            detail = discogs_api.release_detail(self.RELEASE_JSON, self.a_side)
+        self.assertEqual(detail["songwriters"], "Floyd Tillman")
+        self.assertEqual(detail["matched_track_title"], "Slipping Around")
+
+
+class FlipSidePageSmokeTests(TestCase):
+    # The entry form's wiring: the button on a search result, the
+    # pre-filled box, and an offline-complete Discogs link on create.
+
+    RELEASE_JSON = FlipSideTests.RELEASE_JSON
+
+    def setUp(self):
+        FlipSideTests.setUp(self)
+        FlipSideTests._link_a_side(self)
+
+    def test_search_results_offer_a_flip_side_button(self):
+        response = self.client.post(reverse("charts:entry_search", args=[self.chart.id]),
+                                    {"row": "0", "week": "1949-10-01", "search_0": "Decca 46173"})
+        self.assertContains(response, f"flip_of={self.a_side.id}")
+
+    def test_the_box_opens_pre_filled_with_the_cursor_on_the_title(self):
+        response = self.client.get(reverse("charts:entry_create_form", args=[self.chart.id]),
+                                   {"row": "0", "week": "1949-10-01", "flip_of": self.a_side.id})
+        self.assertContains(response, "Flip-side of Decca 46173 A")
+        self.assertContains(response, 'value="46173"')
+        self.assertContains(response, 'value="B"')
+        self.assertContains(response, 'value="Ernest Tubb"')
+        self.assertContains(response, 'value="4025819"')
+        self.assertContains(response, "autofocus")
+
+    def test_creating_the_flip_side_links_and_enriches_it_offline(self):
+        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("no network allowed")):
+            response = self.client.post(reverse("charts:entry_create", args=[self.chart.id]), {
+                "row": "0", "week": "1949-10-01", "confirm_create": "1",
+                "new_song_0": "My Tennessee Baby", "new_artist_0": "Ernest Tubb",
+                "new_credit_text_0": "Ernest Tubb", "new_label_0": "Decca",
+                "new_catalog_0": "46173", "new_side_0": "B", "new_discogs_0": "4025819",
+            })
+        self.assertContains(response, "filled in from its flip-side")
+        b_side = Recording.objects.get(catalog_number="46173", side="B")
+        self.assertEqual(b_side.discogs.songwriters, "Cliff Stone")
+
+
 class CreditCanonicalTests(TestCase):
     """
     The third case: one act billed with a backing band. "Julia Lee And

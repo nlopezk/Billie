@@ -286,6 +286,33 @@ def enrich(match, client=discogs_api):
     return None
 
 
+def enrich_from_cache(match):
+    """Enrich `match` from release JSON ALREADY on file, with no network
+    call -> True if it did.
+
+    The two sides of a 78 are one Discogs release, so when one side is
+    enriched, the full release JSON -- both sides' tracks, songwriters and
+    all -- is already cached in its raw_data. A flip-side linked to the
+    same release can read its own track out of that copy instead of
+    fetching it again. This is what lets the entry form's "+ flip-side"
+    finish a Discogs link completely while staying offline
+    (non-negotiable #2). False when there's nothing to do or no cached
+    copy of that release; the row then simply still needs its details.
+    """
+    if not match.needs_detail:
+        return False
+    cached = (
+        DiscogsMatch.objects.filter(discogs_release_id=match.discogs_release_id, raw_data__isnull=False)
+        .exclude(pk=match.pk).values_list("raw_data", flat=True).first()
+    )
+    if cached is None:
+        return False
+    for field, value in discogs_api.release_detail(cached, match.recording).items():
+        setattr(match, field, value)
+    match.save()
+    return True
+
+
 # ------------------------------------------------------------ batches
 
 def search_batch(matches, client=discogs_api):

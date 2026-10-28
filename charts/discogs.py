@@ -540,6 +540,17 @@ def fetch_release_detail(release_id, recording=None):
     Full detail for one release -- the expensive call, made once per
     CONFIRMED match rather than for every candidate of every recording
     (which would be thousands of calls for data mostly thrown away).
+    One API call, then release_detail() reads the answer.
+    """
+    return release_detail(_request(f"/releases/{release_id}"), recording)
+
+
+def release_detail(release, recording=None):
+    """
+    The fields DiscogsMatch caches, read from one release's JSON as
+    /releases/{id} returns it -- and as DiscogsMatch.raw_data stores it.
+    No network: this is what lets a flip-side be enriched from the JSON
+    its other side already fetched (discogs_workflow.enrich_from_cache).
 
     Returns a dict of the fields DiscogsMatch caches. When `recording` is
     given, the songwriter/producer credits AND the track-level title/
@@ -550,8 +561,6 @@ def fetch_release_detail(release_id, recording=None):
     both sides) -- matched_track_title/matched_track_artist are the ones
     that actually correspond to this one Recording.
     """
-    release = _request(f"/releases/{release_id}")
-
     labels = release.get("labels") or []
     formats = release.get("formats") or []
     artists = release.get("artists") or []

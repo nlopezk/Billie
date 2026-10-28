@@ -3,6 +3,11 @@ Existing-recording search results for a debut/re-entry row. Each result
 posts to entry_select on click, which returns the shared _entry_resolved
 fragment. If nothing matches, offers the inline "create new" sub-form
 instead (see _entry_create_form.html).
+
+"+ flip-side" beside each result opens that same create box pre-filled as
+the OTHER side of that result's release -- for a B-side that charts on
+its own: search "Capitol 304", press + flip-side on the A-side, type the
+title. A real button, so Tab reaches it and Enter presses it.
 {% endcomment %}
 {% if query|length < 2 %}
     <p class="search-hint">type at least 2 characters to search</p>
@@ -17,6 +22,9 @@ instead (see _entry_create_form.html).
                 {{ r.song }} &mdash; {{ r.credit_text }}
                 <span class="catalog-hint">({{ r.catalog_display }})</span>
             </button>
+            <button type="button" class="flip-side-btn" title="Create the other side of this release, pre-filled"
+                hx-get="{% url 'charts:entry_create_form' chart.id %}?row={{ row }}&week={{ week_date_str }}&flip_of={{ r.id }}"
+                hx-target="#create-form-{{ row }}" hx-swap="innerHTML">+ flip-side</button>
         </li>
         {% endfor %}
     </ul>

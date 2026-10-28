@@ -783,6 +783,10 @@ through each page's subtitle, styled nine slightly different ways.
             padding: 0.35rem 0.6rem;
             font-weight: 400;
         }
+        /* A search result and its "+ flip-side" button share one line: the
+           result takes the width, the flip-side button only what it needs. */
+        .search-results li { display: flex; gap: 0.35rem; align-items: stretch; }
+        .search-results .flip-side-btn { width: auto; flex: none; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
         .search-hint { color: var(--muted); font-size: var(--fs-sm); margin: 0.25rem 0; }
         .create-new-btn { color: var(--muted); border-style: dashed; margin-top: 0.25rem; font-size: var(--fs-sm); }
         .confirm-create-btn { color: var(--new); border-color: var(--new); margin-top: 0.35rem; font-size: var(--fs-sm); }
