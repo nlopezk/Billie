@@ -2411,6 +2411,22 @@ class WeekSubmissionTests(TestCase):
         week_submission.submit_week(self.chart, self.WEEK, [self._row(0, 1, self.recs[2])], replace=True)
         self.assertEqual(self._on_file(other), [(1, self.recs[0].id)])
 
+    def test_a_new_week_over_a_week_already_on_file_is_refused(self):
+        # Adding rows on top of a saved week would mix two charts together.
+        # Changing a saved week only ever happens through an edit.
+        week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(1, 2, self.recs[1]),
+        ], replace=False)
+        before = self._on_file()
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[2]),
+        ], replace=False)
+        self.assertFalse(result.saved)
+        self.assertTrue(result.already_on_file)
+        self.assertIn("already on file", result.errors[0])
+        self.assertEqual(self._on_file(), before)
+        self.assertEqual(result.rows[0]["recording"], self.recs[2])   # what was typed is kept
+
     def test_rows_from_post_handles_a_row_deleted_from_the_middle(self):
         post = {
             "position_0": "1", "recording_id_0": "11",
@@ -2444,6 +2460,18 @@ class WeekSubmissionPageSmokeTests(TestCase):
             "week_date": self.WEEK, "position_0": "1", "recording_id_0": str(self.rec.id),
         })
         self.assertRedirects(response, reverse("charts:chart_week", args=[self.chart.id, self.WEEK]))
+        self.assertEqual(self.chart.entries.count(), 1)
+
+    def test_a_week_already_on_file_offers_edit_instead(self):
+        ChartEntry.objects.create(chart=self.chart, week_date=date(1951, 4, 7), position=1, recording=self.rec)
+        edit_url = reverse("charts:entry_week_edit", args=[self.chart.id, self.WEEK])
+        page = self.client.get(reverse("charts:entry_week", args=[self.chart.id]), {"week": self.WEEK})
+        self.assertContains(page, edit_url)
+        refused = self.client.post(reverse("charts:entry_week", args=[self.chart.id]), {
+            "week_date": self.WEEK, "position_0": "1", "recording_id_0": str(self.rec.id),
+        })
+        self.assertContains(refused, "already on file")
+        self.assertContains(refused, edit_url)
         self.assertEqual(self.chart.entries.count(), 1)
 
     def test_a_failed_edit_re_shows_the_form(self):

@@ -53,6 +53,19 @@
         <ul>
             {% for e in errors %}<li>{{ e }}</li>{% endfor %}
         </ul>
+        {% if week_on_file %}
+        <a class="btn btn-sm" href="{% url 'charts:entry_week_edit' chart.id week_date_str %}">Edit this week</a>
+        {% endif %}
+    </div>
+    {% elif week_on_file and not is_edit %}
+    {% comment %}
+    A NEW week for a date that's already entered: saving would be refused
+    (week_submission.submit_week never adds rows on top of a saved week),
+    so say so before anything is typed.
+    {% endcomment %}
+    <div class="alert alert-warning">
+        This chart week is already on file &mdash; saving here would be refused.
+        <a class="btn btn-sm" href="{% url 'charts:entry_week_edit' chart.id week_date_str %}">Edit this week</a>
     </div>
     {% endif %}
 

@@ -38,6 +38,9 @@ class Submission:
     # The next free row index: one past the highest SUBMITTED index, which
     # isn't len(rows) when a row was deleted from the middle of the page.
     next_index: int = 0
+    # True when a NEW week was refused because that chart week is already
+    # on file -- the page then offers "edit this week" instead.
+    already_on_file: bool = False
 
 
 def rows_from_post(post):
@@ -69,13 +72,27 @@ def rows_from_post(post):
 def submit_week(chart, week_date, rows, *, replace):
     """Validate `rows` and write them as `chart`'s entries for `week_date`.
 
-    replace=False -- a new chart week: the rows are added.
+    replace=False -- a new chart week. REFUSED if this chart week already
+                     has entries on file: adding rows on top of a saved
+                     week would mix two charts together (an exact
+                     double-submit is caught by the unique constraint, but
+                     a different set of rows wouldn't be). Changing a saved
+                     week only ever happens through an edit.
     replace=True  -- an edit: whatever is on file for this chart week is
                      deleted first and the rows written in its place, in
                      the same transaction. Safe because nothing in the
                      schema has a foreign key pointing AT ChartEntry, so
                      nothing is left dangling.
     """
+    next_index = (max(r["index"] for r in rows) + 1) if rows else 0
+    if not replace and chart.entries.filter(week_date=week_date).exists():
+        return Submission(
+            saved=False, already_on_file=True, next_index=next_index,
+            errors=[f"This chart week ({week_date.isoformat()}) is already on file. "
+                    f"Nothing was added to it -- to change it, edit that week instead."],
+            rows=[_row_for_rerender(raw) for raw in rows],
+        )
+
     cleaned_rows = []
     errors = []
     for raw in rows:
@@ -91,7 +108,6 @@ def submit_week(chart, week_date, rows, *, replace):
     if not errors:
         errors = _write(chart, week_date, cleaned_rows, replace)
 
-    next_index = (max(r["index"] for r in rows) + 1) if rows else 0
     if not errors:
         return Submission(saved=True, next_index=next_index)
     return Submission(

@@ -335,7 +335,7 @@ def _save_week(request, chart, week_date, *, replace):
         return redirect("charts:chart_week", chart_id=chart.id, week_date=week_date.isoformat())
     # Nothing was written -- re-render with everything the user already
     # entered still in place rather than making them start the week over.
-    extra = {"errors": result.errors}
+    extra = {"errors": result.errors, "week_on_file": result.already_on_file}
     if replace:
         extra["is_edit"] = True
     return _entry_page(request, chart, week_date, result.rows, result.next_index, **extra)
@@ -373,7 +373,11 @@ def entry_week(request, chart_id):
     ).count()
     row_count = previous_week_count or 10  # first-ever week for this chart: a reasonable starting guess
     rows = [_blank_row(i) for i in range(row_count)]
-    return _entry_page(request, chart, week_date, rows, row_count)
+    # Asked for a week that's already entered (e.g. ?week= from an old
+    # link)? Say so up front, with the way to edit it -- saving here would
+    # be refused anyway (week_submission.submit_week).
+    week_on_file = chart.entries.filter(week_date=week_date).exists()
+    return _entry_page(request, chart, week_date, rows, row_count, week_on_file=week_on_file)
 
 
 def entry_week_edit(request, chart_id, week_date):

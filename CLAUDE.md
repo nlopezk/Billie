@@ -441,6 +441,11 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   rolling back the whole week, a failed EDIT leaving the saved week untouched). Before
   this, the new-week and edit save paths were near-copies and neither had a single test.
   `views._entry_page()` is the one place `entry_week.html`'s context is built.
+  **A new week is refused if that chart week is already on file** (since 2026-10-27):
+  before, a double-submit of the same rows was caught by the unique constraint, but a
+  different set of rows would have been ADDED on top of the saved week, mixing two charts.
+  Now nothing is written, the error offers "Edit this week", and opening the entry form
+  for an already-entered date warns up front. Changing a saved week is edit-only.
 - **One recording search, 2026-10-27** — `charts/search.py`. `recording_text_q(text,
   prefix="", extra_fields=())` is the single word-AND / field-OR rule; the entry form's
   search, the recordings matrix and both Discogs pages build their search from it (four
