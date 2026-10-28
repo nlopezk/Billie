@@ -23,6 +23,4 @@ class ChartEntryRowForm(forms.Form):
         required=True,
         error_messages={"required": "No recording resolved for this row yet."},
     )
-    printed_peak_position = forms.IntegerField(required=False, min_value=1)
-    printed_weeks_on_chart = forms.IntegerField(required=False, min_value=1)
     printed_anomaly_note = forms.CharField(required=False, max_length=300)

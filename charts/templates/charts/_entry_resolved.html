@@ -6,24 +6,12 @@ ambiguous-tie option (entry_select), or creating a brand-new recording
 identical -- and carries the hidden recording_id input the final save
 actually reads.
 
-When rendered as a standalone HTTP response (entry_resolve/entry_select/
-entry_create -- each passes include_wks_hint_oob=True), also carries an
-out-of-band update to that SAME row's wks-hint span, which lives over in
-the Wks-on column (_entry_row.html) rather than in here -- the "prior: N
-wks" hint is only useful sitting right next to the field it's meant to
-be compared against. No printed peak field exists (see _entry_row.html),
-so only weeks_hint gets surfaced, not peak_hint -- nothing to compare a
-peak hint against right now.
+is_response is set when this is rendered as a standalone HTTP response
+(entry_resolve/entry_select/entry_create), and OFF when it's
+{% include %}'d straight into _entry_row.html for a normal page render.
 
-include_wks_hint_oob is deliberately OFF when this template is instead
-{% include %}'d straight into _entry_row.html for a normal page render
-(entry_week / entry_week_edit's GET) -- that context already has its own
-wks-hint span sitting in the right place with the right value baked in
-server-side; emitting a SECOND element with the same id here too would
-be a duplicate-id bug, not just a redundant one.
-
-When recording is set (a REAL resolution, not an error/empty state),
-also clears out #create-form-{{ row }} via OOB -- the inline "new
+As a response with a recording set (a REAL resolution, not an
+error/empty state), it also clears out #create-form-{{ row }} via OOB -- the inline "new
 recording" box (_entry_create_form.html), if it was ever opened for this
 row, has now served its purpose (either it just created what's resolved,
 or the user picked an existing match off _entry_create_duplicate_check's
@@ -65,10 +53,6 @@ search pick, never opening the create box at all).
         <span class="not-resolved">{% if error %}{{ error }}{% else %}not resolved yet{% endif %}</span>
     {% endif %}
 </div>
-{% if include_wks_hint_oob %}
-<span id="wks-hint-{{ row }}" class="wks-hint" hx-swap-oob="true"
-      title="Computed from prior weeks on file -- compare against what's printed to the left, don't auto-fill from this">{% if weeks_hint %}prior: {{ weeks_hint }} wk{{ weeks_hint|pluralize }}{% endif %}</span>
-{% if recording %}
+{% if is_response and recording %}
 <div id="create-form-{{ row }}" hx-swap-oob="true"></div>
-{% endif %}
 {% endif %}

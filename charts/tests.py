@@ -2373,7 +2373,7 @@ class DashboardTests(TestCase):
 
 # =============================================================================
 # Chart week (charts/chart_week.py) -- the previous chart, last-week
-# resolution, movement and streaks, tested through ChartWeek itself. The
+# resolution, movement and standings, tested through ChartWeek itself. The
 # previous chart is the previous PUBLICATION date, never "the previous week
 # on file" (docs/adr/0001-previous-chart-is-previous-publication.md).
 # =============================================================================
@@ -2518,16 +2518,41 @@ class ChartWeekTests(TestCase):
         self.assertEqual(move.last_on_file, 3)
         self.assertFalse(move.conflict)
 
-    # ---- streaks
+    # ---- standings: weeks on chart, run, peak (all computed)
 
-    def test_streak_counts_consecutive_previous_charts_and_best_position(self):
+    def _standing(self, week, title):
+        rec = self._rec(title)
+        return chart_week_lib.ChartWeek(self.chart, week).standings({rec.id})[rec.id]
+
+    def test_weeks_on_counts_every_week_but_run_restarts_on_a_re_entry(self):
         self._entry(self.W1, 2, "Runner")
-        self._entry(self.W2, 5, "Gap filler")   # Runner missing in W2: the run breaks here
-        self._entry(self.W3, 4, "Runner")
+        self._entry(self.W2, 5, "Gap filler")   # Runner off the chart in W2
+        self._entry(self.W3, 4, "Runner")       # a re-entry
         self._entry(self.W4, 9, "Runner")
-        cw = chart_week_lib.ChartWeek(self.chart, date(1951, 4, 14))
-        self.assertEqual(cw.streak(self._rec("Runner")), (2, 4))
-        self.assertEqual(cw.streak(self._rec("Gap filler")), (None, None))
+        self.assertEqual(tuple(self._standing(self.W4, "Runner")), (3, 2, 2))   # weeks_on, run, peak
+        self.assertEqual(tuple(self._standing(self.W3, "Runner")), (2, 1, 2))
+
+    def test_peak_is_the_best_position_so_far_not_the_final_best(self):
+        self._entry(self.W1, 6, "Climber")
+        self._entry(self.W2, 3, "Climber")
+        self._entry(self.W3, 1, "Climber")
+        self.assertEqual(self._standing(self.W2, "Climber").peak, 3)   # #1 hasn't happened yet
+        self.assertEqual(self._standing(self.W3, "Climber").peak, 1)
+
+    def test_a_debut_is_one_week_one_run(self):
+        self._entry(self.W2, 7, "Debut")
+        self.assertEqual(tuple(self._standing(self.W2, "Debut")), (1, 1, 7))
+
+    def test_a_record_listed_twice_in_a_week_is_one_week(self):
+        self._entry(self.W3, 3, "Double", printed_anomaly_note="printed twice")
+        self._entry(self.W3, 7, "Double", printed_anomaly_note="printed twice")
+        self.assertEqual(tuple(self._standing(self.W3, "Double")), (1, 1, 3))
+
+    def test_other_charts_do_not_count(self):
+        other = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        ChartEntry.objects.create(chart=other, week_date=self.W1, position=1, recording=self._rec("Crossover"))
+        self._entry(self.W2, 4, "Crossover")
+        self.assertEqual(tuple(self._standing(self.W2, "Crossover")), (1, 1, 4))
 
     # ---- the shared rules the last-week audit also uses
 
@@ -2551,6 +2576,11 @@ class ChartWeekPageSmokeTests(TestCase):
             song=Song.objects.create(title="Mismatch"), credit_text="Somebody",
         )
         ChartEntry.objects.create(chart=self.chart, week_date=self.W3, position=6, recording=self.rec)
+
+    def test_week_page_shows_computed_weeks_run_and_peak(self):
+        ChartEntry.objects.create(chart=self.chart, week_date=self.W4, position=3, recording=self.rec)
+        response = self.client.get(reverse("charts:chart_week", args=[self.chart.id, self.W4.isoformat()]))
+        self.assertEqual(tuple(response.context["rows"][0]["standing"]), (2, 2, 3))
 
     def test_week_page_shows_conflicts(self):
         ChartEntry.objects.create(
@@ -2594,7 +2624,6 @@ class WeekSubmissionTests(TestCase):
         return {
             "index": index, "position": str(position), "last_week_position": kw.get("lw"),
             "recording_id": str(recording.id) if recording else "",
-            "printed_peak_position": None, "printed_weeks_on_chart": kw.get("wks"),
             "printed_anomaly_note": kw.get("note", ""),
         }
 
@@ -2606,13 +2635,13 @@ class WeekSubmissionTests(TestCase):
 
     def test_a_new_week_is_saved_with_its_printed_values(self):
         result = week_submission.submit_week(self.chart, self.WEEK, [
-            self._row(0, 1, self.recs[0], lw="2", wks="5"),
+            self._row(0, 1, self.recs[0], lw="2"),
             self._row(1, 2, self.recs[1]),
         ], replace=False)
         self.assertTrue(result.saved)
         self.assertEqual(self._on_file(), [(1, self.recs[0].id), (2, self.recs[1].id)])
         first = self.chart.entries.get(position=1)
-        self.assertEqual((first.printed_last_week_position, first.printed_weeks_on_chart), (2, 5))
+        self.assertEqual(first.printed_last_week_position, 2)
 
     def test_a_printed_tie_saves(self):
         result = week_submission.submit_week(self.chart, self.WEEK, [

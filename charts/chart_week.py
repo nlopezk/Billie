@@ -14,7 +14,7 @@ twice" in its own words. Now it's answered here, once:
     week.resolve(4)                 # last-week "#4" -> its chart entries (2+ = a tie)
     week.last_week_position(rec_id) # where it sat on the previous chart, or None
     week.movement(rec_id, position, printed_last_week)
-    week.streak(recording)          # (consecutive weeks so far, best position)
+    week.standings(rec_ids)         # {rec_id: Standing(weeks_on, run, peak)}
 
 The previous chart is the previous PUBLICATION date -- never "the most
 recent week that happens to be on file". See
@@ -67,6 +67,10 @@ def next_chart_date(week_date):
 # `conflict` is True when a typed last-week number disagrees with the
 # previous chart on file. `last_on_file` is where it really sat, or None.
 Movement = namedtuple("Movement", "code conflict last_on_file")
+
+# What standings() returns per recording: weeks on chart (all runs), the
+# current run, and the peak so far -- see ChartWeek.standings.
+Standing = namedtuple("Standing", "weeks_on run peak")
 
 
 class ChartWeek:
@@ -165,30 +169,43 @@ class ChartWeek:
         conflict = last_week_conflict(printed_last_week, on_file, self.previous_on_file)
         return Movement(code, conflict, on_file)
 
-    def streak(self, recording):
-        """(weeks so far, best position so far) for `recording`'s unbroken
-        run of consecutive previous charts, walking back one publication at
-        a time. Both None if it wasn't on the previous chart.
+    def standings(self, recording_ids):
+        """{recording_id: Standing(weeks_on, run, peak)} for each recording
+        on THIS chart week, counting this week itself:
 
-        Only ever shown as a "computed, for comparison" hint next to the
-        printed weeks-on-chart input -- never auto-filled (CLAUDE.md,
-        "Derived fields as a typo detector").
+          weeks_on -- every chart week on this chart so far, across all
+                      runs (a re-entry keeps counting, it doesn't restart)
+          run      -- the current unbroken run of consecutive chart weeks,
+                      ending at this one (a re-entry starts again at 1)
+          peak     -- the best position on this chart so far, across all runs
+
+        All computed from the entries on file, never typed (GLOSSARY.md:
+        Weeks on chart, Run, Peak). Counts only what's ON FILE: a chart
+        week not entered yet counts as one the record wasn't on, so a gap
+        in the data shortens a run. One query for any number of recordings.
         """
-        weeks_so_far = 0
-        best_position = None
-        cursor = self.week_date
-        while True:
-            cursor = previous_chart_date(cursor)
-            entry = (
-                self.chart.entries.filter(week_date=cursor, recording=recording)
-                .order_by("position").first()
-            )
-            if entry is None:
-                break
-            weeks_so_far += 1
-            if best_position is None or entry.position < best_position:
-                best_position = entry.position
-        return (weeks_so_far or None, best_position)
+        weeks = {}
+        best = {}
+        rows = (
+            self.chart.entries
+            .filter(recording_id__in=recording_ids, week_date__lte=self.week_date)
+            .values_list("recording_id", "week_date", "position")
+        )
+        for recording_id, week_date, position in rows:
+            # A set of dates, not a count of rows: a printed anomaly listing
+            # one record twice in a week is still ONE week on the chart.
+            weeks.setdefault(recording_id, set()).add(week_date)
+            if recording_id not in best or position < best[recording_id]:
+                best[recording_id] = position
+        standings = {}
+        for recording_id, on in weeks.items():
+            run = 0
+            cursor = self.week_date
+            while cursor in on:
+                run += 1
+                cursor = previous_chart_date(cursor)
+            standings[recording_id] = Standing(len(on), run, best[recording_id])
+        return standings
 
 
 # ------------------------------------------------------------ shared rules

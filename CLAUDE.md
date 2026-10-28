@@ -94,11 +94,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   brand-new recording can be created inline (get_or_create — re-submitting doesn't
   duplicate), rows can be deleted client-side (no server round-trip), and the whole
   week saves atomically via `full_clean()` + `transaction.atomic()`, re-rendering with
-  everything preserved if any row fails. A computed "prior N weeks" hint shows next to
-  the weeks-on-chart input for comparison, never auto-filled, per "Derived fields as a
-  typo detector" below — no peak-position field or hint, since the owner has never
-  seen that printed on an actual page (the `printed_peak_position` model field stays,
-  just unused/hidden in the form; trivial to bring back).
+  everything preserved if any row fails. No weeks-on-chart or peak input: those are
+  computed, never typed (see "Derived fields" below; both printed columns were dropped
+  in migration 0008).
 - **Editing an already-saved week is also built** — `/<chart_id>/<week_date>/edit/`
   (linked from the chart browser as "edit this week"). Same page and the same
   resolve/search/create/delete machinery as a new week, just seeded from what's
@@ -420,12 +418,24 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   - The entry form shows "last week #N" on a row picked by search (or an edited week
     saved without a number) — `ChartWeek.last_week_position`; a hint only, the box is
     never filled from it. Tests: `ChartWeekTests`.
+- **Schema review, 2026-10-27** (migration `0008_schema_review_cleanup`; a copy of the
+  database from before it was kept outside the repo). Integrity and foreign-key checks
+  were clean. Changed: printed peak / weeks-on columns dropped (now computed — see
+  "Derived fields"); "It's A Sin" (Ivory Joe Hunter) merged into "It's a Sin" (a **Song is
+  a composition**, shared by covers — `GLOSSARY.md`); unused song "Waltz of The Wind"
+  deleted; uncredited artists "Jonny Tyler" deleted and "Rob Wills (Tommy Duncan)" turned
+  into an alias of Bob Wills; CHECKs that `position` and the printed last-week number are
+  ≥ 1; ChartEntry's redundant one-column `chart_id` index dropped. **Side stays free
+  text** on purpose (C, D… on multi-disc sets; blank = unknown). A release stays derived
+  from label + catalog # — `docs/adr/0002-release-is-derived-not-a-table.md`. Kept on
+  purpose: the cached Discogs release JSON (~70% of the 12 MB file, but the flip-side
+  shortcut reads it offline).
 - **Chart week module, 2026-10-27** — `charts/chart_week.py`, from an architecture review
   (vocabulary in `GLOSSARY.md`, decision in `docs/adr/0001-...`). Everything about "the
   previous chart" now lives in one place: `ChartWeek(chart, week_date)` answers
   `previous_on_file`, `resolve(n)` (a typed last-week number → its entries: none / one /
   a tie, which the caller must ask about), `last_week_position()`, `movement()` and
-  `streak()`. **The previous chart is the previous publication date (7 days back), never
+  `standings()` (weeks on chart / run / peak). **The previous chart is the previous publication date (7 days back), never
   "the previous week on file"** — after a gap that would be two issues old and "#4" would
   quietly resolve to the wrong record. `previous_chart_date()` / `next_chart_date()` are
   the only place that 7 lives. The last-week audit can't build ~1,300 `ChartWeek`s (too
@@ -621,17 +631,25 @@ Required behavior for the chart-week entry screen:
 5. **Save the whole week atomically.** One transaction per chart-week, so a partial save
    never leaves a half-entered chart in the database.
 
-## Derived fields as a typo detector
+## Derived fields
 
-`weeks_on_chart` and `peak_position` are computable:
+**Weeks on chart, run and peak are computed, never typed** (owner's decision 2026-10-27;
+terms defined in `GLOSSARY.md`). `chart_week.ChartWeek.standings()` computes all three from
+the entries on file, and the chart browser shows them, marked as computed:
 
-- `weeks_on = previous week's weeks_on + 1`
-- `peak = MIN(previous peak, this week's position)`
+- **weeks on chart** — every week on this chart so far, re-entries included
+- **run** — the current unbroken stretch of consecutive weeks (a re-entry restarts it)
+- **peak** — the best position on this chart so far, across all runs
 
-Still capture what the magazine printed, then **flag mismatches** in the UI rather than
-auto-correcting. A mismatch means one of two things, both worth knowing: a typo by the user,
-or a genuine printing error by Billboard (more common than you'd expect). Store the printed
-values; keep the computed values available for comparison.
+The printed `printed_peak_position` / `printed_weeks_on_chart` columns were dropped in
+migration 0008 (the only two weeks-on values ever typed are kept in those entries'
+`printed_anomaly_note`). Because they're computed from what's on file, a week not entered
+yet counts as a week off the chart.
+
+**The last-week number is still the typo detector:** what the magazine printed is stored
+(`printed_last_week_position`), the previous chart on file is the computed value, and a
+mismatch is **flagged, never auto-corrected** — a typo, or a genuine Billboard printing
+error (more common than you'd expect). See `/audit/last-week/`.
 
 ## Artist and recording identity
 

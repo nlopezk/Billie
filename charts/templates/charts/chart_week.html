@@ -116,6 +116,9 @@ strung through the subtitle sentence.
             <col>
             <col style="width: 11rem;">
             <col style="width: 4.5rem;">
+            <col style="width: 3.5rem;">
+            <col style="width: 3.5rem;">
+            <col style="width: 3.5rem;">
         </colgroup>
         <thead>
             <tr>
@@ -124,6 +127,14 @@ strung through the subtitle sentence.
                 <th>Recording</th>
                 <th>Label / catalog #</th>
                 <th class="num" title="Position last week, as printed">Last wk</th>
+                {% comment %}
+                Computed from the entries on file, never typed -- so shown in
+                the same muted italics as a computed last-week number
+                (chart_week.ChartWeek.standings; GLOSSARY.md has the terms).
+                {% endcomment %}
+                <th class="num" title="Weeks on chart: every week on this chart so far, re-entries included (computed)">Wks</th>
+                <th class="num" title="Run: consecutive weeks on this chart up to this one (computed)">Run</th>
+                <th class="num" title="Peak: best position on this chart so far (computed)">Peak</th>
             </tr>
         </thead>
         <tbody>
@@ -178,14 +189,19 @@ strung through the subtitle sentence.
                     {% endif %}
                     {% endwith %}
                 </td>
+                <td class="num"><span class="lw-computed">{{ row.standing.weeks_on }}</span></td>
+                <td class="num"><span class="lw-computed">{{ row.standing.run }}</span></td>
+                <td class="num"><span class="lw-computed">{{ row.standing.peak }}</span></td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% if computed_lw_count %}
     <p class="table-key">
+        {% if computed_lw_count %}
         <span class="lw-computed">Italic</span> last-week numbers weren&rsquo;t typed in &mdash;
         they&rsquo;re where the record sat on last week&rsquo;s chart on file.
+        {% endif %}
+        Wks, Run and Peak are always computed from the weeks on file, so a week not entered
+        yet counts as a week off the chart.
     </p>
-    {% endif %}
 {% endblock %}

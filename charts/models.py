@@ -488,7 +488,11 @@ class ChartEra(models.Model):
 
 class ChartEntry(models.Model):
     # One row per position per week. The heart of the schema.
-    chart = models.ForeignKey(Chart, on_delete=models.PROTECT, related_name="entries")
+    # db_index=False: Django would give this foreign key its own one-column
+    # index, but two indexes already START with chart_id (the
+    # (chart, week_date) index below and the unique constraint), and SQLite
+    # uses either for a chart_id lookup -- a third was pure overhead.
+    chart = models.ForeignKey(Chart, on_delete=models.PROTECT, related_name="entries", db_index=False)
     week_date = models.DateField()  # ISO week-ENDING date, per CLAUDE.md convention
     position = models.PositiveSmallIntegerField()
     recording = models.ForeignKey(Recording, on_delete=models.PROTECT, related_name="chart_entries")
@@ -498,9 +502,11 @@ class ChartEntry(models.Model):
     # just started, no prior week exists at all" -- operationally the same
     # case: nothing to resolve a carryover from.
     printed_last_week_position = models.PositiveSmallIntegerField(null=True, blank=True)
-    # Only some eras/charts print these columns at all; null = not printed.
-    printed_peak_position = models.PositiveSmallIntegerField(null=True, blank=True)
-    printed_weeks_on_chart = models.PositiveSmallIntegerField(null=True, blank=True)
+    # No printed peak or weeks-on-chart fields (dropped 2026-10-27, migration
+    # 0008): the owner doesn't transcribe them -- weeks on chart, run and
+    # peak are COMPUTED from the entries on file (chart_week.ChartWeek.
+    # standings). The only two weeks-on values ever typed were kept in
+    # those entries' printed_anomaly_note before the column went.
 
     # A handful of import-time exceptions are known, deliberate departures
     # from a clean 1-recording-1-slot-per-week chart -- e.g. the two 1950
@@ -529,6 +535,12 @@ class ChartEntry(models.Model):
             # recordings) through.
             models.UniqueConstraint(
                 fields=["chart", "week_date", "position", "recording"], name="unique_chart_week_position_recording"
+            ),
+            # Positions are counted from 1 -- the column type alone allows 0.
+            models.CheckConstraint(condition=models.Q(position__gte=1), name="chartentry_position_gte_1"),
+            models.CheckConstraint(
+                condition=models.Q(printed_last_week_position__isnull=True) | models.Q(printed_last_week_position__gte=1),
+                name="chartentry_printed_last_week_gte_1",
             ),
         ]
         indexes = [models.Index(fields=["chart", "week_date"])]
@@ -559,8 +571,5 @@ class ChartEntry(models.Model):
     def __str__(self):
         return f"{self.chart} {self.week_date} #{self.position}"
 
-    # --- computed fields, exposed as properties, never stored ---
-    # weeks_on = previous week's weeks_on + 1; peak = MIN(previous peak, this position).
-    # These are computed on read (e.g. in the entry-form view) and compared
-    # against printed_peak_position / printed_weeks_on_chart so a mismatch
-    # can be surfaced in the UI -- never auto-corrected, per CLAUDE.md.
+    # Weeks on chart, run and peak are computed on read, never stored --
+    # see chart_week.ChartWeek.standings.

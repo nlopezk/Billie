@@ -7,7 +7,7 @@ The last-week-# input carries an explicit, sequential tabindex (1, 2,
 3, ... down the rows) so Tab jumps straight from one row's last-week #
 to the NEXT row's, for fast entry of the 85-95% typical week that's just
 carryovers -- "1 [Tab] 3 [Tab] [Tab] 5 [Tab] 6 ...", not a detour through
-that row's own position/search/wks-on/anomaly-note fields first. Every
+that row's own position/search/anomaly-note fields first. Every
 other field on the page is left with NO tabindex (the default, "0"),
 which the browser visits only AFTER every explicitly-numbered field --
 so they're still fully keyboard-reachable (Tab keeps going after the
@@ -15,11 +15,8 @@ last row), just never landed on in the middle of typing last-week
 numbers. Position doesn't need its own tabindex: it's pre-filled from
 the seeded row count and rarely needs touching.
 
-No printed_peak_position input -- the owner has never seen a peak
-position printed on the actual pages being transcribed, so there's
-nothing to type against. The model field stays (ChartEntry.printed_peak_position);
-this is purely a "don't render a control with nothing to fill in" call,
-easy to reverse if a later chart era does print it.
+No weeks-on-chart or peak inputs: those are computed from the entries on
+file, never typed (dropped 2026-10-27; the chart browser shows them).
 {% endcomment %}
 <tr data-row="{{ row.index }}">
     <td class="col-pos">
@@ -42,23 +39,7 @@ easy to reverse if a later chart era does print it.
         </div>
         <div id="search-results-{{ row.index }}" class="search-results-box"></div>
         <div id="create-form-{{ row.index }}"></div>
-        {% include "charts/_entry_resolved.html" with row=row.index recording=row.recording weeks_hint=row.weeks_hint peak_hint=row.peak_hint last_week_hint=row.last_week_hint %}
-    </td>
-    <td class="col-narrow">
-        <input type="number" name="printed_weeks_on_chart_{{ row.index }}" placeholder="optional" min="1"
-            value="{{ row.printed_weeks_on_chart|default_if_none:'' }}">
-        {% comment %}
-        "prior: N wks" -- what this row's recording has already racked up
-        in CONSECUTIVE prior weeks per the database, purely for comparing
-        against whatever's typed to the left. Computed here on the
-        server's initial render (edit-a-saved-week seeds it directly);
-        for a brand-new week it starts empty and this exact span gets
-        replaced via an hx-swap-oob="true" update from
-        _entry_resolved.html the moment the row resolves to a recording
-        -- see the comment there. Never auto-fills the input itself, per
-        CLAUDE.md's "Derived fields as a typo detector".
-        {% endcomment %}
-        <span id="wks-hint-{{ row.index }}" class="wks-hint">{% if row.weeks_hint %}prior: {{ row.weeks_hint }} wk{{ row.weeks_hint|pluralize }}{% endif %}</span>
+        {% include "charts/_entry_resolved.html" with row=row.index recording=row.recording last_week_hint=row.last_week_hint %}
     </td>
     <td class="col-note">
         <input type="text" name="printed_anomaly_note_{{ row.index }}" placeholder="rare, optional"

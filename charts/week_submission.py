@@ -61,8 +61,6 @@ def rows_from_post(post):
             "position": post.get(f"position_{i}"),
             "last_week_position": post.get(f"last_week_position_{i}") or None,
             "recording_id": post.get(f"recording_id_{i}"),
-            "printed_peak_position": post.get(f"printed_peak_position_{i}") or None,
-            "printed_weeks_on_chart": post.get(f"printed_weeks_on_chart_{i}") or None,
             "printed_anomaly_note": post.get(f"printed_anomaly_note_{i}", ""),
         }
         for i in indices
@@ -131,8 +129,6 @@ def _write(chart, week_date, cleaned_rows, replace):
                     position=cleaned["position"],
                     recording_id=cleaned["recording_id"],
                     printed_last_week_position=cleaned.get("last_week_position"),
-                    printed_peak_position=cleaned.get("printed_peak_position"),
-                    printed_weeks_on_chart=cleaned.get("printed_weeks_on_chart"),
                     printed_anomaly_note=cleaned.get("printed_anomaly_note") or "",
                 )
                 # full_clean(), not just save() -- see the NOTE in
@@ -151,8 +147,6 @@ def _write(chart, week_date, cleaned_rows, replace):
 def _row_for_rerender(raw):
     # The row exactly as typed, plus its resolved recording (for the
     # "✓ title — artist" preview), in the shape _entry_row.html expects.
-    # The computed hints aren't recomputed on a failed save -- they're
-    # comparison aids, and the typed values are what matter here.
     recording = None
     if raw["recording_id"]:
         recording = Recording.objects.filter(pk=raw["recording_id"]).select_related("song", "label").first()
@@ -161,9 +155,5 @@ def _row_for_rerender(raw):
         "position": raw["position"] or (raw["index"] + 1),
         "last_week_position": raw["last_week_position"],
         "recording": recording,
-        "printed_peak_position": raw["printed_peak_position"],
-        "printed_weeks_on_chart": raw["printed_weeks_on_chart"],
         "printed_anomaly_note": raw["printed_anomaly_note"],
-        "weeks_hint": None,
-        "peak_hint": None,
     }

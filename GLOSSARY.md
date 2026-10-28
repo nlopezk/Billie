@@ -46,7 +46,28 @@ _Avoid_: New entry
 **Re-entry**:
 A chart entry whose recording was on that chart before, but not on the previous chart.
 
+**Run**:
+An unbroken stretch of consecutive chart weeks a recording spends on one chart; a
+re-entry starts a new run.
+_Avoid_: Streak, stay
+
+**Weeks on chart**:
+Every chart week a recording has spent on one chart up to and including a given week,
+across all its runs.
+_Avoid_: Weeks (alone), run length
+
+**Peak**:
+A recording's best position on one chart up to and including a given week, across all
+its runs; it never gets worse as weeks pass.
+_Avoid_: High, top position
+
 ## Records and credits
+
+**Song**:
+A composition, shared by every recording of it: the original, covers and reissues alike.
+Known by its title, though two compositions can share a title and one composition can
+appear under slightly different titles.
+_Avoid_: Title (for the composition itself), tune, track
 
 **Recording**:
 One side of a release: a song as issued on a specific label, catalog number and side.
@@ -58,7 +79,8 @@ Corresponds to a Discogs release.
 _Avoid_: Disc, record, single
 
 **Side**:
-The face of a release a recording occupies: A, B, or AB for a song spanning both.
+The face of a release a recording occupies: usually A or B; AB for a song spanning both;
+further letters (C, D...) on a multi-disc set; blank when not known.
 
 **Flip-side**:
 Another recording on the same release as a given recording.

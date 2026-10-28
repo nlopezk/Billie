@@ -142,10 +142,14 @@ def chart_week(request, chart_id, week_date=None):
     # Movement and "last week" come from the previous chart on file, not
     # from whether a last-week number was typed -- see ChartWeek.movement.
     week = chart_week_lib.ChartWeek(chart, selected_week)
+    # Weeks on chart / run / peak: COMPUTED from the entries on file (one
+    # query for the whole week), never typed -- shown as computed.
+    standings = week.standings({e.recording_id for e in entries})
     rows = []
     for e in entries:
         moved = week.movement(e.recording_id, e.position, e.printed_last_week_position)
         rows.append({
+            "standing": standings[e.recording_id],
             "entry": e,
             "movement": moved.code,
             # Where it really was last week, per the data -- shown (in
@@ -300,8 +304,7 @@ def _blank_row(index):
     # One empty row of the entry form, in the shape _entry_row.html expects.
     return {
         "index": index, "position": index + 1, "last_week_position": None, "recording": None,
-        "printed_peak_position": None, "printed_weeks_on_chart": None, "printed_anomaly_note": "",
-        "weeks_hint": None, "peak_hint": None,
+        "printed_anomaly_note": "",
     }
 
 
@@ -408,7 +411,6 @@ def entry_week_edit(request, chart_id, week_date):
     week = chart_week_lib.ChartWeek(chart, target_week)
     rows = []
     for i, e in enumerate(existing):
-        weeks_hint, peak_hint = week.streak(e.recording)
         rows.append({
             "last_week_hint": (
                 week.last_week_position(e.recording_id)
@@ -418,11 +420,7 @@ def entry_week_edit(request, chart_id, week_date):
             "position": e.position,
             "last_week_position": e.printed_last_week_position,
             "recording": e.recording,
-            "printed_peak_position": e.printed_peak_position,
-            "printed_weeks_on_chart": e.printed_weeks_on_chart,
             "printed_anomaly_note": e.printed_anomaly_note,
-            "weeks_hint": weeks_hint,
-            "peak_hint": peak_hint,
         })
     return _entry_page(request, chart, target_week, rows, len(rows), is_edit=True)
 
@@ -439,20 +437,20 @@ def entry_resolve(request, chart_id):
 
     if not raw_value:
         # Field was cleared -- nothing to resolve, not an error.
-        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "include_wks_hint_oob": True})
+        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "is_response": True})
 
     try:
         week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
         last_week_position = int(raw_value)
     except (ValueError, TypeError):
-        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": "not a number", "include_wks_hint_oob": True})
+        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": "not a number", "is_response": True})
 
     week = chart_week_lib.ChartWeek(chart, week_date)
     matches = week.resolve(last_week_position)
 
     if not matches:
         error = f"nothing at #{last_week_position} on {week.previous_date}"
-        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": error, "include_wks_hint_oob": True})
+        return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": error, "is_response": True})
 
     if len(matches) > 1:
         # A genuine tie last week -- can't tell which one continues into
@@ -461,11 +459,8 @@ def entry_resolve(request, chart_id):
             "chart": chart, "row": row, "week_date_str": week_str, "matches": matches,
         })
 
-    recording = matches[0].recording
-    weeks_hint, peak_hint = week.streak(recording)
     return render(request, "charts/_entry_resolved.html", {
-        "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "include_wks_hint_oob": True,
+        "row": row, "recording": matches[0].recording, "is_response": True,
     })
 
 
@@ -548,24 +543,20 @@ def entry_select(request, chart_id):
 def _render_resolved(request, chart, row, week_str, recording, notes):
     # A row resolved by picking (entry_select) or creating (entry_create)
     # a recording, rather than by a typed last-week number: the same
-    # preview fragment, plus the computed hints -- weeks-on streak, and
-    # where it sat on the previous chart -- since nothing was typed to
-    # show that. Hints only; no box is ever filled from them.
-    weeks_hint = peak_hint = last_week_hint = None
+    # preview fragment, plus where it sat on the previous chart, since
+    # nothing was typed to show that. A hint only; no box is filled from it.
+    last_week_hint = None
     if week_str:
         try:
             week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
         except ValueError:
             week_date = None
         if week_date:
-            week = chart_week_lib.ChartWeek(chart, week_date)
-            weeks_hint, peak_hint = week.streak(recording)
-            last_week_hint = week.last_week_position(recording.id)
+            last_week_hint = chart_week_lib.ChartWeek(chart, week_date).last_week_position(recording.id)
 
     return render(request, "charts/_entry_resolved.html", {
-        "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "last_week_hint": last_week_hint,
-        "include_wks_hint_oob": True, "notes": notes,
+        "row": row, "recording": recording, "last_week_hint": last_week_hint,
+        "is_response": True, "notes": notes,
     })
 
 
@@ -613,7 +604,7 @@ def entry_create(request, chart_id):
     if missing:
         return render(request, "charts/_entry_resolved.html", {
             "row": row, "recording": None, "error": "missing: " + ", ".join(missing),
-            "include_wks_hint_oob": True,
+            "is_response": True,
         })
 
     # Set by _entry_create_duplicate_check.html's "create new anyway"
