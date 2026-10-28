@@ -2938,6 +2938,16 @@ class LastWeekAuditTests(TestCase):
         self.assertEqual(ctx["individual"], [])
         self.assertEqual(len(ctx["noted"]), 1)
 
+    def test_recordings_with_a_blank_side_are_listed_to_check(self):
+        blank = Recording.objects.create(label=self.label, catalog_number="27176", side="",
+                                         song=Song.objects.create(title="Everybody's Somebody's Fool"),
+                                         credit_text="Lionel Hampton")
+        self._rec("Has a side")
+        self.assertEqual(lastweek_audit_lib.recordings_to_check(), [blank])
+        response = self.client.get(reverse("charts:lastweek_audit"))
+        self.assertContains(response, "Recordings to check")
+        self.assertContains(response, reverse("admin:charts_recording_change", args=[blank.id]))
+
     def test_titles_are_escaped_inside_explanations(self):
         self._e(0, 1, "<b>Bold</b> & Co")
         self._e(1, 2, "Mixup", lw=1)

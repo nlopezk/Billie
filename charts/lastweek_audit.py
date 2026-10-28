@@ -304,6 +304,19 @@ def _row_view(data, row):
     }
 
 
+def recordings_to_check():
+    """Recordings whose own data needs a look against the magazine.
+
+    For now: recordings with a BLANK side (unknown -- Decca 27176 when this
+    was built). Side is free text on purpose (C, D... on multi-disc sets),
+    so blank is the one case worth listing. A temporary home: the audit
+    pages are due to be reorganized into one data-checks feature.
+    """
+    return list(
+        Recording.objects.filter(side="").select_related("song", "label").order_by("label__name", "catalog_number")
+    )
+
+
 def build(params):
     data = _Data()
     rows = _disagreements(data)

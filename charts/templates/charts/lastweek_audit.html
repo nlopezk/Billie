@@ -179,6 +179,28 @@ lastweek_audit.py, which is what makes |safe correct here and nowhere else.
     </details>
     {% endif %}
 
+    {% if recordings_to_check %}
+    {% comment %}
+    Recordings whose own data needs checking against the magazine -- for
+    now, a blank (unknown) side. Not about last-week numbers at all: it
+    lives here only until the audit pages are reorganized into one
+    data-checks feature (lastweek_audit.recordings_to_check).
+    {% endcomment %}
+    <h2>Recordings to check</h2>
+    <table class="dense-table">
+        <tbody>
+            {% for r in recordings_to_check %}
+            <tr>
+                <td>{{ r.catalog_display }}</td>
+                <td class="wrap">{{ r.song }} &mdash; {{ r.credit_text }}</td>
+                <td class="muted">side blank</td>
+                <td><a class="btn btn-sm" href="{% url 'admin:charts_recording_change' r.id %}">Edit</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
     <script>
     // Arriving from a week page's "See why" (#week-YYYY-MM-DD): open that
     // week's collapsed block so the link doesn't land on a closed summary.

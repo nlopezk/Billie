@@ -249,6 +249,7 @@ def lastweek_audit(request):
     # a row disappears from here by itself once the two sides agree.
     context = lastweek_audit_lib.build(request.GET)
     context["chart_options"] = Chart.objects.order_by("category", "method")
+    context["recordings_to_check"] = lastweek_audit_lib.recordings_to_check()
     return render(request, "charts/lastweek_audit.html", context)
 
 

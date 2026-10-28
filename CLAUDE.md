@@ -429,7 +429,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   text** on purpose (C, D… on multi-disc sets; blank = unknown). A release stays derived
   from label + catalog # — `docs/adr/0002-release-is-derived-not-a-table.md`. Kept on
   purpose: the cached Discogs release JSON (~70% of the 12 MB file, but the flip-side
-  shortcut reads it offline).
+  shortcut reads it offline). A blank side is listed under **"Recordings to check"** at the
+  bottom of `/audit/last-week/` (`lastweek_audit.recordings_to_check`) — a temporary home
+  until the audit pages are reorganized (GitHub issue).
 - **Chart week module, 2026-10-27** — `charts/chart_week.py`, from an architecture review
   (vocabulary in `GLOSSARY.md`, decision in `docs/adr/0001-...`). Everything about "the
   previous chart" now lives in one place: `ChartWeek(chart, week_date)` answers
