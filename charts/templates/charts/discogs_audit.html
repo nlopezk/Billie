@@ -11,7 +11,7 @@ Read-only, no HTMX, no API calls; fixing a bad link happens back in the
 queue, which every row links through to.
 
 Disagreeing values get a highlight. The comparison is deliberately
-forgiving (see views._loose_text_match) -- "Louis Jordan" vs "Louis
+forgiving (see discogs.loose_text_match) -- "Louis Jordan" vs "Louis
 Jordan And His Tympany Five" is an agreement, not a problem -- because
 an audit view that cries wolf on hundreds of rows is one nobody reads.
 {% endcomment %}
@@ -69,6 +69,35 @@ an audit view that cries wolf on hundreds of rows is one nobody reads.
         Opening the <a href="{% url 'charts:discogs_queue' %}">review queue</a> fetches them automatically,
         or run <code>python manage.py discogs_match --details</code> to do them all in one go.
     </div>
+    {% endif %}
+
+    {% if split_releases %}
+    {% comment %}
+    The sides of a 78 are ONE physical release, so they normally share one
+    Discogs release id. Two different ids usually means one side was linked
+    to the wrong pressing -- but a genuinely different pressing or country
+    is possible, so this only lists them (discogs_workflow.
+    flip_sides_on_different_releases); fixing happens in the queue.
+    {% endcomment %}
+    <details class="alert alert-warning">
+        <summary>
+            <strong>{{ split_releases|length }}</strong>
+            release{{ split_releases|length|pluralize }} with {{ split_releases|length|pluralize:"its,their" }}
+            flip-sides linked to different Discogs releases &mdash; usually one side is on the wrong pressing.
+        </summary>
+        <ul>
+            {% for release in split_releases %}
+            <li>
+                <strong>{{ release.label }} {{ release.catalog_number }}</strong>:
+                {% for m in release.matches %}
+                    {{ m.recording.side|default:"no side" }} &ldquo;{{ m.recording.song }}&rdquo;
+                    &rarr; <a href="{{ m.discogs_url }}" target="_blank" rel="noopener">release {{ m.discogs_release_id }}</a>
+                    (<a href="{% url 'charts:discogs_queue' %}?status=all&amp;q={{ m.recording.catalog_number|urlencode }}#discogs-row-{{ m.recording.id }}">fix</a>){% if not forloop.last %}; {% endif %}
+                {% endfor %}
+            </li>
+            {% endfor %}
+        </ul>
+    </details>
     {% endif %}
 
     <div class="table-wrap">

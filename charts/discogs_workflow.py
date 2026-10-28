@@ -313,6 +313,37 @@ def enrich_from_cache(match):
     return True
 
 
+# ------------------------------------------------------------ checks
+
+def flip_sides_on_different_releases():
+    """Releases whose sides are linked to DIFFERENT Discogs releases.
+
+    The sides of a 78 are one physical release, so they normally share
+    one Discogs release id; two different ids usually means one side was
+    linked to the wrong pressing. Usually -- a genuinely different pressing
+    or country is possible, so this only LISTS them for a human to check
+    and changes nothing. Returns one dict per release:
+    {"label", "catalog_number", "matches": [DiscogsMatch, ... by side]}.
+    """
+    linked = (
+        DiscogsMatch.objects.filter(
+            status__in=[DiscogsMatch.CONFIRMED, DiscogsMatch.MANUAL], discogs_release_id__isnull=False,
+        )
+        .select_related("recording", "recording__song", "recording__label")
+        .order_by("recording__label__name", "recording__catalog_number", "recording__side")
+    )
+    by_release = {}
+    for match in linked:
+        key = (match.recording.label_id, match.recording.catalog_number)
+        by_release.setdefault(key, []).append(match)
+    return [
+        {"label": matches[0].recording.label.name, "catalog_number": matches[0].recording.catalog_number,
+         "matches": matches}
+        for matches in by_release.values()
+        if len({m.discogs_release_id for m in matches}) > 1
+    ]
+
+
 # ------------------------------------------------------------ batches
 
 def search_batch(matches, client=discogs_api):

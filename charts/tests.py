@@ -2057,6 +2057,39 @@ class DiscogsWorkflowTests(TestCase):
         self.assertEqual(client.calls, [("detail", 42)])
 
 
+class FlipSidesOnDifferentReleasesTests(TestCase):
+    # The audit's cross-row check: a release's sides linked to different
+    # Discogs releases. Listed for review, never changed.
+
+    def setUp(self):
+        self.decca = Label.objects.create(name="Decca")
+
+    def _side(self, catalog, side, release_id, status=DiscogsMatch.CONFIRMED):
+        rec = Recording.objects.create(label=self.decca, catalog_number=catalog, side=side,
+                                       song=Song.objects.create(title=f"{catalog}{side}"), credit_text="X")
+        return DiscogsMatch.objects.create(recording=rec, status=status, discogs_release_id=release_id)
+
+    def test_lists_only_releases_whose_sides_disagree(self):
+        a, b = self._side("46173", "A", 4025819), self._side("46173", "B", 10113496)
+        self._side("46200", "A", 7), self._side("46200", "B", 7)       # agree: not listed
+        self._side("46300", "A", 8)                                    # one side linked: nothing to compare
+        found = discogs_workflow.flip_sides_on_different_releases()
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0]["label"], found[0]["catalog_number"]), ("Decca", "46173"))
+        self.assertEqual(found[0]["matches"], [a, b])
+
+    def test_unlinked_sides_are_not_compared(self):
+        self._side("46173", "A", 4025819)
+        self._side("46173", "B", 99, status=DiscogsMatch.REJECTED)
+        self.assertEqual(discogs_workflow.flip_sides_on_different_releases(), [])
+
+    def test_audit_page_lists_them(self):
+        self._side("46173", "A", 4025819), self._side("46173", "B", 10113496)
+        response = self.client.get(reverse("charts:discogs_audit"))
+        self.assertContains(response, "flip-sides linked to different Discogs releases")
+        self.assertContains(response, "release 10113496")
+
+
 class DiscogsWorkflowPageSmokeTests(TestCase):
     # The /discogs/ buttons are wired to discogs_workflow. The real client
     # is the charts.discogs module, so its PUBLIC functions are patched

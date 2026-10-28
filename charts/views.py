@@ -931,6 +931,9 @@ def discogs_audit(request):
         # so their Artist/Song are release-level stand-ins. Surfaced as a
         # prompt rather than left as a silently-degraded display.
         "needs_detail_count": DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q()).count(),
+        # Releases whose sides point at different Discogs releases -- a
+        # check across rows, so it sits above the table, not in it.
+        "split_releases": discogs_workflow.flip_sides_on_different_releases(),
         "base_querystring": urlencode({k: v for k, v in {
             "status": status if status != "all" else "", "q": q,
             "mismatches": "1" if only_mismatches else "",

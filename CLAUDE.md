@@ -503,6 +503,11 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   what keeps the entry form offline; `overwrite=False` is the entry form's "never
   silently replace a link" rule. "The EXACT candidates" is defined once, as
   `DiscogsMatch.exact_candidates()`.
+  **`/discogs/audit/` also lists releases whose flip-sides point at DIFFERENT Discogs
+  releases** (2026-10-27, `discogs_workflow.flip_sides_on_different_releases`). The sides
+  of a 78 are one release, so this usually means one side is on the wrong pressing —
+  but not always, so it only lists them, with a "fix" link to each row. Three on file
+  when built, left for the owner to review: Columbia 20548, Decca 46173, Victor 20-2241.
   **Every new link clears everything cached about the old one** (since 2026-10-27,
   `discogs_workflow._clear_cached`): summary, track, songwriters, producers, genres,
   styles, raw JSON, and the shortlist — on confirm, on a pasted link, and on a reset.
