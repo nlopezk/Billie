@@ -429,9 +429,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   text** on purpose (C, D… on multi-disc sets; blank = unknown). A release stays derived
   from label + catalog # — `docs/adr/0002-release-is-derived-not-a-table.md`. Kept on
   purpose: the cached Discogs release JSON (~70% of the 12 MB file, but the flip-side
-  shortcut reads it offline). A blank side is listed under **"Recordings to check"** at the
+  shortcut reads it offline; slimming it is GitHub issue #2). A blank side is listed under **"Recordings to check"** at the
   bottom of `/audit/last-week/` (`lastweek_audit.recordings_to_check`) — a temporary home
-  until the audit pages are reorganized (GitHub issue).
+  until the audit pages are reorganized (GitHub issue #3).
 - **Chart week module, 2026-10-27** — `charts/chart_week.py`, from an architecture review
   (vocabulary in `GLOSSARY.md`, decision in `docs/adr/0001-...`). Everything about "the
   previous chart" now lives in one place: `ChartWeek(chart, week_date)` answers
@@ -486,7 +486,8 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   ("It's A Sin" vs "It's a Sin") stops creation and asks — "same song" reuses the one on
   file, "different song" keeps the typed title as a new Song
   (`entry_recording.song_spelling_variant`, `_entry_song_spelling_check.html`). Asked,
-  never decided, since two compositions can share a title. None left on file after
+  never decided, since two compositions can share a title (variant song titles: GitHub
+  issue #1). None left on file after
   migration 0008.
 - **"+ flip-side" in the entry form, 2026-10-27.** 194 releases on file have both sides,
   and 190 of them are billed identically, so typing a B-side from scratch was mostly
