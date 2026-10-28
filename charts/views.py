@@ -17,9 +17,8 @@ from collections import defaultdict
 from datetime import datetime
 from urllib.parse import urlencode
 
-from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import Case, Count, IntegerField, Max, Min, Q, Value, When
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
@@ -30,8 +29,8 @@ from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import lastweek_audit as lastweek_audit_lib
+from . import week_submission
 from . import discogs as discogs_api
-from .forms import ChartEntryRowForm
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
     Recording, RecordingCredit, Song,
@@ -585,19 +584,69 @@ def lastweek_audit(request):
 #                         an out-of-band update to the hidden total_rows
 #                         counter the final save reads.
 #
-#   entry_week (POST)     The actual save. Every row is validated through
-#                         ChartEntryRowForm; if ANY row fails, nothing is
-#                         written (wrapped in transaction.atomic()) and the
+#   entry_week (POST)     The actual save -- week_submission.submit_week,
+#   entry_week_edit         which validates every row and writes them all or
+#     (POST)                none (transaction.atomic()). If anything fails the
 #                         whole form re-renders with everything the user
 #                         already entered still in place, per CLAUDE.md's
-#                         "save the whole week atomically" rule.
+#                         "save the whole week atomically" rule. A new week
+#                         ADDS its rows; an edit REPLACES what's on file.
+
+
+def _blank_row(index):
+    # One empty row of the entry form, in the shape _entry_row.html expects.
+    return {
+        "index": index, "position": index + 1, "last_week_position": None, "recording": None,
+        "printed_peak_position": None, "printed_weeks_on_chart": None, "printed_anomaly_note": "",
+        "weeks_hint": None, "peak_hint": None,
+    }
+
+
+def _entry_page(request, chart, week_date, rows, next_index, **extra):
+    # The one place entry_week.html's context is built -- a new week, an
+    # edit, and a failed save of either all render the same page from the
+    # same keys, plus whatever `extra` says (errors, is_edit).
+    context = {
+        "chart": chart,
+        "week_date": week_date,
+        "week_date_str": week_date.isoformat(),
+        "previous_week_date": chart_week_lib.previous_chart_date(week_date),
+        "rows": rows,
+        "next_index": next_index,
+        # Datalists behind the inline create box's Label/Artist/Song inputs.
+        "labels": Label.objects.order_by("name"),
+        "artists": Artist.objects.order_by("canonical_name"),
+        "songs": Song.objects.order_by("title"),
+        **extra,
+    }
+    return render(request, "charts/entry_week.html", context)
+
+
+def _save_week(request, chart, week_date, *, replace):
+    # The HTTP side of saving: hand the posted rows to submit_week, then
+    # either go to the saved week's page or re-show the form as typed.
+    result = week_submission.submit_week(
+        chart, week_date, week_submission.rows_from_post(request.POST), replace=replace,
+    )
+    if result.saved:
+        return redirect("charts:chart_week", chart_id=chart.id, week_date=week_date.isoformat())
+    # Nothing was written -- re-render with everything the user already
+    # entered still in place rather than making them start the week over.
+    extra = {"errors": result.errors}
+    if replace:
+        extra["is_edit"] = True
+    return _entry_page(request, chart, week_date, result.rows, result.next_index, **extra)
 
 
 def entry_week(request, chart_id):
     chart = get_object_or_404(Chart, pk=chart_id)
 
     if request.method == "POST":
-        return _save_entry_week(request, chart)
+        try:
+            week_date = datetime.strptime(request.POST.get("week_date"), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return redirect("charts:entry_week", chart_id=chart.id)
+        return _save_week(request, chart, week_date, replace=False)
 
     week_param = request.GET.get("week")
     last_entered = chart.entries.order_by("-week_date").values_list("week_date", flat=True).first()
@@ -616,165 +665,12 @@ def entry_week(request, chart_id):
         # someday) -- there's no sensible date to guess, so just ask.
         return render(request, "charts/entry_week.html", {"chart": chart, "week_date": None})
 
-    previous_week_date = chart_week_lib.previous_chart_date(week_date)
-    previous_week_count = chart.entries.filter(week_date=previous_week_date).count()
+    previous_week_count = chart.entries.filter(
+        week_date=chart_week_lib.previous_chart_date(week_date)
+    ).count()
     row_count = previous_week_count or 10  # first-ever week for this chart: a reasonable starting guess
-
-    rows = [
-        {
-            "index": i, "position": i + 1, "last_week_position": None, "recording": None,
-            "printed_peak_position": None, "printed_weeks_on_chart": None, "printed_anomaly_note": "",
-            "weeks_hint": None, "peak_hint": None,
-        }
-        for i in range(row_count)
-    ]
-
-    context = {
-        "chart": chart,
-        "week_date": week_date,
-        "week_date_str": week_date.isoformat(),
-        "previous_week_date": previous_week_date,
-        "rows": rows,
-        "next_index": row_count,
-        "labels": Label.objects.order_by("name"),
-        "artists": Artist.objects.order_by("canonical_name"),
-        "songs": Song.objects.order_by("title"),
-    }
-    return render(request, "charts/entry_week.html", context)
-
-
-def _parse_submitted_rows(request):
-    """
-    Shared by both a brand-new week's save and an existing week's edit
-    save. Discovers which row indices were actually submitted (rather
-    than assuming a contiguous 0..N-1 range -- a row deleted from the
-    middle, see the delete button in _entry_row.html, leaves a gap, and
-    that has to still work correctly), validates each one through
-    ChartEntryRowForm, and builds a repopulated row list suitable for
-    re-rendering entry_week.html if anything's wrong.
-
-    Returns (cleaned_rows, rows_for_rerender, errors, next_index).
-    """
-    row_indices = sorted({
-        int(m.group(1)) for key in request.POST if (m := re.fullmatch(r"position_(\d+)", key))
-    })
-    next_index = (max(row_indices) + 1) if row_indices else 0
-
-    cleaned_rows = []
-    errors = []
-    rows_for_rerender = []
-
-    for i in row_indices:
-        raw = {
-            "position": request.POST.get(f"position_{i}"),
-            "last_week_position": request.POST.get(f"last_week_position_{i}") or None,
-            "recording_id": request.POST.get(f"recording_id_{i}"),
-            "printed_peak_position": request.POST.get(f"printed_peak_position_{i}") or None,
-            "printed_weeks_on_chart": request.POST.get(f"printed_weeks_on_chart_{i}") or None,
-            "printed_anomaly_note": request.POST.get(f"printed_anomaly_note_{i}", ""),
-        }
-        form = ChartEntryRowForm(raw)
-
-        recording = None
-        if raw["recording_id"]:
-            recording = Recording.objects.filter(pk=raw["recording_id"]).select_related("song", "label").first()
-
-        if form.is_valid():
-            cleaned_rows.append(form.cleaned_data)
-        else:
-            field_errors = "; ".join(f"{field}: {', '.join(msgs)}" for field, msgs in form.errors.items())
-            errors.append(f"Row {i + 1}: {field_errors}")
-
-        rows_for_rerender.append({
-            "index": i,
-            "position": raw["position"] or (i + 1),
-            "last_week_position": raw["last_week_position"],
-            "recording": recording,
-            "printed_peak_position": raw["printed_peak_position"],
-            "printed_weeks_on_chart": raw["printed_weeks_on_chart"],
-            "printed_anomaly_note": raw["printed_anomaly_note"],
-            "weeks_hint": None,
-            "peak_hint": None,
-        })
-
-    return cleaned_rows, rows_for_rerender, errors, next_index
-
-
-def _write_chart_entries(chart, week_date, cleaned_rows, replace_existing):
-    """
-    Atomically writes `cleaned_rows` as this chart-week's entries. If
-    replace_existing, first deletes whatever's currently on file for this
-    exact (chart, week_date) -- safe because nothing else in the schema
-    has a foreign key pointing AT ChartEntry, so there's nothing left
-    dangling. Used by both a fresh week's save (replace_existing=False,
-    there's nothing to replace) and an edit of an existing week
-    (replace_existing=True, "save the whole week atomically" extended to
-    "re-save the whole week atomically" for corrections).
-
-    Returns a list of error strings; empty means it succeeded.
-    """
-    errors = []
-    try:
-        with transaction.atomic():
-            if replace_existing:
-                chart.entries.filter(week_date=week_date).delete()
-            for cleaned in cleaned_rows:
-                entry = ChartEntry(
-                    chart=chart,
-                    week_date=week_date,
-                    position=cleaned["position"],
-                    recording_id=cleaned["recording_id"],
-                    printed_last_week_position=cleaned.get("last_week_position"),
-                    printed_peak_position=cleaned.get("printed_peak_position"),
-                    printed_weeks_on_chart=cleaned.get("printed_weeks_on_chart"),
-                    printed_anomaly_note=cleaned.get("printed_anomaly_note") or "",
-                )
-                # full_clean(), not just save() -- see the NOTE in
-                # ChartEntry.clean() about save() not calling it
-                # automatically. This is what enforces the publication-
-                # weekday and position-in-range checks here.
-                entry.full_clean()
-                entry.save()
-    except ValidationError as e:
-        errors.append("Save failed: " + "; ".join(e.messages))
-    except IntegrityError as e:
-        errors.append(f"Save failed (a database constraint rejected this): {e}")
-    return errors
-
-
-def _save_entry_week(request, chart):
-    week_str = request.POST.get("week_date")
-    try:
-        week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        return redirect("charts:entry_week", chart_id=chart.id)
-
-    previous_week_date = chart_week_lib.previous_chart_date(week_date)
-    cleaned_rows, rows_for_rerender, errors, next_index = _parse_submitted_rows(request)
-
-    if not errors:
-        errors = _write_chart_entries(chart, week_date, cleaned_rows, replace_existing=False)
-
-    if errors:
-        # Nothing was written -- transaction.atomic() rolled back the
-        # whole batch if we got as far as trying to save. Re-render with
-        # everything the user already entered still in place rather than
-        # making them start the week over.
-        context = {
-            "chart": chart,
-            "week_date": week_date,
-            "week_date_str": week_date.isoformat(),
-            "previous_week_date": previous_week_date,
-            "rows": rows_for_rerender,
-            "next_index": next_index,
-            "labels": Label.objects.order_by("name"),
-        "artists": Artist.objects.order_by("canonical_name"),
-        "songs": Song.objects.order_by("title"),
-            "errors": errors,
-        }
-        return render(request, "charts/entry_week.html", context)
-
-    return redirect("charts:chart_week", chart_id=chart.id, week_date=week_date.isoformat())
+    rows = [_blank_row(i) for i in range(row_count)]
+    return _entry_page(request, chart, week_date, rows, row_count)
 
 
 def entry_week_edit(request, chart_id, week_date):
@@ -791,28 +687,8 @@ def entry_week_edit(request, chart_id, week_date):
     if not chart.entries.filter(week_date=target_week).exists():
         raise Http404("Nothing on file for this chart and week -- nothing to edit.")
 
-    previous_week_date = chart_week_lib.previous_chart_date(target_week)
-
     if request.method == "POST":
-        cleaned_rows, rows_for_rerender, errors, next_index = _parse_submitted_rows(request)
-        if not errors:
-            errors = _write_chart_entries(chart, target_week, cleaned_rows, replace_existing=True)
-        if errors:
-            context = {
-                "chart": chart,
-                "week_date": target_week,
-                "week_date_str": target_week.isoformat(),
-                "previous_week_date": previous_week_date,
-                "rows": rows_for_rerender,
-                "next_index": next_index,
-                "labels": Label.objects.order_by("name"),
-        "artists": Artist.objects.order_by("canonical_name"),
-        "songs": Song.objects.order_by("title"),
-                "errors": errors,
-                "is_edit": True,
-            }
-            return render(request, "charts/entry_week.html", context)
-        return redirect("charts:chart_week", chart_id=chart.id, week_date=target_week.isoformat())
+        return _save_week(request, chart, target_week, replace=True)
 
     # GET: seed rows from what's already saved, not from last week's count.
     # Ordered by (position, id) so a tie's row order stays stable across
@@ -841,20 +717,7 @@ def entry_week_edit(request, chart_id, week_date):
             "weeks_hint": weeks_hint,
             "peak_hint": peak_hint,
         })
-
-    context = {
-        "chart": chart,
-        "week_date": target_week,
-        "week_date_str": target_week.isoformat(),
-        "previous_week_date": previous_week_date,
-        "rows": rows,
-        "next_index": len(rows),
-        "labels": Label.objects.order_by("name"),
-        "artists": Artist.objects.order_by("canonical_name"),
-        "songs": Song.objects.order_by("title"),
-        "is_edit": True,
-    }
-    return render(request, "charts/entry_week.html", context)
+    return _entry_page(request, chart, target_week, rows, len(rows), is_edit=True)
 
 
 def entry_resolve(request, chart_id):
@@ -1193,13 +1056,8 @@ def entry_add_row(request, chart_id):
     next_index = int(request.GET.get("next_index", 0))
     week_str = request.GET.get("week", "")
 
-    row = {
-        "index": next_index, "position": next_index + 1, "last_week_position": None, "recording": None,
-        "printed_peak_position": None, "printed_weeks_on_chart": None, "printed_anomaly_note": "",
-        "weeks_hint": None, "peak_hint": None,
-    }
     return render(request, "charts/_entry_add_row_response.html", {
-        "chart": chart, "row": row, "week_date_str": week_str, "new_total": next_index + 1,
+        "chart": chart, "row": _blank_row(next_index), "week_date_str": week_str, "new_total": next_index + 1,
     })
 
 

@@ -431,6 +431,14 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   `last_week_conflict()` — and therefore agrees with the week pages by construction. The
   browser's ‹ prev / next › arrows are named `prev_week_on_file` / `next_week_on_file`
   because they're navigation (they skip gaps), not chart logic.
+- **Chart-week submission, 2026-10-27** — `charts/week_submission.py`. Saving a week
+  from the entry form, new or edited, is ONE call: `submit_week(chart, week_date, rows,
+  replace=False|True)` → `Submission(saved, errors, rows, next_index)`. `rows` is plain
+  dicts (`rows_from_post(request.POST)` builds them), so it's tested without a request
+  (`WeekSubmissionTests`: ties, an invalid row writing nothing, a constraint rejection
+  rolling back the whole week, a failed EDIT leaving the saved week untouched). Before
+  this, the new-week and edit save paths were near-copies and neither had a single test.
+  `views._entry_page()` is the one place `entry_week.html`'s context is built.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

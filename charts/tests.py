@@ -19,6 +19,7 @@ from . import dashboard as dashboard_lib
 from . import lastweek_audit as lastweek_audit_lib
 from . import discogs as discogs_api
 from . import views
+from . import week_submission
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
     Label, Recording, RecordingCredit, Song,
@@ -2255,6 +2256,162 @@ class ChartWeekPageSmokeTests(TestCase):
         })
         self.assertEqual(response.context["last_week_hint"], 6)
         self.assertContains(response, "last week #6")
+
+
+# =============================================================================
+# Chart-week submission (charts/week_submission.py) -- saving a whole chart
+# week from the entry form, all or nothing. Called directly with plain
+# rows; one smoke test per view below proves the form is wired to it.
+# =============================================================================
+
+class WeekSubmissionTests(TestCase):
+    WEEK = date(1951, 4, 7)   # a Saturday
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jockeys", publication_weekday=5)
+        label = Label.objects.create(name="Victor")
+        self.recs = [
+            Recording.objects.create(
+                label=label, catalog_number=str(n), side="A",
+                song=Song.objects.create(title=f"Song {n}"), credit_text="Somebody",
+            )
+            for n in range(1, 5)
+        ]
+
+    def _row(self, index, position, recording, **kw):
+        # A row as rows_from_post would build it -- strings, like a form post.
+        return {
+            "index": index, "position": str(position), "last_week_position": kw.get("lw"),
+            "recording_id": str(recording.id) if recording else "",
+            "printed_peak_position": None, "printed_weeks_on_chart": kw.get("wks"),
+            "printed_anomaly_note": kw.get("note", ""),
+        }
+
+    def _on_file(self, week=None):
+        return list(
+            self.chart.entries.filter(week_date=week or self.WEEK)
+            .order_by("position", "id").values_list("position", "recording_id")
+        )
+
+    def test_a_new_week_is_saved_with_its_printed_values(self):
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0], lw="2", wks="5"),
+            self._row(1, 2, self.recs[1]),
+        ], replace=False)
+        self.assertTrue(result.saved)
+        self.assertEqual(self._on_file(), [(1, self.recs[0].id), (2, self.recs[1].id)])
+        first = self.chart.entries.get(position=1)
+        self.assertEqual((first.printed_last_week_position, first.printed_weeks_on_chart), (2, 5))
+
+    def test_a_printed_tie_saves(self):
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(1, 1, self.recs[1]), self._row(2, 3, self.recs[2]),
+        ], replace=False)
+        self.assertTrue(result.saved)
+        self.assertEqual([p for p, _ in self._on_file()], [1, 1, 3])
+
+    def test_one_invalid_row_saves_nothing_and_keeps_what_was_typed(self):
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0], lw="4"),
+            self._row(1, 2, None),            # never resolved to a recording
+        ], replace=False)
+        self.assertFalse(result.saved)
+        self.assertEqual(self._on_file(), [])
+        self.assertIn("Row 2", result.errors[0])
+        # The page can be re-shown exactly as typed, preview included.
+        self.assertEqual(result.rows[0]["recording"], self.recs[0])
+        self.assertEqual(result.rows[0]["last_week_position"], "4")
+
+    def test_a_database_rejection_rolls_back_the_whole_week(self):
+        # The same recording twice at the same position: the unique
+        # constraint rejects the SECOND row, and the first must not survive.
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(1, 1, self.recs[0]),
+        ], replace=False)
+        self.assertFalse(result.saved)
+        self.assertEqual(self._on_file(), [])
+
+    def test_a_week_on_the_wrong_weekday_is_refused(self):
+        result = week_submission.submit_week(self.chart, date(1951, 4, 6), [
+            self._row(0, 1, self.recs[0]),
+        ], replace=False)
+        self.assertFalse(result.saved)
+        self.assertIn("publication weekday", result.errors[0])
+
+    def test_an_edit_replaces_what_was_on_file(self):
+        week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(1, 2, self.recs[1]), self._row(2, 3, self.recs[2]),
+        ], replace=False)
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[1]), self._row(1, 2, self.recs[3]),
+        ], replace=True)
+        self.assertTrue(result.saved)
+        self.assertEqual(self._on_file(), [(1, self.recs[1].id), (2, self.recs[3].id)])
+
+    def test_a_failed_edit_leaves_the_saved_week_untouched(self):
+        # The delete of the old entries is inside the same transaction --
+        # a failure after it must bring them back.
+        week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(1, 2, self.recs[1]),
+        ], replace=False)
+        before = self._on_file()
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[2]), self._row(1, 1, self.recs[2]),   # rejected by the constraint
+        ], replace=True)
+        self.assertFalse(result.saved)
+        self.assertEqual(self._on_file(), before)
+
+    def test_an_edit_touches_no_other_week(self):
+        other = date(1951, 3, 31)
+        week_submission.submit_week(self.chart, other, [self._row(0, 1, self.recs[0])], replace=False)
+        week_submission.submit_week(self.chart, self.WEEK, [self._row(0, 1, self.recs[1])], replace=False)
+        week_submission.submit_week(self.chart, self.WEEK, [self._row(0, 1, self.recs[2])], replace=True)
+        self.assertEqual(self._on_file(other), [(1, self.recs[0].id)])
+
+    def test_rows_from_post_handles_a_row_deleted_from_the_middle(self):
+        post = {
+            "position_0": "1", "recording_id_0": "11",
+            # row 1 deleted on the page -- its inputs simply aren't posted
+            "position_2": "2", "recording_id_2": "12", "last_week_position_2": "5",
+        }
+        rows = week_submission.rows_from_post(post)
+        self.assertEqual([r["index"] for r in rows], [0, 2])
+        self.assertEqual(rows[1]["last_week_position"], "5")
+        self.assertIsNone(rows[0]["last_week_position"])   # blank -> None, not ""
+
+    def test_next_index_follows_the_highest_submitted_row(self):
+        result = week_submission.submit_week(self.chart, self.WEEK, [
+            self._row(0, 1, self.recs[0]), self._row(4, 2, None),
+        ], replace=False)
+        self.assertEqual(result.next_index, 5)
+
+
+class WeekSubmissionPageSmokeTests(TestCase):
+    WEEK = "1951-04-07"
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jockeys", publication_weekday=5)
+        self.rec = Recording.objects.create(
+            label=Label.objects.create(name="Victor"), catalog_number="1", side="A",
+            song=Song.objects.create(title="Song"), credit_text="Somebody",
+        )
+
+    def test_saving_a_new_week_goes_to_its_page(self):
+        response = self.client.post(reverse("charts:entry_week", args=[self.chart.id]), {
+            "week_date": self.WEEK, "position_0": "1", "recording_id_0": str(self.rec.id),
+        })
+        self.assertRedirects(response, reverse("charts:chart_week", args=[self.chart.id, self.WEEK]))
+        self.assertEqual(self.chart.entries.count(), 1)
+
+    def test_a_failed_edit_re_shows_the_form(self):
+        ChartEntry.objects.create(chart=self.chart, week_date=date(1951, 4, 7), position=1, recording=self.rec)
+        response = self.client.post(reverse("charts:entry_week_edit", args=[self.chart.id, self.WEEK]), {
+            "position_0": "1", "recording_id_0": "",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["is_edit"])
+        self.assertTrue(response.context["errors"])
+        self.assertEqual(self.chart.entries.count(), 1)
 
 
 # =============================================================================
