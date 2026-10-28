@@ -607,6 +607,20 @@ def entry_create(request, chart_id):
             "is_response": True,
         })
 
+    # Same title as a song on file except for capitalization/spacing? Ask
+    # before creating anything (_entry_song_spelling_check.html). Its two
+    # buttons re-submit this form with song_spelling set: "existing" (use
+    # the song on file, its title) or "typed" (a different song, as typed).
+    song_spelling = request.POST.get("song_spelling", "")
+    variant = entry_recording_lib.song_spelling_variant(new)
+    if variant and song_spelling == "existing":
+        new.song_title = variant.title
+    elif variant and song_spelling != "typed":
+        return render(request, "charts/_entry_song_spelling_check.html", {
+            "chart": chart, "row": row, "week_date_str": week_str,
+            "typed": new.song_title, "existing": variant,
+        })
+
     # Set by _entry_create_duplicate_check.html's "create new anyway"
     # button on a SECOND submission of this same form -- the user already
     # looked at the possible matches and said none of them are it.
@@ -615,6 +629,9 @@ def entry_create(request, chart_id):
         if matches:
             return render(request, "charts/_entry_create_duplicate_check.html", {
                 "chart": chart, "row": row, "week_date_str": week_str, "matches": matches,
+                # Carried through, so "create new anyway" doesn't ask the
+                # spelling question a second time.
+                "song_spelling": song_spelling,
             })
 
     recording, notes = entry_recording_lib.create_recording(new)

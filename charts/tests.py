@@ -433,6 +433,49 @@ class EntryRecordingDuplicateCheckTests(TestCase):
         self.assertEqual(self._new().missing(), [])
 
 
+class SongSpellingTests(TestCase):
+    # Same title, other capitalization: asked before creating, never decided.
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.sin = Song.objects.create(title="It's a Sin")
+
+    def _new(self, title):
+        return entry_recording_lib.NewRecording(
+            song_title=title, artist_names=["Ivory Joe Hunter"], credit_text="Ivory Joe Hunter",
+            label_name="MGM", catalog_number="10818", side="A")
+
+    def test_a_case_or_spacing_variant_is_found(self):
+        self.assertEqual(entry_recording_lib.song_spelling_variant(self._new("It's A Sin")), self.sin)
+        self.assertEqual(entry_recording_lib.song_spelling_variant(self._new("it's  a  sin")), self.sin)
+
+    def test_an_exact_title_or_a_new_one_is_not_asked_about(self):
+        self.assertIsNone(entry_recording_lib.song_spelling_variant(self._new("It's a Sin")))
+        self.assertIsNone(entry_recording_lib.song_spelling_variant(self._new("Pink Champagne")))
+
+    def _post(self, **extra):
+        return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), {
+            "row": "0", "week": "1950-01-07", "new_song_0": "It's A Sin",
+            "new_artist_0": "Ivory Joe Hunter", "new_label_0": "MGM",
+            "new_catalog_0": "10818", "new_side_0": "A", **extra,
+        })
+
+    def test_the_entry_form_stops_and_asks(self):
+        response = self._post()
+        self.assertTemplateUsed(response, "charts/_entry_song_spelling_check.html")
+        self.assertEqual(Recording.objects.count(), 0)
+
+    def test_same_song_reuses_the_one_on_file(self):
+        self._post(song_spelling="existing")
+        self.assertEqual(Recording.objects.get().song, self.sin)
+        self.assertEqual(Song.objects.count(), 1)
+
+    def test_different_song_keeps_the_typed_title(self):
+        self._post(song_spelling="typed")
+        self.assertEqual(Recording.objects.get().song.title, "It's A Sin")
+        self.assertEqual(Song.objects.count(), 2)
+
+
 class EntryRecordingPageSmokeTests(TestCase):
     # The create box's wiring: the duplicate check stops a first submit,
     # "create new anyway" (confirm_create=1) goes past it.

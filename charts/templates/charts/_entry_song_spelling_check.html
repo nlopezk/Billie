@@ -1,0 +1,35 @@
+{% comment %}
+charts/templates/charts/_entry_song_spelling_check.html
+
+Shown instead of creating a recording when the typed song title matches
+one on file except for capitalization or spacing ("It's A Sin" vs "It's
+a Sin" -- entry_recording.song_spelling_variant). Usually one
+composition typed two ways, but two compositions CAN share a title, so
+this asks rather than deciding. Same id="resolved-{{ row }}" trick as
+_entry_create_duplicate_check.html: the create box's button lands here,
+and both answers re-submit that still-open box (hx-include) with
+song_spelling set, landing back on #resolved-{{ row }}.
+{% endcomment %}
+<div id="resolved-{{ row }}" class="resolved-preview ambiguous">
+    <span class="not-resolved">&ldquo;{{ typed }}&rdquo; is on file as &ldquo;{{ existing.title }}&rdquo; &mdash; the same song?</span>
+    <ul class="pick-list">
+        <li>
+            <button type="button"
+                hx-post="{% url 'charts:entry_create' chart.id %}"
+                hx-include="#create-form-{{ row }}"
+                hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}", "song_spelling": "existing"}'
+                hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+                Same song &mdash; use &ldquo;{{ existing.title }}&rdquo;
+            </button>
+        </li>
+        <li>
+            <button type="button"
+                hx-post="{% url 'charts:entry_create' chart.id %}"
+                hx-include="#create-form-{{ row }}"
+                hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}", "song_spelling": "typed"}'
+                hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
+                Different song &mdash; keep &ldquo;{{ typed }}&rdquo;
+            </button>
+        </li>
+    </ul>
+</div>

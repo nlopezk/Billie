@@ -49,7 +49,7 @@ create-form-{{ row }} OOB clear).
     <button type="button" class="confirm-create-btn"
         hx-post="{% url 'charts:entry_create' chart.id %}"
         hx-include="#create-form-{{ row }}"
-        hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}", "confirm_create": "1"}'
+        hx-vals='{"row": "{{ row }}", "week": "{{ week_date_str }}", "confirm_create": "1", "song_spelling": "{{ song_spelling }}"}'
         hx-target="#resolved-{{ row }}" hx-swap="outerHTML">
         None of these &mdash; create new anyway
     </button>

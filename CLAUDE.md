@@ -480,6 +480,12 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   it's usually a typo but sometimes really printed that way (4 such releases on file, e.g.
   Decca 14505). `entry_recording.flip_sides(recording)` is the shared "other sides of this
   release" lookup.
+  **A song title typed with different capitalization or spacing from one on file**
+  ("It's A Sin" vs "It's a Sin") stops creation and asks — "same song" reuses the one on
+  file, "different song" keeps the typed title as a new Song
+  (`entry_recording.song_spelling_variant`, `_entry_song_spelling_check.html`). Asked,
+  never decided, since two compositions can share a title. None left on file after
+  migration 0008.
 - **"+ flip-side" in the entry form, 2026-10-27.** 194 releases on file have both sides,
   and 190 of them are billed identically, so typing a B-side from scratch was mostly
   re-typing. Each search result now has a **+ flip-side** button (Tab/Enter reachable):

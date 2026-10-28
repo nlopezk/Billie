@@ -7,6 +7,7 @@ fields become a NewRecording; then, in order:
 
     new = NewRecording.from_post(request.POST, row)
     new.missing()               # required fields left blank -> show them, stop
+    song_spelling_variant(new)  # same song title, other capitalization -> ask
     possible_duplicates(new)    # anything on file this might already be -> ask
     recording, notes = create_recording(new)
 
@@ -100,6 +101,25 @@ def flip_side_draft(recording):
         side=FLIP.get(recording.side, ""),
         discogs_ref=discogs_ref,
     )
+
+
+def song_spelling_variant(new):
+    """An existing Song whose title differs from the typed one ONLY in
+    capitalization or spacing ("It's A Sin" vs "It's a Sin"), or None.
+
+    Usually that's one composition typed two ways, and the entry form asks
+    -- "same song" reuses the one on file, "different song" keeps the
+    typed title as a new Song -- before anything is created. Asked, never
+    decided: two compositions can genuinely share a title (GLOSSARY.md,
+    Song). None when the typed title exists exactly as typed (that song is
+    simply reused) or nothing similar is on file.
+    """
+    if Song.objects.filter(title=new.song_title).exists():
+        return None
+    key = _norm_title(new.song_title)
+    # ~1,100 short titles: comparing them all in Python is instant, and
+    # catches spacing differences a SQL iexact would miss.
+    return next((s for s in Song.objects.order_by("id") if _norm_title(s.title) == key), None)
 
 
 def possible_duplicates(new):
