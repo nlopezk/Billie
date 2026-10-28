@@ -9,6 +9,7 @@
 from datetime import date, timedelta
 from unittest import mock
 
+from django.http import QueryDict
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -16,6 +17,7 @@ from django.utils import timezone
 from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
+from . import entry_recording as entry_recording_lib
 from . import lastweek_audit as lastweek_audit_lib
 from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
@@ -373,85 +375,78 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self.assertEqual(len(live.context["rows"]), 1)
 
 
-class EntryCreateDuplicateCheckTests(TestCase):
-    # entry_create's backstop check: search-first is the INTENDED workflow
-    # (the search box handles the common case), so what's worth testing
-    # here specifically is the two signals the check is built on -- see
-    # the big comment above the check in views.entry_create.
+class EntryRecordingDuplicateCheckTests(TestCase):
+    # entry_recording.possible_duplicates, the backstop check before a new
+    # recording is created: search-first is the INTENDED workflow, so
+    # what's worth testing is the two signals the check is built on.
+
+    def setUp(self):
+        self.existing = Recording.objects.create(
+            label=Label.objects.create(name="Capitol"), catalog_number="40065", side="A",
+            song=Song.objects.create(title="Bouquet of Roses"), credit_text="Eddy Arnold",
+        )
+
+    def _new(self, **fields):
+        return entry_recording_lib.NewRecording(**{
+            "song_title": "A Completely Different Song", "artist_names": ["Some New Artist"],
+            "credit_text": "Some New Artist", "label_name": "Decca", "catalog_number": "46234",
+            "side": "B", **fields,
+        })
+
+    def test_nothing_similar_on_file(self):
+        self.assertEqual(entry_recording_lib.possible_duplicates(self._new()), [])
+
+    def test_matching_song_and_artist(self):
+        # Signal 1: same song + credit, a different (say, mistyped) catalog #.
+        new = self._new(song_title="Bouquet of Roses", credit_text="Eddy Arnold",
+                        label_name="Capitol", catalog_number="40065-X", side="A")
+        self.assertEqual(entry_recording_lib.possible_duplicates(new), [self.existing])
+
+    def test_matching_label_and_catalog_with_different_artist_text(self):
+        # Signal 2, the more dangerous one to miss: the same release, artist
+        # typed differently -- "Eddy Arnold" appears nowhere in what was typed.
+        new = self._new(song_title="Some Other Title", credit_text="A Totally Different Artist",
+                        label_name="Capitol", catalog_number="40065", side="A")
+        self.assertEqual(entry_recording_lib.possible_duplicates(new), [self.existing])
+
+    def test_missing_fields_are_named(self):
+        new = self._new(song_title="", artist_names=[], label_name="")
+        self.assertEqual(new.missing(), ["song title", "artist", "label"])
+        self.assertEqual(self._new().missing(), [])
+
+
+class EntryRecordingPageSmokeTests(TestCase):
+    # The create box's wiring: the duplicate check stops a first submit,
+    # "create new anyway" (confirm_create=1) goes past it.
 
     def setUp(self):
         self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
-        self.label = Label.objects.create(name="Capitol")
-        self.song = Song.objects.create(title="Bouquet of Roses")
-        self.existing = Recording.objects.create(
-            label=self.label, catalog_number="40065", side="A",
-            song=self.song, credit_text="Eddy Arnold",
+        Recording.objects.create(
+            label=Label.objects.create(name="Capitol"), catalog_number="40065", side="A",
+            song=Song.objects.create(title="Bouquet of Roses"), credit_text="Eddy Arnold",
         )
 
-    def _post_create(self, row="0", confirm_create=None, **fields):
-        data = {"row": row, "week": "1949-01-01"}
-        if confirm_create is not None:
-            data["confirm_create"] = confirm_create
-        for key, value in fields.items():
-            data[f"new_{key}_{row}"] = value
-        return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), data)
+    def _post(self, **extra):
+        return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), {
+            "row": "0", "week": "1949-01-01", "new_song_0": "Bouquet of Roses",
+            "new_artist_0": "Eddy Arnold", "new_label_0": "Capitol",
+            "new_catalog_0": "40065-X", "new_side_0": "A", **extra,
+        })
 
-    def test_no_similar_recording_creates_directly(self):
-        before = Recording.objects.count()
-        response = self._post_create(
-            song="A Completely Different Song", artist="Some New Artist",
-            credit_text="", label="Decca", catalog="46234", side="B",
-        )
-        self.assertTemplateUsed(response, "charts/_entry_resolved.html")
-        self.assertTemplateNotUsed(response, "charts/_entry_create_duplicate_check.html")
-        self.assertEqual(Recording.objects.count(), before + 1)
-
-    def test_matching_song_and_artist_blocks_creation_and_offers_the_match(self):
-        # Same song + same artist credit typed, but a DIFFERENT (say,
-        # mistyped) catalog number -- signal 1: looks like the same
-        # recording, catalog number aside.
-        before = Recording.objects.count()
-        response = self._post_create(
-            song="Bouquet of Roses", artist="Eddy Arnold",
-            credit_text="", label="Capitol", catalog="40065-X", side="A",
-        )
+    def test_a_possible_duplicate_stops_creation(self):
+        response = self._post()
         self.assertTemplateUsed(response, "charts/_entry_create_duplicate_check.html")
-        self.assertEqual(list(response.context["matches"]), [self.existing])
-        self.assertEqual(Recording.objects.count(), before)  # nothing created yet
+        self.assertEqual(Recording.objects.count(), 1)
 
-    def test_matching_label_and_catalog_blocks_creation_even_with_different_artist_text(self):
-        # Same label + catalog number as what's on file, but the artist
-        # was typed differently -- signal 2, and the more dangerous one to
-        # miss: get_or_create's own dedup (label+catalog+side) wouldn't
-        # even fire here on a plain word-AND search, since "Eddy Arnold"
-        # doesn't appear anywhere in what was typed.
-        before = Recording.objects.count()
-        response = self._post_create(
-            song="Some Other Title", artist="A Totally Different Artist",
-            credit_text="", label="Capitol", catalog="40065", side="A",
-        )
-        self.assertTemplateUsed(response, "charts/_entry_create_duplicate_check.html")
-        self.assertEqual(list(response.context["matches"]), [self.existing])
-        self.assertEqual(Recording.objects.count(), before)
-
-    def test_confirm_create_bypasses_the_check(self):
-        # Same song+artist as the existing recording (would normally
-        # trigger the check via signal 1), but confirm_create=1 skips
-        # straight past it -- and since the catalog number is genuinely
-        # different, a real second Recording gets created (confirming
-        # only bypasses the SOFT fuzzy check, not the hard label+catalog+
-        # side uniqueness constraint underneath it).
-        before = Recording.objects.count()
-        response = self._post_create(
-            song="Bouquet of Roses", artist="Eddy Arnold",
-            credit_text="", label="Capitol", catalog="40065-X", side="A",
-            confirm_create="1",
-        )
-        # (confirm_create is pulled out by _post_create, not name-mangled
-        # like the other new_*_{row} fields -- see its signature above.)
+    def test_confirm_create_goes_past_the_check(self):
+        response = self._post(confirm_create="1")
         self.assertTemplateUsed(response, "charts/_entry_resolved.html")
-        self.assertTemplateNotUsed(response, "charts/_entry_create_duplicate_check.html")
-        self.assertEqual(Recording.objects.count(), before + 1)
+        self.assertEqual(Recording.objects.count(), 2)
+
+    def test_a_missing_field_is_reported_not_created(self):
+        response = self._post(new_label_0="")
+        self.assertContains(response, "missing: label")
+        self.assertEqual(Recording.objects.count(), 1)
 
 
 # =============================================================================
@@ -577,21 +572,17 @@ class EntryFormCollaborationTests(TestCase):
     Entering a collaboration correctly at entry time -- one
     RecordingCredit per artist -- rather than filing it as a single
     fake "A - B" Artist row, which is what created the 43 rows the
-    /credits/ queue exists to clean up.
+    /credits/ queue exists to clean up. Through entry_recording directly.
     """
 
-    def setUp(self):
-        self.chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
-
-    def _create(self, artists, row="0", **overrides):
-        data = {
-            "row": row, "week": "1949-01-01", "confirm_create": "1",
-            "new_song_0": "Tennessee Border No. 2", "new_artist_0": artists,
-            "new_credit_text_0": "", "new_label_0": "Decca",
-            "new_catalog_0": "46200", "new_side_0": "A", "new_discogs_0": "",
-        }
-        data.update(overrides)
-        return self.client.post(reverse("charts:entry_create", args=[self.chart.id]), data)
+    def _create(self, artists, credit_text=""):
+        # credit_text defaults the way NewRecording.from_post does.
+        names = list(dict.fromkeys(n.strip() for n in artists if n.strip()))
+        return entry_recording_lib.create_recording(entry_recording_lib.NewRecording(
+            song_title="Tennessee Border No. 2", artist_names=names,
+            credit_text=credit_text or " - ".join(names),
+            label_name="Decca", catalog_number="46200", side="A",
+        ))
 
     def test_two_artists_produce_two_credits_in_billing_order(self):
         self._create(["Ernest Tubb", "Red Foley"])
@@ -604,8 +595,6 @@ class EntryFormCollaborationTests(TestCase):
         self.assertFalse(Artist.objects.filter(canonical_name="Ernest Tubb - Red Foley").exists())
 
     def test_three_artists_produce_three_credits_in_order(self):
-        # "+ artist" just adds another box under the same field name, so
-        # any number of artists goes through the same getlist.
         self._create(["Ernest Tubb", "Red Foley", "Minnie Pearl"])
         recording = Recording.objects.get(catalog_number="46200")
         credits = recording.credits.order_by("credit_order")
@@ -614,16 +603,11 @@ class EntryFormCollaborationTests(TestCase):
         self.assertEqual([c.credit_order for c in credits], [1, 2, 3])
         self.assertEqual(recording.credit_text, "Ernest Tubb - Red Foley - Minnie Pearl")
 
-    def test_credit_text_defaults_to_the_printed_joining_convention(self):
-        self._create(["Ernest Tubb", "Red Foley"])
-        self.assertEqual(Recording.objects.get(catalog_number="46200").credit_text,
-                         "Ernest Tubb - Red Foley")
-
     def test_explicitly_typed_credit_text_wins_over_the_default(self):
         # credit_text is the as-printed billing; a default must never
         # override what was actually typed from the page.
         self._create(["Ernest Tubb", "Red Foley"],
-                     new_credit_text_0="Ernest Tubb and Red Foley with the Texas Troubadours")
+                     credit_text="Ernest Tubb and Red Foley with the Texas Troubadours")
         self.assertEqual(Recording.objects.get(catalog_number="46200").credit_text,
                          "Ernest Tubb and Red Foley with the Texas Troubadours")
 
@@ -633,15 +617,6 @@ class EntryFormCollaborationTests(TestCase):
         self.assertEqual(recording.credits.count(), 1)
         self.assertEqual(recording.credit_text, "Ernest Tubb")
 
-    def test_blank_second_box_is_ignored(self):
-        self._create(["Ernest Tubb", "   "])
-        self.assertEqual(Recording.objects.get(catalog_number="46200").credits.count(), 1)
-
-    def test_the_same_artist_typed_twice_is_credited_once(self):
-        # unique_recording_artist would reject the second row outright.
-        self._create(["Ernest Tubb", "Ernest Tubb"])
-        self.assertEqual(Recording.objects.get(catalog_number="46200").credits.count(), 1)
-
     def test_existing_artist_is_reused_via_alias_not_duplicated(self):
         real = Artist.objects.create(canonical_name="Big Joe Turner")
         ArtistAlias.objects.create(artist=real, alias_text="Joe Turner")
@@ -650,19 +625,50 @@ class EntryFormCollaborationTests(TestCase):
         self.assertEqual(recording.credits.get().artist, real)
         self.assertFalse(Artist.objects.filter(canonical_name="Joe Turner").exists())
 
+    def test_the_same_release_and_side_is_reused_not_duplicated(self):
+        first, _ = self._create(["Ernest Tubb"])
+        again, _ = self._create(["Ernest Tubb"])
+        self.assertEqual(first, again)
+        self.assertEqual(Recording.objects.filter(catalog_number="46200").count(), 1)
+
     def test_joined_name_in_one_box_still_creates_but_warns(self):
         # Non-blocking on purpose -- credit_text records the billing
         # correctly either way and /credits/ can unpick it -- but the
         # warning is what makes it cheap to fix now instead of later.
-        response = self._create(["Ernest Tubb - Red Foley"])
-        self.assertTrue(Recording.objects.filter(catalog_number="46200").exists())
-        self.assertContains(response, "looks like 2 artists")
+        recording, notes = self._create(["Ernest Tubb - Red Foley"])
+        self.assertIsNotNone(recording.pk)
+        self.assertTrue(any("looks like 2 artists" in n for n in notes))
 
     def test_single_act_name_containing_and_is_not_warned_about(self):
         # "Homer & Jethro" is one act. Warning here would be noise, and
         # noise is what makes warnings get ignored.
-        response = self._create(["Homer & Jethro"])
-        self.assertNotContains(response, "looks like")
+        _, notes = self._create(["Homer & Jethro"])
+        self.assertEqual(notes, [])
+
+
+class EntryFormCollaborationPostTests(TestCase):
+    # How the create box's inputs become a NewRecording: any number of
+    # artist boxes under one field name, blanks and repeats dropped.
+
+    def _from_post(self, artists, **fields):
+        post = QueryDict(mutable=True)
+        post.setlist("new_artist_0", artists)
+        for k, v in {"new_song_0": "Song", "new_label_0": "decca ", "new_side_0": "a", **fields}.items():
+            post[k] = v
+        return entry_recording_lib.NewRecording.from_post(post, "0")
+
+    def test_artist_boxes_in_order_blanks_and_repeats_dropped(self):
+        new = self._from_post(["Ernest Tubb", "   ", "Red Foley", "Ernest Tubb"])
+        self.assertEqual(new.artist_names, ["Ernest Tubb", "Red Foley"])
+
+    def test_credit_defaults_to_the_printed_joining_convention(self):
+        self.assertEqual(self._from_post(["Ernest Tubb", "Red Foley"]).credit_text, "Ernest Tubb - Red Foley")
+        typed = self._from_post(["Ernest Tubb"], new_credit_text_0="Ernest Tubb and his Texas Troubadours")
+        self.assertEqual(typed.credit_text, "Ernest Tubb and his Texas Troubadours")
+
+    def test_fields_are_trimmed_and_side_uppercased(self):
+        new = self._from_post(["X"])
+        self.assertEqual((new.label_name, new.side), ("decca", "A"))
 
 
 class CreditSplitTests(TestCase):

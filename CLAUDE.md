@@ -450,6 +450,13 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   the same way as `Recording.catalog_display` / `.discogs_url`. The matrix's query moved
   to `charts/recordings_matrix.py` (`build(params)`, like `dashboard.build`), so its
   tests call it directly instead of through the test client.
+- **Recording from entry, 2026-10-27** — `charts/entry_recording.py`. The entry form's
+  "new recording" box: `NewRecording.from_post(post, row)` → `.missing()` →
+  `possible_duplicates(new)` (the two-signal backstop check) → `create_recording(new)` →
+  `(recording, notes)`. `views.entry_create` went from 150 lines to an adapter. A typed
+  artist name becomes an `Artist` the same way here and in a /credits/ split, via
+  `credits.resolve_or_create_artist()`. `views._render_resolved()` is the one place a
+  picked or created row gets its weeks / last-week hints.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

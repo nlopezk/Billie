@@ -99,6 +99,20 @@ def resolve_artist(name):
     return alias.artist if alias else None
 
 
+def resolve_or_create_artist(name):
+    """(artist, created): the artist on file for `name` (see resolve_artist
+    -- case-insensitive, and through aliases), or a new one by that name.
+
+    The ONE way a typed artist name becomes an Artist, shared by a split
+    here and by the entry form's "new recording" box, so both reuse an
+    existing act the same way instead of each deciding for itself.
+    """
+    found = resolve_artist(name)
+    if found is not None:
+        return found, False
+    return Artist.objects.create(canonical_name=name.strip()), True
+
+
 def proposed_split(artist):
     """
     What splitting this artist would produce, without doing anything:
@@ -169,9 +183,8 @@ def apply_split(combined_artist, part_names):
     # billing order typed in (which becomes credit_order).
     artists, created = [], []
     for name in part_names:
-        found = resolve_artist(name)
-        if found is None:
-            found = Artist.objects.create(canonical_name=name)
+        found, was_created = resolve_or_create_artist(name)
+        if was_created:
             created.append(found)
         if found.id not in [a.id for a in artists]:
             artists.append(found)

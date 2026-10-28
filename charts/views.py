@@ -28,6 +28,7 @@ from django.utils import timezone
 from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
+from . import entry_recording as entry_recording_lib
 from . import lastweek_audit as lastweek_audit_lib
 from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
@@ -543,16 +544,25 @@ def entry_select(request, chart_id):
     # buttons carry the open create box along (hx-include) -- a Discogs ID
     # typed there has to survive choosing an existing recording instead.
     notes = _link_discogs_from_entry(recording, request.POST.get(f"new_discogs_{row}", ""))
+    return _render_resolved(request, chart, row, week_str, recording, notes)
 
+
+def _render_resolved(request, chart, row, week_str, recording, notes):
+    # A row resolved by picking (entry_select) or creating (entry_create)
+    # a recording, rather than by a typed last-week number: the same
+    # preview fragment, plus the computed hints -- weeks-on streak, and
+    # where it sat on the previous chart -- since nothing was typed to
+    # show that. Hints only; no box is ever filled from them.
     weeks_hint = peak_hint = last_week_hint = None
     if week_str:
         try:
             week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
+        except ValueError:
+            week_date = None
+        if week_date:
             week = chart_week_lib.ChartWeek(chart, week_date)
             weeks_hint, peak_hint = week.streak(recording)
             last_week_hint = week.last_week_position(recording.id)
-        except ValueError:
-            pass
 
     return render(request, "charts/_entry_resolved.html", {
         "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
@@ -577,156 +587,37 @@ def entry_create_form(request, chart_id):
 
 
 def entry_create(request, chart_id):
-    # HTMX target of the inline create sub-form's submit button. Creates
-    # (or, via get_or_create, reuses) the Song/Artist/Label/Recording, then
-    # returns the same shared preview fragment as every other resolution
-    # path.
+    # HTMX target of the inline create sub-form's submit button. The
+    # rules -- what's required, what counts as a possible duplicate, how
+    # artists/label/song are reused -- live in charts/entry_recording.py;
+    # this only decides which fragment the row shows next.
     chart = get_object_or_404(Chart, pk=chart_id)
     row = request.POST.get("row", "0")
     week_str = request.POST.get("week")
-    # Set by _entry_create_duplicate_check.html's "create new anyway"
-    # button on a SECOND submission of this same form -- skips the check
-    # below and goes straight to creation, since the user already looked
-    # at the possible matches and said none of them are it.
-    confirmed = request.POST.get("confirm_create") == "1"
+    new = entry_recording_lib.NewRecording.from_post(request.POST, row)
 
-    song_title = request.POST.get(f"new_song_{row}", "").strip()
-    # getlist, not get: the create sub-form renders more than one artist
-    # input under this same name, so a collaboration gets credited
-    # properly at entry time -- one RecordingCredit per artist -- instead
-    # of becoming a single fake "A - B" Artist row that /credits/ then
-    # has to unpick. Adding a third input needs no change here.
-    # De-duplicated with order preserved, since that order IS credit_order.
-    artist_names = list(dict.fromkeys(
-        n.strip() for n in request.POST.getlist(f"new_artist_{row}") if n.strip()
-    ))
-    # Falls back to the workbook's own " - " joining convention when the
-    # printed billing isn't given explicitly. Only a default -- whatever
-    # is typed into the Credit field wins, because that field is the
-    # as-printed value (non-negotiable #4).
-    credit_text = request.POST.get(f"new_credit_text_{row}", "").strip() or " - ".join(artist_names)
-    label_name = request.POST.get(f"new_label_{row}", "").strip()
-    catalog_number = request.POST.get(f"new_catalog_{row}", "").strip()
-    side = request.POST.get(f"new_side_{row}", "").strip().upper()
-
-    missing = [
-        label for label, value in [
-            ("song title", song_title), ("artist", artist_names),
-            ("label", label_name), ("catalog number", catalog_number),
-        ] if not value
-    ]
+    missing = new.missing()
     if missing:
         return render(request, "charts/_entry_resolved.html", {
             "row": row, "recording": None, "error": "missing: " + ", ".join(missing),
             "include_wks_hint_oob": True,
         })
 
-    if not confirmed:
-        # Backstop duplicate check. The INTENDED workflow is search-first
-        # (_entry_search_results.html) -- "create new" is only supposed to
-        # get used when that search genuinely turns up nothing -- so this
-        # is deliberately a second line of defense for when the search
-        # step gets skipped or a near-duplicate gets missed there, not the
-        # primary defense itself.
-        #
-        # Two DIFFERENT signals, unioned rather than one combined query:
-        #   1. Song + artist credit look similar -- catches "this is the
-        #      same recording, just typed with a mistyped/different
-        #      catalog number".
-        #   2. Label + catalog number match exactly what's on file --
-        #      catches "this is literally the same physical release",
-        #      even if the artist credit was typed differently (which is
-        #      actually a MORE dangerous case to miss: get_or_create below
-        #      matches on label+catalog+side alone, so a typo'd artist
-        #      name wouldn't even trigger IT -- it would just quietly
-        #      reuse the existing recording under a second RecordingCredit
-        #      attempt, which the unique_recording_artist constraint on
-        #      RecordingCredit would then reject outright at save time).
-        # A plain single AND-across-every-typed-word search would miss
-        # signal 2 whenever the artist name typed doesn't exactly match
-        # what's already on file, which is exactly the case worth flagging.
-        candidates = {}
-        for r in search_lib.search_recordings(f"{song_title} {credit_text}"):
-            candidates[r.id] = r
-        for r in Recording.objects.filter(
-            label__name__icontains=label_name, catalog_number__icontains=catalog_number
-        ).select_related("song", "label"):
-            candidates[r.id] = r
-        matches = list(candidates.values())[:8]
+    # Set by _entry_create_duplicate_check.html's "create new anyway"
+    # button on a SECOND submission of this same form -- the user already
+    # looked at the possible matches and said none of them are it.
+    if request.POST.get("confirm_create") != "1":
+        matches = entry_recording_lib.possible_duplicates(new)
         if matches:
             return render(request, "charts/_entry_create_duplicate_check.html", {
                 "chart": chart, "row": row, "week_date_str": week_str, "matches": matches,
             })
 
-    with transaction.atomic():
-        song, _ = Song.objects.get_or_create(title=song_title)
-        # get_or_create by exact canonical_name match -- NOT the kind of
-        # "auto-merge" CLAUDE.md warns against (that's about silently
-        # treating two DIFFERENTLY-spelled entries as the same artist).
-        # Reusing an EXACT string match is the normal, expected behavior.
-        # resolve_artist rather than a raw exact-match get_or_create:
-        # it matches case-insensitively AND through ArtistAlias, so
-        # typing "Joe Turner" reuses the canonical "Big Joe Turner"
-        # instead of quietly creating a second artist for the same act.
-        # (CLAUDE.md's Artist-identity section says the autocomplete
-        # should search aliases; this is that, applied at create time.)
-        artists = []
-        for name in artist_names:
-            found = credits_lib.resolve_artist(name)
-            if found is None:
-                found = Artist.objects.create(canonical_name=name)
-            artists.append(found)
-        label, _ = Label.objects.get_or_create(name=label_name)
-        # get_or_create on the actual unique constraint -- if this exact
-        # label+catalog+side already exists, reuse it (and its existing
-        # song/credit_text) rather than erroring or silently duplicating.
-        recording, created = Recording.objects.get_or_create(
-            label=label, catalog_number=catalog_number, side=side,
-            defaults={"song": song, "credit_text": credit_text},
-        )
-        if created:
-            for order, artist in enumerate(artists, start=1):
-                RecordingCredit.objects.create(recording=recording, artist=artist, credit_order=order)
-
-    # --- optional hand-typed Discogs link ---------------------------------
-    # NOT looked up here, deliberately. The entry form makes zero network
-    # calls so a chart week can always be entered offline (CLAUDE.md
-    # non-negotiable #2, which names a manually typed Discogs ID as the
-    # acceptable form of this and a live lookup as the forbidden one).
-    # The reference is recorded with status=MANUAL and needs_detail left
-    # True; /discogs/ enriches it later, exactly like any other manual
-    # entry whose detail fetch hasn't run yet.
-    notes = []
-    # The exact mistake that produced 43 combined-credit rows needing
-    # cleanup: typing "Ernest Tubb - Red Foley" into ONE artist box. Not
-    # blocking -- credit_text still records the billing correctly and
-    # /credits/ can unpick it later -- but said plainly at the moment it
-    # happens, which is the only time it's cheap to fix.
-    if len(artist_names) == 1 and credits_lib.split_name(artist_names[0])[1]:
-        parts = credits_lib.split_name(artist_names[0])[0]
-        notes.append(
-            f"“{artist_names[0]}” looks like {len(parts)} artists. If it is, "
-            f"Reset this row and use a separate artist box for each — otherwise it "
-            f"gets filed as one act."
-        )
-
-    notes += _link_discogs_from_entry(recording, request.POST.get(f"new_discogs_{row}", ""))
-
-    weeks_hint = peak_hint = last_week_hint = None
-    if week_str:
-        try:
-            week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
-            week = chart_week_lib.ChartWeek(chart, week_date)
-            weeks_hint, peak_hint = week.streak(recording)
-            last_week_hint = week.last_week_position(recording.id)
-        except ValueError:
-            pass
-
-    return render(request, "charts/_entry_resolved.html", {
-        "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
-        "last_week_hint": last_week_hint,
-        "include_wks_hint_oob": True, "notes": notes,
-    })
+    recording, notes = entry_recording_lib.create_recording(new)
+    # Optional hand-typed Discogs link: recorded, never looked up (the
+    # entry form makes zero network calls -- non-negotiable #2).
+    notes += _link_discogs_from_entry(recording, new.discogs_ref)
+    return _render_resolved(request, chart, row, week_str, recording, notes)
 
 
 def entry_add_row(request, chart_id):
