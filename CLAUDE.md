@@ -476,6 +476,14 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   what keeps the entry form offline; `overwrite=False` is the entry form's "never
   silently replace a link" rule. "The EXACT candidates" is defined once, as
   `DiscogsMatch.exact_candidates()`.
+  **Every new link clears everything cached about the old one** (since 2026-10-27,
+  `discogs_workflow._clear_cached`): summary, track, songwriters, producers, genres,
+  styles, raw JSON, and the shortlist — on confirm, on a pasted link, and on a reset.
+  Before, a manual re-link kept the old songwriters/genres, so a re-link whose fetch
+  failed (or a link to a master, which can't be fetched) showed the OLD release's
+  songwriters next to the NEW id; and re-confirming a linked row kept the old raw JSON,
+  so the new release's details were never fetched at all. Re-entering the link a row
+  already has changes nothing. (The real data had no such stale rows when checked.)
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

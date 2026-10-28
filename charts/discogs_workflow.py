@@ -128,6 +128,25 @@ def sole_exact_candidate(match):
 
 # ------------------------------------------------------------ linking
 
+def _clear_cached(match):
+    # Forget everything cached about whatever release `match` pointed at:
+    # summary, track, songwriters/producers, genres/styles, raw JSON. Done
+    # by EVERY new link (and by a reset), so details from the previous
+    # release can never survive next to a new id looking like they belong
+    # to it -- e.g. a re-link whose detail fetch then fails, or a link to a
+    # master, which has no release detail to fetch. Blank until the new
+    # fetch fills it beats plausible-looking but wrong. Clearing raw_data
+    # is also what marks the row as needing its details (needs_detail).
+    match.confidence = ""
+    match.matched_title = match.matched_artist = match.matched_label = ""
+    match.matched_track_title = match.matched_track_artist = ""
+    match.matched_catalog_number = match.matched_country = match.matched_format = ""
+    match.matched_year = None
+    match.songwriters = match.producers = ""
+    match.genres = match.styles = []
+    match.raw_data = None
+
+
 def confirm(match, candidate, client=discogs_api):
     """A human picked `candidate`: link to it, then fetch its details.
 
@@ -136,6 +155,7 @@ def confirm(match, candidate, client=discogs_api):
     keeps needs_detail so enrich() can finish it later.
     """
     with transaction.atomic():
+        _clear_cached(match)
         # The candidate's summary is already cached -- copying it is free,
         # so it happens regardless of how the detail fetch below goes.
         match.discogs_release_id = candidate.discogs_release_id
@@ -164,34 +184,37 @@ def link_manually(match, release_id, master_id, *, overwrite):
     (the /discogs/ page does; the entry form must not, so a week can be
     entered offline). Returns a note string if nothing was changed, else None.
 
+    A new link clears everything cached about the old one (_clear_cached)
+    and the shortlist. Re-entering the link it ALREADY has changes nothing,
+    so a typed id that just repeats an existing, enriched link doesn't
+    throw its details away.
+
     overwrite=True  -- the /discogs/ page's paste box: an explicit decision,
-                       so an existing link is replaced, and the summary
-                       cached for the OLD release is cleared so it can't sit
-                       next to the new id looking like it belongs to it.
+                       so an existing, different link is replaced.
     overwrite=False -- the entry form's optional Discogs box: a passing
                        remark while entering a week, so a link someone
                        already decided on is never silently replaced.
     """
-    if not overwrite and match.is_linked and match.reference_id != (release_id or master_id):
+    same_link = (
+        match.is_linked
+        and match.discogs_release_id == release_id
+        and match.discogs_master_id == master_id
+    )
+    if same_link:
+        return None
+    if not overwrite and match.is_linked:
         return (
             f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
             f"left as-is -- change it from the Discogs page if that's wrong."
         )
     with transaction.atomic():
+        _clear_cached(match)
         match.discogs_release_id = release_id
         match.discogs_master_id = master_id
         match.status = DiscogsMatch.MANUAL
         match.linked_at = timezone.now()
-        match.confidence = ""
-        if overwrite:
-            match.matched_title = match.matched_artist = match.matched_label = ""
-            match.matched_track_title = match.matched_track_artist = ""
-            match.matched_catalog_number = match.matched_country = match.matched_format = ""
-            match.matched_year = None
-            match.raw_data = None
         match.save()
-        if overwrite:
-            match.candidates.all().delete()
+        match.candidates.all().delete()
     return None
 
 
@@ -231,16 +254,9 @@ def set_status(match, status):
     with transaction.atomic():
         match.status = status
         if status == DiscogsMatch.UNMATCHED:
+            _clear_cached(match)
             match.discogs_release_id = match.discogs_master_id = None
-            match.confidence = ""
             match.linked_at = None
-            match.matched_title = match.matched_artist = match.matched_label = ""
-            match.matched_track_title = match.matched_track_artist = ""
-            match.matched_catalog_number = match.matched_country = match.matched_format = ""
-            match.matched_year = None
-            match.songwriters = match.producers = ""
-            match.genres = match.styles = []
-            match.raw_data = None
         match.save()
         if status in (DiscogsMatch.REJECTED, DiscogsMatch.NO_MATCH, DiscogsMatch.UNMATCHED):
             match.candidates.all().delete()

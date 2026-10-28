@@ -1774,15 +1774,57 @@ class DiscogsWorkflowTests(TestCase):
         self.match.refresh_from_db()
         self.assertEqual(self.match.discogs_release_id, 42)
 
-    def test_with_overwrite_the_old_releases_summary_is_cleared(self):
+    def _enriched(self):
+        # Linked to release 42 and enriched: songwriters, genres and all.
         self._candidate()
         discogs_workflow.confirm(self.match, self.match.candidates.get(), FakeDiscogsClient(detail=_detail()))
-        discogs_workflow.link_manually(self.match, 77, None, overwrite=True)
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
+
+    def _assert_nothing_left_from_release_42(self):
         self.match.refresh_from_db()
-        self.assertEqual(self.match.discogs_release_id, 77)
-        self.assertEqual(self.match.matched_title, "")
+        self.assertEqual(self.match.songwriters, "")
+        self.assertEqual(self.match.genres, [])
+        self.assertEqual(self.match.styles, [])
+        self.assertEqual(self.match.matched_track_title, "")
         self.assertIsNone(self.match.raw_data)
+
+    def test_a_relink_whose_fetch_fails_keeps_no_details_from_the_old_release(self):
+        # Pasting release 77 over 42, then the fetch fails: the row must
+        # not show 42's songwriters next to 77's id.
+        self._enriched()
+        discogs_workflow.link_manually(self.match, 77, None, overwrite=True)
+        self.assertEqual(discogs_workflow.enrich(self.match, FakeDiscogsClient(error="offline")), "offline")
+        self._assert_nothing_left_from_release_42()
+        self.assertEqual(self.match.matched_title, "")
+        self.assertEqual(self.match.discogs_release_id, 77)
         self.assertTrue(self.match.needs_detail)
+
+    def test_relinking_to_a_master_keeps_no_details_from_the_old_release(self):
+        # A master can't be fetched at all, so nothing would ever replace them.
+        self._enriched()
+        discogs_workflow.link_manually(self.match, None, 999, overwrite=True)
+        self._assert_nothing_left_from_release_42()
+
+    def test_confirming_a_new_candidate_on_a_linked_row_clears_the_old_details(self):
+        # Searched again on a linked row, then picked a different release:
+        # the old details must go -- before, raw_data survived, so the row
+        # looked enriched and the new release's details were never fetched.
+        self._enriched()
+        DiscogsCandidate.objects.create(match=self.match, discogs_release_id=77, title="Other pressing",
+                                        confidence=DiscogsMatch.STRONG, rank=0)
+        client = FakeDiscogsClient(detail=_detail(discogs_release_id=77, songwriters="Someone Else"))
+        discogs_workflow.confirm(self.match, self.match.candidates.get(), client)
+        self.assertEqual(client.calls, [("detail", 77)])
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.songwriters, "Someone Else")
+
+    def test_re_entering_the_same_link_changes_nothing(self):
+        # Typing the id a row is already enriched for keeps its details.
+        self._enriched()
+        self.assertIsNone(discogs_workflow.link_manually(self.match, 42, None, overwrite=False))
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
 
     # ---- status changes
 
