@@ -384,7 +384,18 @@ class DiscogsMatch(DiscogsReferenceMixin, models.Model):
         # charts.discogs.search_candidates). Bulk-confirm refuses to
         # guess between these; this is what the review row uses to
         # explain why a manual pick is needed here specifically.
-        return sum(1 for c in self.candidates.all() if c.confidence == self.EXACT) > 1
+        return len(self.exact_candidates()) > 1
+
+    def exact_candidates(self):
+        # The shortlist's EXACT-confidence candidates, best first. Reads
+        # self.candidates.all() so a prefetch_related("candidates") is
+        # used rather than a query per row. The one definition behind the
+        # tie warning above, the queue's "confirm exact" count and the
+        # bulk confirm (discogs_workflow.sole_exact_candidate).
+        return sorted(
+            (c for c in self.candidates.all() if c.confidence == self.EXACT),
+            key=lambda c: c.rank,
+        )
 
     def __str__(self):
         return f"{self.recording} -> {self.get_status_display()}"

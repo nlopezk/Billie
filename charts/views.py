@@ -12,18 +12,15 @@
 #     the network, and nothing above imports it. See the big comment
 #     above discogs_queue().
 
-import re
 from collections import defaultdict
 from datetime import datetime
 from urllib.parse import urlencode
 
 from django.core.paginator import Paginator
-from django.db import transaction
-from django.db.models import Case, Count, IntegerField, Q, Value, When
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.utils import timezone
 
 from . import chart_week as chart_week_lib
 from . import credits as credits_lib
@@ -34,9 +31,10 @@ from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
 from . import week_submission
 from . import discogs as discogs_api
+from . import discogs_workflow
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
-    Recording, RecordingCredit, Song,
+    Recording, Song,
 )
 
 
@@ -509,26 +507,18 @@ def _link_discogs_from_entry(recording, discogs_ref):
     discogs_ref = (discogs_ref or "").strip()
     if not discogs_ref:
         return notes
-    release_id, master_id, parse_error = _parse_discogs_reference(discogs_ref)
+    release_id, master_id, parse_error = discogs_workflow.parse_reference(discogs_ref)
     if parse_error:
         # Never block the chart data over a bad optional field.
         notes.append(f"{parse_error} Saved without a Discogs link.")
         return notes
     match, _ = DiscogsMatch.objects.get_or_create(recording=recording)
-    if match.is_linked and match.reference_id != (release_id or master_id):
-        # A reused or picked recording may already carry a link someone
-        # decided on. Never silently replace it -- say so and leave it.
-        notes.append(
-            f"Already linked to Discogs {match.reference_type} {match.reference_id}, "
-            f"left as-is -- change it from the Discogs page if that's wrong."
-        )
-        return notes
-    match.discogs_release_id = release_id
-    match.discogs_master_id = master_id
-    match.status = DiscogsMatch.MANUAL
-    match.confidence = ""
-    match.linked_at = timezone.now()
-    match.save()
+    # overwrite=False: a reused or picked recording may already carry a
+    # link someone decided on -- never silently replace it. No enrich()
+    # here: that would be a network call on the entry path.
+    note = discogs_workflow.link_manually(match, release_id, master_id, overwrite=False)
+    if note:
+        notes.append(note)
     return notes
 
 
@@ -790,47 +780,6 @@ def credit_reopen(request, artist_id):
 DISCOGS_WEB_BATCH_SIZE = 10
 
 
-def _ensure_discogs_matches():
-    """
-    Give every Recording a DiscogsMatch row (status=unmatched) if it
-    doesn't have one yet.
-
-    Called on the queue page rather than done once in a data migration so
-    it self-heals: recordings created later through the entry form get
-    picked up automatically the next time this page is opened, with no
-    signal or extra bookkeeping on the entry path.
-    """
-    missing = Recording.objects.filter(discogs__isnull=True)
-    DiscogsMatch.objects.bulk_create(
-        [DiscogsMatch(recording=recording) for recording in missing],
-        # Belt-and-braces against a double-click racing itself; the
-        # OneToOne already makes a duplicate impossible at the DB level.
-        ignore_conflicts=True,
-    )
-
-
-def _discogs_progress():
-    # Counts for the progress line at the top of the queue -- one grouped
-    # query rather than six separate .count() calls.
-    counts = dict(
-        DiscogsMatch.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n")
-    )
-    total = sum(counts.values())
-    # Linked but not yet enriched -- see DiscogsMatch.needs_detail_q.
-    needs_detail = DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q()).count()
-    # A row still waiting on its detail fetch is NOT done, whatever its
-    # status says. Counting those as settled is what let entry-form links
-    # sit un-enriched: the progress bar called them finished.
-    settled = sum(counts.get(status, 0) for status in DiscogsMatch.SETTLED_STATUSES) - needs_detail
-    return {
-        "total": total,
-        "settled": settled,
-        "percent": round(100 * settled / total) if total else 0,
-        "counts": counts,
-        "needs_detail": needs_detail,
-    }
-
-
 # Sort options for the linked-matches audit view. Same (field, label)
 # shape as RECORDINGS_MATRIX_SORTS.
 DISCOGS_AUDIT_SORTS = {
@@ -969,7 +918,7 @@ def discogs_audit(request):
 
 
 def discogs_queue(request):
-    _ensure_discogs_matches()
+    discogs_workflow.ensure_matches()
 
     status = request.GET.get("status", "todo")
     q = request.GET.get("q", "").strip()
@@ -1017,11 +966,10 @@ def discogs_queue(request):
     # the button's own number would be a lie.
     page_exact_ids = [
         match.id for match in page
-        if match.status == DiscogsMatch.SUGGESTED
-        and sum(1 for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT) == 1
+        if match.status == DiscogsMatch.SUGGESTED and discogs_workflow.sole_exact_candidate(match)
     ]
 
-    progress = _discogs_progress()
+    progress = discogs_workflow.progress()
 
     # Built here, not in the template: each option needs its own row
     # count next to it, and a Django template can't look a dict up by a
@@ -1056,21 +1004,6 @@ def discogs_queue(request):
     return render(request, "charts/discogs_queue.html", context)
 
 
-def _store_candidates(match, candidates):
-    """Replace a match's shortlist with a freshly-searched one."""
-    with transaction.atomic():
-        match.candidates.all().delete()
-        for rank, data in enumerate(candidates):
-            DiscogsCandidate.objects.create(match=match, rank=rank, **data)
-        match.searched_at = timezone.now()
-        # NO_MATCH rather than SUGGESTED when the search came back empty:
-        # that's a real, informative outcome ("Discogs doesn't have this
-        # 78"), not a failure, and it means the row stops cluttering the
-        # to-do queue. A human can still re-search it later.
-        match.status = DiscogsMatch.SUGGESTED if candidates else DiscogsMatch.NO_MATCH
-        match.save()
-
-
 def _render_discogs_row(request, match):
     # Every per-row action returns this same fragment, so a row looks
     # identical however it got into its current state -- same shared-
@@ -1085,42 +1018,14 @@ def discogs_search(request, recording_id):
     # HTMX target of a row's "Search Discogs" button. Live API call.
     match, _ = DiscogsMatch.objects.get_or_create(recording_id=recording_id)
     try:
-        candidates = discogs_api.search_candidates(match.recording)
+        discogs_workflow.search(match)
     except discogs_api.DiscogsError as exc:
         # Network/token/rate-limit problems are shown on the row, not
         # raised -- the rest of the page (and the app) stays usable.
         return render(request, "charts/_discogs_row.html", {
             "match": match, "error": str(exc), "querystring": request.POST.get("querystring", ""),
         })
-    _store_candidates(match, candidates)
     return _render_discogs_row(request, match)
-
-
-def _try_fetch_detail(match):
-    """
-    Fetch and apply full release detail (songwriters, producers, genres)
-    for a match that already has a discogs_release_id, if it's missing
-    them. One API call. Never raises -- returns an error string on
-    failure (the caller shows it as a note; the match stays exactly as
-    confirmed either way, just with needs_detail still True so the
-    per-row "Fetch full details" button remains as a retry) or None on
-    success/nothing-to-do.
-
-    Shared by discogs_confirm and discogs_manual (auto-fetch right after
-    a SINGLE-row confirm -- see the big comment above discogs_confirm for
-    why single-row is the case this is safe/wanted for) and by
-    discogs_fetch_detail itself (the explicit retry button).
-    """
-    if not match.needs_detail:
-        return None
-    try:
-        detail = discogs_api.fetch_release_detail(match.discogs_release_id, match.recording)
-    except discogs_api.DiscogsError as exc:
-        return str(exc)
-    for field, value in detail.items():
-        setattr(match, field, value)
-    match.save()
-    return None
 
 
 def discogs_confirm(request, recording_id):
@@ -1139,60 +1044,10 @@ def discogs_confirm(request, recording_id):
     # detail fetch is retried, via the same per-row button as always.
     match = get_object_or_404(DiscogsMatch, recording_id=recording_id)
     candidate = get_object_or_404(DiscogsCandidate, pk=request.POST.get("candidate_id"), match=match)
-
-    with transaction.atomic():
-        # Copy the candidate's already-cached summary across first --
-        # this part is genuinely free (no API call), so it happens
-        # regardless of how the detail fetch below goes.
-        match.discogs_release_id = candidate.discogs_release_id
-        match.discogs_master_id = candidate.discogs_master_id
-        match.matched_title = candidate.title
-        match.matched_artist = candidate.artist
-        match.matched_label = candidate.label
-        match.matched_catalog_number = candidate.catalog_number
-        match.matched_year = candidate.year
-        match.matched_country = candidate.country
-        match.matched_format = candidate.format
-        match.confidence = candidate.confidence
-        match.status = DiscogsMatch.CONFIRMED
-        match.linked_at = timezone.now()
-        match.save()
-        match.candidates.all().delete()
-
-    error = _try_fetch_detail(match)
+    error = discogs_workflow.confirm(match, candidate)
     return render(request, "charts/_discogs_row.html", {
         "match": match, "error": error, "querystring": request.POST.get("querystring", ""),
     })
-
-
-def _parse_discogs_reference(raw):
-    """
-    Turn a pasted Discogs URL or bare ID into (release_id, master_id) --
-    at most one of which is set. Handles a full URL with slug
-    ("https://www.discogs.com/release/12345-Some-Slug" or .../master/...),
-    a bare path ("release/12345" / "master/12345"), and a bare number
-    (assumed to mean a RELEASE, since that's what you get pasting from a
-    normal discogs.com release page -- paste a full master/... URL if you
-    specifically mean a master).
-
-    Checking for "master/" FIRST matters: a release URL never contains
-    the substring "master", but the reverse isn't guaranteed to be worth
-    risking, and this way there's no ambiguity either way.
-
-    Returns (release_id, master_id, error_message) -- error_message is
-    set (and both ids None) when nothing recognizable was found.
-    """
-    raw = raw.strip()
-    master_match = re.search(r"master/(\d+)", raw)
-    if master_match:
-        return None, int(master_match.group(1)), None
-    release_match = re.search(r"release/(\d+)", raw)
-    if release_match:
-        return int(release_match.group(1)), None, None
-    bare_match = re.fullmatch(r"\d+", raw)
-    if bare_match:
-        return int(raw), None, None
-    return None, None, "Couldn't read a release or master ID out of that."
 
 
 def discogs_manual(request, recording_id):
@@ -1201,35 +1056,20 @@ def discogs_manual(request, recording_id):
     # yourself on discogs.com. Same "finish the job in one click" as
     # discogs_confirm above: a release reference gets its full details
     # fetched right here too. A master-only reference can't (see
-    # needs_detail on DiscogsMatch) -- _try_fetch_detail is a no-op then.
+    # needs_detail on DiscogsMatch) -- enrich() is a no-op then.
     match, _ = DiscogsMatch.objects.get_or_create(recording_id=recording_id)
     raw = (request.POST.get("discogs_ref") or "").strip()
 
-    release_id, master_id, parse_error = _parse_discogs_reference(raw)
+    release_id, master_id, parse_error = discogs_workflow.parse_reference(raw)
     if parse_error:
         return render(request, "charts/_discogs_row.html", {
             "match": match, "error": parse_error,
             "querystring": request.POST.get("querystring", ""),
         })
 
-    with transaction.atomic():
-        match.discogs_release_id = release_id
-        match.discogs_master_id = master_id
-        match.status = DiscogsMatch.MANUAL
-        match.linked_at = timezone.now()
-        match.confidence = ""
-        # Deliberately cleared: whatever summary was cached described a
-        # DIFFERENT release, and leaving it would show misleading data
-        # next to the new ID until the detail fetch below runs (or fails).
-        match.matched_title = match.matched_artist = match.matched_label = ""
-        match.matched_track_title = match.matched_track_artist = ""
-        match.matched_catalog_number = match.matched_country = match.matched_format = ""
-        match.matched_year = None
-        match.raw_data = None
-        match.save()
-        match.candidates.all().delete()
-
-    fetch_error = _try_fetch_detail(match)
+    # overwrite=True: pasting here is an explicit decision to (re)link.
+    discogs_workflow.link_manually(match, release_id, master_id, overwrite=True)
+    fetch_error = discogs_workflow.enrich(match)
     return render(request, "charts/_discogs_row.html", {
         "match": match, "error": fetch_error, "querystring": request.POST.get("querystring", ""),
     })
@@ -1238,33 +1078,13 @@ def discogs_manual(request, recording_id):
 def discogs_set_status(request, recording_id):
     # HTMX target of "None of these" / "Not on Discogs" / "Reset".
     match, _ = DiscogsMatch.objects.get_or_create(recording_id=recording_id)
-    new_status = request.POST.get("status")
-    valid = {choice for choice, _ in DiscogsMatch.STATUS_CHOICES}
-    if new_status in valid:
-        with transaction.atomic():
-            match.status = new_status
-            if new_status == DiscogsMatch.UNMATCHED:
-                # A full reset -- drop the link and everything cached
-                # about it, so the row goes back to looking untouched.
-                match.discogs_release_id = match.discogs_master_id = None
-                match.confidence = ""
-                match.linked_at = None
-                match.matched_title = match.matched_artist = match.matched_label = ""
-                match.matched_track_title = match.matched_track_artist = ""
-                match.matched_catalog_number = match.matched_country = match.matched_format = ""
-                match.matched_year = None
-                match.songwriters = match.producers = ""
-                match.genres = match.styles = []
-                match.raw_data = None
-            match.save()
-            if new_status in (DiscogsMatch.REJECTED, DiscogsMatch.NO_MATCH, DiscogsMatch.UNMATCHED):
-                match.candidates.all().delete()
+    discogs_workflow.set_status(match, request.POST.get("status"))
     return _render_discogs_row(request, match)
 
 
 def discogs_fetch_detail(request, recording_id):
     # HTMX target of a linked row's "fetch full details" button -- the
-    # explicit retry/catch-up path for whatever _try_fetch_detail's
+    # explicit retry/catch-up path for whatever enrich()'s
     # automatic attempt (in discogs_confirm/discogs_manual) didn't cover:
     # it failed the first time, or this match came from the BULK confirm
     # action (which stays detail-free on purpose, see discogs_bulk), or
@@ -1275,7 +1095,7 @@ def discogs_fetch_detail(request, recording_id):
             "match": match, "error": "No release ID on this match yet.",
             "querystring": request.POST.get("querystring", ""),
         })
-    error = _try_fetch_detail(match)
+    error = discogs_workflow.enrich(match)
     return render(request, "charts/_discogs_row.html", {
         "match": match, "error": error, "querystring": request.POST.get("querystring", ""),
     })
@@ -1299,121 +1119,51 @@ def discogs_bulk(request):
             DiscogsMatch.objects.filter(status=DiscogsMatch.UNMATCHED)
             .select_related("recording", "recording__song", "recording__label")[:DISCOGS_WEB_BATCH_SIZE]
         )
-        done = 0
-        for match in pending:
-            try:
-                _store_candidates(match, discogs_api.search_candidates(match.recording))
-                done += 1
-            except discogs_api.DiscogsError as exc:
-                # Stop the batch at the first failure rather than
-                # hammering a rate limit or a down API N more times.
-                messages.append(f"Stopped after {done}: {exc}")
-                break
+        done, error = discogs_workflow.search_batch(pending)
+        if error:
+            messages.append(f"Stopped after {done}: {error}")
         else:
             messages.append(f"Searched {done} recording{'' if done == 1 else 's'}.")
 
     elif action == "confirm_exact":
-        # Confirm every EXACT-confidence suggestion on the current page,
-        # AND fetch each one's per-track detail in the same click.
+        # Confirm every single-EXACT suggestion on the current page, AND
+        # fetch each one's per-track detail in the same click.
         #
         # This used to skip the detail fetch to stay instant, leaving
         # those rows showing release-level stand-ins (the "rel" tag) with
         # no songwriter credits until someone remembered to run the
         # catch-up step. In practice that follow-up got forgotten and
         # 124 rows sat half-populated, which is a worse outcome than a
-        # slower click. Confirming and enriching are now one operation,
-        # so no path through the UI can leave a linked row incomplete.
-        #
-        # Cost is bounded and predictable: at most one pageful (25) at
-        # roughly a second each. On an API failure partway through, the
-        # confirms already made stand and the rest are reported as still
-        # needing detail -- recoverable via the "Fetch details" action,
-        # which stays for exactly that case.
+        # slower click. Cost is bounded: at most one pageful (25) at
+        # roughly a second each. A match with several EXACT candidates is
+        # a genuine tie and is left for a deliberate pick.
         ids = request.POST.getlist("match_id")
-        confirmed = 0
-        enriched = 0
-        skipped_ties = 0
-        detail_error = None
-        for match in DiscogsMatch.objects.filter(id__in=ids, status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"):
-            exact_candidates = [c for c in match.candidates.all() if c.confidence == DiscogsMatch.EXACT]
-            if not exact_candidates:
-                continue
-            if len(exact_candidates) > 1:
-                # A genuine tie -- the same catalog+label matches more
-                # than one distinct Discogs release (different country/
-                # year/pressing sharing a catalog number, which really
-                # happens -- see the reasoning in discogs.search_
-                # candidates). Left as 'suggested' rather than picking
-                # one: they're already sorted with the most likely one
-                # (US, earliest year) first, so this only needs one
-                # deliberate click to resolve, not a guess made for you.
-                skipped_ties += 1
-                continue
-            exact = exact_candidates[0]
-            with transaction.atomic():
-                match.discogs_release_id = exact.discogs_release_id
-                match.discogs_master_id = exact.discogs_master_id
-                match.matched_title = exact.title
-                match.matched_artist = exact.artist
-                match.matched_label = exact.label
-                match.matched_catalog_number = exact.catalog_number
-                match.matched_year = exact.year
-                match.matched_country = exact.country
-                match.matched_format = exact.format
-                match.confidence = exact.confidence
-                match.status = DiscogsMatch.CONFIRMED
-                match.linked_at = timezone.now()
-                match.save()
-                match.candidates.all().delete()
-                confirmed += 1
-
-            # Enrich immediately, outside the transaction above -- the
-            # confirm is already durable, so a network failure here can
-            # never roll back a decision that was correctly made.
-            if detail_error is None:
-                detail_error = _try_fetch_detail(match)
-                if detail_error is None:
-                    enriched += 1
-            # Once the API has failed once, stop trying: a rate limit or
-            # a dead connection will fail identically for every
-            # remaining row, and hammering it just makes the request
-            # longer. Those rows stay confirmed, just not yet enriched.
-
+        result = discogs_workflow.confirm_exact_batch(
+            DiscogsMatch.objects.filter(id__in=ids, status=DiscogsMatch.SUGGESTED).prefetch_related("candidates")
+        )
+        confirmed, enriched = result["confirmed"], result["enriched"]
         message = f"Confirmed {confirmed} exact match{'' if confirmed == 1 else 'es'}"
         message += f", with full details fetched for {enriched}." if enriched else "."
-        if detail_error:
-            pending = confirmed - enriched
+        if result["detail_error"]:
             message += (
-                f" Detail fetch stopped after {enriched} ({detail_error}) -- "
-                f"{pending} still need it; use \"Fetch details\" to finish."
+                f" Detail fetch stopped after {enriched} ({result['detail_error']}) -- "
+                f"{confirmed - enriched} still need it; use \"Fetch details\" to finish."
             )
-        if skipped_ties:
-            message += f" Skipped {skipped_ties} with more than one exact match -- needs a manual pick."
+        if result["skipped_ties"]:
+            message += f" Skipped {result['skipped_ties']} with more than one exact match -- needs a manual pick."
         messages.append(message)
 
     elif action == "fetch_details":
-        # Fill in songwriters/producers/etc for confirmed matches that
-        # don't have them yet, a batch at a time.
-        # needs_detail_q, not a hand-written filter: the old one included
-        # master-only matches, which can never be fetched -- enough of them
-        # could fill a whole batch and make this button do nothing forever.
+        # Fill in songwriters/producers/etc for linked matches that don't
+        # have them yet, a batch at a time. needs_detail_q, not a
+        # hand-written filter: master-only matches can never be fetched.
         pending = list(
             DiscogsMatch.objects.filter(DiscogsMatch.needs_detail_q())
             .select_related("recording", "recording__song")[:DISCOGS_WEB_BATCH_SIZE]
         )
-        done = 0
-        for match in pending:
-            if not match.discogs_release_id:
-                continue
-            try:
-                detail = discogs_api.fetch_release_detail(match.discogs_release_id, match.recording)
-            except discogs_api.DiscogsError as exc:
-                messages.append(f"Stopped after {done}: {exc}")
-                break
-            for field, value in detail.items():
-                setattr(match, field, value)
-            match.save()
-            done += 1
+        done, error = discogs_workflow.enrich_batch(pending)
+        if error:
+            messages.append(f"Stopped after {done}: {error}")
         else:
             messages.append(f"Fetched details for {done} match{'' if done == 1 else 'es'}.")
 

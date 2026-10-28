@@ -249,7 +249,7 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     (settled 2026-08-21 after two revisions — worth reading, since the earlier designs
     look reasonable and were wrong). Single-row confirm (`discogs_confirm`), manual
     entry (`discogs_manual`), and the BULK "confirm exact matches"
-    (`discogs_bulk`'s `confirm_exact`) all call the shared `_try_fetch_detail()`.
+    (`discogs_bulk`'s `confirm_exact`) all call the shared `discogs_workflow.enrich()`.
     The bulk one originally skipped it to keep the click instant, which seemed like
     the right performance trade — but in practice the "catch up later" step got
     forgotten and **124 rows sat half-populated**, showing release-level stand-ins
@@ -303,17 +303,18 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     top and each fetches itself on page load via `hx-trigger="load"`; a failed fetch
     renders a retry button instead, so it can't loop. Also fixed: picking an existing
     recording off the duplicate-check list silently dropped the typed Discogs ID -- both
-    paths now go through `views._link_discogs_from_entry`. `discogs._throttle` gained a
+    paths now go through `views._link_discogs_from_entry` (→ `discogs_workflow.link_manually`). `discogs._throttle` gained a
     lock, since several rows can now fetch concurrently on the threaded dev server.
   - **Token setup:** a Discogs personal access token from
     https://www.discogs.com/settings/developers, in a git-ignored `.env` file at the
     project root as `DISCOGS_TOKEN=...` (or the same-named env var). The `/discogs/`
     page shows setup instructions when it's missing.
-  - Tests mock `charts.discogs._request` throughout — **the suite never hits the real
-    API** (it would be slow, rate-limited, non-deterministic, and would fail on a
-    machine with no token). What's tested is our logic: confidence scoring/normalization,
-    the two-tier search, per-track credit extraction, and the workflow's state
-    transitions.
+  - **The suite never hits the real API** (it would be slow, rate-limited,
+    non-deterministic, and would fail on a machine with no token). Two layers: tests of
+    `charts/discogs.py` itself (confidence scoring/normalization, the two-tier search,
+    per-track credit extraction) patch its `_request`; tests of the WORKFLOW pass
+    `discogs_workflow` a `FakeDiscogsClient` instead (see the 2026-10-27 bullet below),
+    so they don't depend on `discogs.py`'s private names at all.
 - **A latent CSRF bug was found and fixed while building the above:** HTMX `hx-post`
   from an element that isn't inside a `<form>` sends no CSRF token, so
   `CsrfViewMiddleware` 403s it. `base.html`'s `<body>` now carries
@@ -457,6 +458,19 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   artist name becomes an `Artist` the same way here and in a /credits/ split, via
   `credits.resolve_or_create_artist()`. `views._render_resolved()` is the one place a
   picked or created row gets its weeks / last-week hints.
+- **Discogs match workflow, 2026-10-27** — `charts/discogs_workflow.py`. Every step a
+  `DiscogsMatch` goes through is one function: `ensure_matches`, `search` /
+  `store_shortlist`, `sole_exact_candidate`, `confirm`, `link_manually(..., overwrite=)`,
+  `parse_reference`, `set_status`, `enrich`, the three `*_batch` actions, and `progress`.
+  The /discogs/ views, the bulk actions, the `discogs_match` command and the entry form's
+  typed link all call these. Before, confirm was copied twice, "store the shortlist" and
+  "apply fetched detail" were copied into the command, and "exactly one EXACT candidate"
+  was counted three ways. **The seam is a `client` argument** on the steps that talk to
+  Discogs (`search`, `confirm`, `enrich`, batches): the real `charts.discogs` module by
+  default, a fake in tests. `link_manually` takes no client and makes no call, which is
+  what keeps the entry form offline; `overwrite=False` is the entry form's "never
+  silently replace a link" rule. "The EXACT candidates" is defined once, as
+  `DiscogsMatch.exact_candidates()`.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

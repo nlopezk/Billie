@@ -19,11 +19,10 @@
 #   python manage.py discogs_match --requeue-failed   # retry ones previously marked no_match
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
-from django.utils import timezone
 
 from charts import discogs as discogs_api
-from charts.models import DiscogsCandidate, DiscogsMatch, Recording
+from charts import discogs_workflow
+from charts.models import DiscogsMatch
 
 
 class Command(BaseCommand):
@@ -52,12 +51,9 @@ class Command(BaseCommand):
         # Self-healing, same as the web queue: any Recording created since
         # the last run (e.g. a debut entered through the entry form) gets
         # its DiscogsMatch row here rather than needing a separate step.
-        missing = Recording.objects.filter(discogs__isnull=True)
-        created = DiscogsMatch.objects.bulk_create(
-            [DiscogsMatch(recording=recording) for recording in missing], ignore_conflicts=True
-        )
+        created = discogs_workflow.ensure_matches()
         if created:
-            self.stdout.write(f"Created {len(created)} new DiscogsMatch rows for unlinked recordings.")
+            self.stdout.write(f"Created {created} new DiscogsMatch rows for unlinked recordings.")
 
         if options["details"]:
             self._fetch_details(options)
@@ -109,13 +105,8 @@ class Command(BaseCommand):
                 self.stderr.write(self.style.WARNING(f"Stopped after {index - 1}. Re-run to continue."))
                 return
 
-            with transaction.atomic():
-                match.candidates.all().delete()
-                for rank, data in enumerate(candidates):
-                    DiscogsCandidate.objects.create(match=match, rank=rank, **data)
-                match.searched_at = timezone.now()
-                match.status = DiscogsMatch.SUGGESTED if candidates else DiscogsMatch.NO_MATCH
-                match.save()
+            # The same step the web page's search uses.
+            discogs_workflow.store_shortlist(match, candidates)
 
             if candidates:
                 counts["suggested"] += 1
@@ -145,15 +136,12 @@ class Command(BaseCommand):
         self.stdout.write(f"Fetching full release details for {len(targets)} confirmed match(es).")
         for index, match in enumerate(targets, start=1):
             label = f"[{index}/{len(targets)}] {match.recording.song}"
-            try:
-                detail = discogs_api.fetch_release_detail(match.discogs_release_id, match.recording)
-            except discogs_api.DiscogsError as exc:
-                self.stderr.write(self.style.ERROR(f"{label}: {exc}"))
+            # The same step the web page's "Fetch details" uses.
+            error = discogs_workflow.enrich(match)
+            if error:
+                self.stderr.write(self.style.ERROR(f"{label}: {error}"))
                 self.stderr.write(self.style.WARNING(f"Stopped after {index - 1}. Re-run to continue."))
                 return
-            for field, value in detail.items():
-                setattr(match, field, value)
-            match.save()
             self.stdout.write(f"{label} -> {match.songwriters or '(no songwriter credits on Discogs)'}")
 
         self.stdout.write(self.style.SUCCESS(f"\nDone -- {len(targets)} match(es) enriched."))

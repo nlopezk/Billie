@@ -22,6 +22,7 @@ from . import lastweek_audit as lastweek_audit_lib
 from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
 from . import discogs as discogs_api
+from . import discogs_workflow
 from . import views
 from . import week_submission
 from .models import (
@@ -1515,8 +1516,7 @@ class DiscogsPendingDetailTests(TestCase):
         self.assertNotIn(self.master_only.id, shown)   # can never be fetched
 
     def test_pending_rows_are_not_counted_as_settled(self):
-        from .views import _discogs_progress
-        progress = _discogs_progress()
+        progress = discogs_workflow.progress()
         self.assertEqual(progress["needs_detail"], 1)
         self.assertEqual(progress["settled"], 2)   # done + master_only, not pending
 
@@ -1527,7 +1527,7 @@ class DiscogsPendingDetailTests(TestCase):
     def test_a_failed_fetch_renders_retry_not_another_auto_trigger(self):
         # Otherwise a dead connection or missing token would re-fire the
         # load trigger on every swap, forever.
-        with mock.patch.object(discogs_api, "_request",
+        with mock.patch.object(discogs_api, "fetch_release_detail",
                                side_effect=discogs_api.DiscogsError("no internet")):
             response = self.client.post(
                 reverse("charts:discogs_fetch_detail", args=[self.pending.recording_id]))
@@ -1536,27 +1536,62 @@ class DiscogsPendingDetailTests(TestCase):
         self.assertNotContains(response, 'hx-trigger="load"')
 
     def test_bulk_fetch_skips_master_only_rows_instead_of_stalling_on_them(self):
-        release = {
-            "id": 5435918, "title": "Mother Earth", "artists": [{"name": "Memphis Slim"}],
-            "labels": [{"name": "Premium", "catno": "867"}], "formats": [], "year": 1951,
-            "tracklist": [{"position": "B", "title": "Mother Earth"}],
-        }
-        with mock.patch.object(discogs_api, "_request", return_value=release):
+        with mock.patch.object(discogs_api, "fetch_release_detail",
+                               return_value=_detail(discogs_release_id=5435918)):
             self.client.post(reverse("charts:discogs_bulk"),
                              {"action": "fetch_details", "querystring": ""})
         self.pending.refresh_from_db()
         self.assertFalse(self.pending.needs_detail)
 
 
+class FakeDiscogsClient:
+    """A stand-in for charts.discogs at discogs_workflow's seam: canned
+    answers, a record of what was asked, and no network. `error` makes every
+    call fail the way a dead connection or a rate limit does."""
+
+    def __init__(self, candidates=(), detail=None, error=None):
+        self.candidates = list(candidates)
+        self.detail = detail
+        self.error = error
+        self.calls = []
+
+    def search_candidates(self, recording):
+        self.calls.append(("search", recording.id))
+        if self.error:
+            raise discogs_api.DiscogsError(self.error)
+        return self.candidates
+
+    def fetch_release_detail(self, release_id, recording):
+        self.calls.append(("detail", release_id))
+        if self.error:
+            raise discogs_api.DiscogsError(self.error)
+        return dict(self.detail)
+
+
+def _detail(**overrides):
+    # What charts.discogs.fetch_release_detail returns, for Pink Champagne.
+    detail = {
+        "discogs_release_id": 42, "discogs_master_id": None,
+        "matched_title": "Pink Champagne", "matched_artist": "Joe Liggins",
+        "matched_track_title": "Pink Champagne", "matched_track_artist": "Joe Liggins",
+        "matched_label": "Specialty", "matched_catalog_number": "355", "matched_year": 1950,
+        "matched_country": "US", "matched_format": "Shellac", "genres": ["Blues"],
+        "styles": ["Jump Blues"], "songwriters": "Joe Liggins", "producers": "",
+        "raw_data": {"id": 42},
+    }
+    detail.update(overrides)
+    return detail
+
+
 class DiscogsWorkflowTests(TestCase):
-    """The review queue's state transitions."""
+    """Every DiscogsMatch step (charts/discogs_workflow.py), through a fake
+    client -- no request, no network, no patching of discogs.py's internals."""
 
     def setUp(self):
         self.label = Label.objects.create(name="Specialty")
-        self.song = Song.objects.create(title="Pink Champagne")
         self.recording = Recording.objects.create(
             label=self.label, catalog_number="355", side="A",
-            song=self.song, credit_text="Joe Liggins",
+            song=Song.objects.create(title="Pink Champagne"), credit_text="Joe Liggins",
         )
         self.match = DiscogsMatch.objects.create(recording=self.recording)
 
@@ -1569,80 +1604,63 @@ class DiscogsWorkflowTests(TestCase):
         data.update(overrides)
         return DiscogsCandidate.objects.create(**data)
 
-    def _release_payload(self):
-        # What /releases/{id} returns for this recording, for the detail
-        # fetch that confirming now triggers.
-        return {
-            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
-            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
-            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
-            "tracklist": [{"position": "A", "title": "Pink Champagne",
-                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
-        }
+    def _suggested(self):
+        self.match.status = DiscogsMatch.SUGGESTED
+        self.match.save()
 
-    def test_queue_creates_a_match_row_for_every_recording(self):
+    # ---- setup
+
+    def test_every_recording_gets_a_match_row(self):
         # A recording created later (e.g. a debut typed into the entry
         # form) gets picked up automatically -- no signal, no extra step.
         new = Recording.objects.create(
             label=self.label, catalog_number="999", side="A",
             song=Song.objects.create(title="Later Addition"), credit_text="Someone",
         )
-        self.assertFalse(DiscogsMatch.objects.filter(recording=new).exists())
-        self.client.get(reverse("charts:discogs_queue"))
+        self.assertEqual(discogs_workflow.ensure_matches(), 1)
         self.assertTrue(DiscogsMatch.objects.filter(recording=new).exists())
+        self.assertEqual(discogs_workflow.ensure_matches(), 0)
 
-    def test_search_stores_candidates_without_confirming_anything(self):
-        payload = {"results": [{"id": 42, "title": "Joe Liggins - Pink Champagne",
-                                "catno": "355", "label": ["Specialty"]}]}
-        with mock.patch.object(discogs_api, "_request", return_value=payload):
-            self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+    # ---- searching
 
+    def test_search_stores_a_shortlist_without_confirming_anything(self):
+        client = FakeDiscogsClient(candidates=[{"discogs_release_id": 42, "title": "Pink Champagne",
+                                                "confidence": DiscogsMatch.EXACT}])
+        discogs_workflow.search(self.match, client)
         self.match.refresh_from_db()
         # SUGGESTED, never CONFIRMED -- picking is always a human action.
         self.assertEqual(self.match.status, DiscogsMatch.SUGGESTED)
         self.assertEqual(self.match.candidates.count(), 1)
         self.assertIsNone(self.match.discogs_release_id)
 
-    def test_empty_search_marks_no_match_rather_than_leaving_it_pending(self):
-        with mock.patch.object(discogs_api, "_request", return_value={"results": []}):
-            self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+    def test_an_empty_search_marks_no_match_rather_than_leaving_it_pending(self):
+        discogs_workflow.search(self.match, FakeDiscogsClient(candidates=[]))
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.NO_MATCH)
 
-    def test_api_failure_is_shown_not_raised(self):
-        # A dead connection must not 500 the page or change any state.
-        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("no internet")):
-            response = self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "no internet")
+    def test_a_failed_search_raises_and_changes_nothing(self):
+        with self.assertRaises(discogs_api.DiscogsError):
+            discogs_workflow.search(self.match, FakeDiscogsClient(error="no internet"))
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
 
-    def test_confirming_copies_the_candidate_and_also_fetches_full_details(self):
-        # A single-row confirm finishes the job in one click -- unlike
-        # the BULK "confirm exact matches" action (see
-        # test_bulk_confirm_only_touches_exact_matches... and
-        # discogs_bulk's confirm_exact, which stays detail-free on
-        # purpose), a single confirm is exactly one more API call, same
-        # cost as the "Search Discogs" click that got it here.
-        candidate = self._candidate()
-        self.match.status = DiscogsMatch.SUGGESTED
-        self.match.save()
+    def test_search_batch_stops_at_the_first_failure(self):
+        other = DiscogsMatch.objects.create(recording=Recording.objects.create(
+            label=self.label, catalog_number="356", side="A",
+            song=Song.objects.create(title="Other"), credit_text="Someone"))
+        client = FakeDiscogsClient(error="rate limited")
+        self.assertEqual(discogs_workflow.search_batch([self.match, other], client), (0, "rate limited"))
+        self.assertEqual(len(client.calls), 1)   # didn't hammer the API for the second one
 
-        release = {
-            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
-            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
-            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
-            "tracklist": [{"position": "A", "title": "Pink Champagne",
-                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
-        }
-        with mock.patch.object(discogs_api, "_request", return_value=release) as request:
-            self.client.post(
-                reverse("charts:discogs_confirm", args=[self.recording.id]),
-                {"candidate_id": candidate.id},
-            )
-        request.assert_called_once()  # confirm + detail = exactly one API call, not zero and not two
+    # ---- confirming
+
+    def test_confirm_copies_the_candidate_and_fetches_full_details(self):
+        # One click finishes the job: confirm, then exactly one detail call.
+        self._suggested()
+        candidate = self._candidate()
+        client = FakeDiscogsClient(detail=_detail())
+        self.assertIsNone(discogs_workflow.confirm(self.match, candidate, client))
+        self.assertEqual(client.calls, [("detail", 42)])
 
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
@@ -1650,120 +1668,123 @@ class DiscogsWorkflowTests(TestCase):
         self.assertEqual(self.match.matched_catalog_number, "355")
         self.assertEqual(self.match.candidates.count(), 0)  # shortlist cleared
         self.assertEqual(self.match.songwriters, "Joe Liggins")
-        self.assertFalse(self.match.needs_detail)  # fetched already, not pending
+        self.assertFalse(self.match.needs_detail)
 
-    def test_confirming_still_stands_even_if_the_detail_fetch_fails(self):
-        # The confirm itself (candidate -> match) must not be undone by a
-        # rate limit or a dropped connection on the SECOND call -- only
-        # the detail fetch is left pending, retryable via the same
-        # per-row button as always.
-        candidate = self._candidate()
-        self.match.status = DiscogsMatch.SUGGESTED
-        self.match.save()
-
-        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("rate limited")):
-            response = self.client.post(
-                reverse("charts:discogs_confirm", args=[self.recording.id]),
-                {"candidate_id": candidate.id},
-            )
-
-        self.assertContains(response, "rate limited")
+    def test_a_confirm_stands_even_if_the_detail_fetch_fails(self):
+        # A rate limit on the SECOND call must not undo the decision --
+        # only the detail fetch is left pending, retryable.
+        self._suggested()
+        error = discogs_workflow.confirm(self.match, self._candidate(), FakeDiscogsClient(error="rate limited"))
+        self.assertEqual(error, "rate limited")
         self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)  # confirm stands
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
         self.assertEqual(self.match.discogs_release_id, 42)
-        self.assertTrue(self.match.needs_detail)  # detail fetch still pending, can retry
+        self.assertTrue(self.match.needs_detail)
 
-    def test_manual_release_entry_also_fetches_full_details(self):
-        release = {
-            "id": 12345, "title": "x", "artists": [], "labels": [{"name": "L", "catno": "C"}],
-            "formats": [], "year": 1950, "country": "US", "genres": [], "styles": [],
-            "tracklist": [], "extraartists": [{"name": "A Writer", "role": "Written-By"}],
-        }
-        with mock.patch.object(discogs_api, "_request", return_value=release):
-            self.client.post(
-                reverse("charts:discogs_manual", args=[self.recording.id]),
-                {"discogs_ref": "https://www.discogs.com/release/12345"},
-            )
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.songwriters, "A Writer")
-        self.assertFalse(self.match.needs_detail)
+    def test_sole_exact_candidate_refuses_a_tie(self):
+        self.assertIsNone(discogs_workflow.sole_exact_candidate(self.match))
+        first = self._candidate(discogs_release_id=1, rank=0)
+        self._candidate(discogs_release_id=3, confidence=DiscogsMatch.STRONG, rank=1)
+        self.assertEqual(discogs_workflow.sole_exact_candidate(self.match), first)
+        self._candidate(discogs_release_id=2, rank=2)
+        self.assertIsNone(discogs_workflow.sole_exact_candidate(self.match))
+        self.assertTrue(self.match.has_ambiguous_exact_tie)
 
-    def test_manual_master_entry_does_not_attempt_a_detail_fetch(self):
-        # No release id -- nothing for /releases/{id} to fetch, so this
-        # must not even try (a doomed API call would just show an error
-        # for something that was never going to work).
-        with mock.patch.object(discogs_api, "_request", side_effect=AssertionError("must not call the API")):
-            self.client.post(
-                reverse("charts:discogs_manual", args=[self.recording.id]),
-                {"discogs_ref": "https://www.discogs.com/master/999"},
-            )
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
-        self.assertEqual(self.match.discogs_master_id, 999)
+    def test_bulk_confirm_only_takes_a_single_exact_candidate(self):
+        self._suggested()
+        self._candidate(confidence=DiscogsMatch.EXACT)
+        # A second recording whose only candidate is a WEAK guess, and a
+        # third with a genuine tie between two EXACT ones: both left alone.
+        def suggested_match(cat):
+            return DiscogsMatch.objects.create(status=DiscogsMatch.SUGGESTED, recording=Recording.objects.create(
+                label=self.label, catalog_number=cat, side="A",
+                song=Song.objects.create(title=f"Song {cat}"), credit_text="Someone"))
+        weak, tied = suggested_match("777"), suggested_match("778")
+        DiscogsCandidate.objects.create(match=weak, discogs_release_id=99, title="A guess",
+                                        confidence=DiscogsMatch.WEAK, rank=0)
+        for rank, rid in enumerate((1, 2)):
+            DiscogsCandidate.objects.create(match=tied, discogs_release_id=rid, title="Tie",
+                                            confidence=DiscogsMatch.EXACT, rank=rank)
 
-    def test_fetch_detail_fills_in_credits(self):
-        self.match.status = DiscogsMatch.CONFIRMED
-        self.match.discogs_release_id = 42
-        self.match.save()
-        release = {
-            "id": 42, "title": "Pink Champagne", "artists": [{"name": "Joe Liggins"}],
-            "labels": [{"name": "Specialty", "catno": "355"}], "formats": [{"name": "Shellac"}],
-            "year": 1950, "country": "US", "genres": ["Blues"], "styles": ["Jump Blues"],
-            "tracklist": [{"position": "A", "title": "Pink Champagne",
-                           "extraartists": [{"name": "Joe Liggins", "role": "Written-By"}]}],
-        }
-        with mock.patch.object(discogs_api, "_request", return_value=release):
-            self.client.post(reverse("charts:discogs_fetch_detail", args=[self.recording.id]))
-
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.songwriters, "Joe Liggins")
-        self.assertEqual(self.match.genres, ["Blues"])
-        self.assertFalse(self.match.needs_detail)
-
-    def test_manual_entry_accepts_a_url_or_a_bare_id(self):
-        # A release reference triggers the same auto-detail-fetch as
-        # discogs_confirm (see test_manual_release_entry_also_fetches_
-        # full_details for that behavior specifically) -- mocked here
-        # since it's incidental to what THIS test is actually checking
-        # (parsing), and must never hit the real network either way.
-        release = {"id": 12345, "title": "x", "labels": [{"name": "L", "catno": "C"}], "formats": []}
-        for reference in ["12345", "https://www.discogs.com/release/12345", "release/12345-Some-Slug"]:
-            with mock.patch.object(discogs_api, "_request", return_value=release):
-                self.client.post(
-                    reverse("charts:discogs_manual", args=[self.recording.id]),
-                    {"discogs_ref": reference},
-                )
-            self.match.refresh_from_db()
-            self.assertEqual(self.match.discogs_release_id, 12345, msg=f"failed for {reference!r}")
-            self.assertIsNone(self.match.discogs_master_id, msg=f"failed for {reference!r}")
-            self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
-
-    def test_manual_entry_recognizes_a_master_url_and_does_not_store_it_as_a_release(self):
-        # The bug this guards against: a naive "just grab the first
-        # number" parser would treat .../master/12345 as release id
-        # 12345, which is wrong -- a Master isn't a Release, and would
-        # later break the "fetch full details" call (that endpoint needs
-        # an actual release id).
-        for reference in ["https://www.discogs.com/master/12345", "master/12345-Some-Slug"]:
-            self.client.post(
-                reverse("charts:discogs_manual", args=[self.recording.id]),
-                {"discogs_ref": reference},
-            )
-            self.match.refresh_from_db()
-            self.assertIsNone(self.match.discogs_release_id, msg=f"failed for {reference!r}")
-            self.assertEqual(self.match.discogs_master_id, 12345, msg=f"failed for {reference!r}")
-            self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
-            self.assertEqual(self.match.reference_type, "Master")
-            self.assertFalse(self.match.needs_detail)  # can't fetch release detail for a master-only match
-
-    def test_manual_entry_rejects_garbage(self):
-        response = self.client.post(
-            reverse("charts:discogs_manual", args=[self.recording.id]),
-            {"discogs_ref": "not a url or id"},
+        result = discogs_workflow.confirm_exact_batch(
+            DiscogsMatch.objects.filter(status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"),
+            FakeDiscogsClient(detail=_detail()),
         )
-        self.assertContains(response, "Couldn&#x27;t read a release or master ID")
+        self.assertEqual(result, {"confirmed": 1, "enriched": 1, "skipped_ties": 1, "detail_error": None})
+        for m in (self.match, weak, tied):
+            m.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
+        self.assertFalse(self.match.needs_detail)   # enriched in the same pass
+        self.assertEqual(weak.status, DiscogsMatch.SUGGESTED)
+        self.assertEqual(tied.status, DiscogsMatch.SUGGESTED)
+        self.assertEqual(tied.candidates.count(), 2)   # shortlist NOT cleared
+
+    def test_bulk_confirm_keeps_confirming_but_stops_fetching_after_a_failure(self):
+        self._suggested()
+        self._candidate()
+        second = DiscogsMatch.objects.create(status=DiscogsMatch.SUGGESTED, recording=Recording.objects.create(
+            label=self.label, catalog_number="356", side="A",
+            song=Song.objects.create(title="Second"), credit_text="Someone"))
+        DiscogsCandidate.objects.create(match=second, discogs_release_id=43, title="Second",
+                                        confidence=DiscogsMatch.EXACT, rank=0)
+        client = FakeDiscogsClient(error="rate limited")
+        result = discogs_workflow.confirm_exact_batch(
+            DiscogsMatch.objects.filter(status=DiscogsMatch.SUGGESTED).prefetch_related("candidates"), client)
+        self.assertEqual((result["confirmed"], result["enriched"]), (2, 0))
+        self.assertEqual(result["detail_error"], "rate limited")
+        self.assertEqual(len(client.calls), 1)   # one failed fetch, then no more attempts
+        second.refresh_from_db()
+        self.assertEqual(second.status, DiscogsMatch.CONFIRMED)   # decisions stand
+        self.assertTrue(second.needs_detail)                      # recoverable
+
+    # ---- manual links
+
+    def test_parse_reference_reads_urls_paths_and_bare_ids(self):
+        for reference in ["12345", "https://www.discogs.com/release/12345", "release/12345-Some-Slug"]:
+            self.assertEqual(discogs_workflow.parse_reference(reference), (12345, None, None), reference)
+        # A master URL must not be stored as a release with the same number.
+        for reference in ["https://www.discogs.com/master/12345", "master/12345-Some-Slug"]:
+            self.assertEqual(discogs_workflow.parse_reference(reference), (None, 12345, None), reference)
+        release_id, master_id, error = discogs_workflow.parse_reference("not a url or id")
+        self.assertEqual((release_id, master_id), (None, None))
+        self.assertIn("Couldn't read", error)
+
+    def test_link_manually_then_enrich_a_release(self):
+        self.assertIsNone(discogs_workflow.link_manually(self.match, 42, None, overwrite=True))
+        self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+        self.assertTrue(self.match.needs_detail)
+        self.assertIsNone(discogs_workflow.enrich(self.match, FakeDiscogsClient(detail=_detail())))
+        self.assertEqual(self.match.songwriters, "Joe Liggins")
+
+    def test_a_master_only_link_never_attempts_a_detail_fetch(self):
+        # No release id -- nothing for /releases/{id} to fetch, so enrich
+        # must not even try (a doomed call would only show an error).
+        discogs_workflow.link_manually(self.match, None, 999, overwrite=True)
+        client = FakeDiscogsClient(error="must not be called")
+        self.assertIsNone(discogs_workflow.enrich(self.match, client))
+        self.assertEqual(client.calls, [])
+        self.assertEqual(self.match.reference_type, "Master")
+
+    def test_without_overwrite_an_existing_link_is_left_alone(self):
+        # The entry form's path: a link someone decided on is never
+        # silently replaced, and the note says so.
+        discogs_workflow.link_manually(self.match, 42, None, overwrite=True)
+        note = discogs_workflow.link_manually(self.match, 77, None, overwrite=False)
+        self.assertIn("Already linked to Discogs Release 42", note)
         self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
+        self.assertEqual(self.match.discogs_release_id, 42)
+
+    def test_with_overwrite_the_old_releases_summary_is_cleared(self):
+        self._candidate()
+        discogs_workflow.confirm(self.match, self.match.candidates.get(), FakeDiscogsClient(detail=_detail()))
+        discogs_workflow.link_manually(self.match, 77, None, overwrite=True)
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.discogs_release_id, 77)
+        self.assertEqual(self.match.matched_title, "")
+        self.assertIsNone(self.match.raw_data)
+        self.assertTrue(self.match.needs_detail)
+
+    # ---- status changes
 
     def test_reset_clears_the_link_and_everything_cached(self):
         self.match.status = DiscogsMatch.CONFIRMED
@@ -1774,11 +1795,7 @@ class DiscogsWorkflowTests(TestCase):
         self.match.save()
         self._candidate()
 
-        self.client.post(
-            reverse("charts:discogs_set_status", args=[self.recording.id]),
-            {"status": "unmatched"},
-        )
-
+        self.assertTrue(discogs_workflow.set_status(self.match, DiscogsMatch.UNMATCHED))
         self.match.refresh_from_db()
         self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
         self.assertIsNone(self.match.discogs_release_id)
@@ -1787,115 +1804,81 @@ class DiscogsWorkflowTests(TestCase):
         self.assertIsNone(self.match.raw_data)
         self.assertEqual(self.match.candidates.count(), 0)
 
-    def test_bulk_confirm_only_touches_exact_matches(self):
-        exact_match = self.match
-        exact_match.status = DiscogsMatch.SUGGESTED
-        exact_match.save()
-        self._candidate(confidence=DiscogsMatch.EXACT)
+    def test_an_unknown_status_changes_nothing(self):
+        self.assertFalse(discogs_workflow.set_status(self.match, "made-up"))
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.UNMATCHED)
 
-        # A second recording whose only candidate is a WEAK guess -- it
-        # must be left alone even though its id is submitted too.
-        weak_recording = Recording.objects.create(
-            label=self.label, catalog_number="777", side="A",
-            song=Song.objects.create(title="Something Else"), credit_text="Someone",
+    # ---- enriching
+
+    def test_enrich_batch_skips_rows_with_nothing_to_fetch(self):
+        discogs_workflow.link_manually(self.match, 42, None, overwrite=True)
+        master_only = DiscogsMatch.objects.create(
+            status=DiscogsMatch.MANUAL, discogs_master_id=2, recording=Recording.objects.create(
+                label=self.label, catalog_number="357", side="A",
+                song=Song.objects.create(title="Master Only"), credit_text="Someone"))
+        client = FakeDiscogsClient(detail=_detail())
+        self.assertEqual(discogs_workflow.enrich_batch([master_only, self.match], client), (1, None))
+        self.assertEqual(client.calls, [("detail", 42)])
+
+
+class DiscogsWorkflowPageSmokeTests(TestCase):
+    # The /discogs/ buttons are wired to discogs_workflow. The real client
+    # is the charts.discogs module, so its PUBLIC functions are patched
+    # here -- never the network, never its private helpers.
+
+    def setUp(self):
+        self.recording = Recording.objects.create(
+            label=Label.objects.create(name="Specialty"), catalog_number="355", side="A",
+            song=Song.objects.create(title="Pink Champagne"), credit_text="Joe Liggins",
         )
-        weak_match = DiscogsMatch.objects.create(recording=weak_recording, status=DiscogsMatch.SUGGESTED)
-        DiscogsCandidate.objects.create(
-            match=weak_match, discogs_release_id=99, title="A guess",
-            confidence=DiscogsMatch.WEAK, rank=0,
-        )
+        self.match = DiscogsMatch.objects.create(recording=self.recording)
 
-        with mock.patch.object(discogs_api, "_request", return_value=self._release_payload()):
-            self.client.post(reverse("charts:discogs_bulk"), {
-                "action": "confirm_exact",
-                "match_id": [exact_match.id, weak_match.id],
-                "querystring": "",
-            })
+    def test_a_failed_search_is_shown_on_the_row_not_raised(self):
+        with mock.patch.object(discogs_api, "search_candidates",
+                               side_effect=discogs_api.DiscogsError("no internet")):
+            response = self.client.post(reverse("charts:discogs_search", args=[self.recording.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "no internet")
 
-        exact_match.refresh_from_db()
-        weak_match.refresh_from_db()
-        self.assertEqual(exact_match.status, DiscogsMatch.CONFIRMED)
-        self.assertEqual(weak_match.status, DiscogsMatch.SUGGESTED)  # untouched
-        self.assertIsNone(weak_match.discogs_release_id)
+    def test_manual_entry_rejects_garbage_with_a_message(self):
+        response = self.client.post(reverse("charts:discogs_manual", args=[self.recording.id]),
+                                    {"discogs_ref": "not a url or id"})
+        self.assertContains(response, "Couldn&#x27;t read a release or master ID")
 
-    def test_bulk_confirm_also_fetches_details_so_no_row_is_left_incomplete(self):
-        # Bulk-confirm used to skip the detail fetch to stay instant,
-        # which left rows showing release-level stand-ins with no
-        # songwriters until someone remembered a follow-up step. It
-        # doesn't any more -- confirming and enriching are one operation.
+    def test_manual_entry_links_and_enriches(self):
+        with mock.patch.object(discogs_api, "fetch_release_detail", return_value=_detail(discogs_release_id=12345)):
+            self.client.post(reverse("charts:discogs_manual", args=[self.recording.id]),
+                             {"discogs_ref": "https://www.discogs.com/release/12345"})
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.MANUAL)
+        self.assertFalse(self.match.needs_detail)
+
+    def test_bulk_confirm_reports_what_it_did(self):
         self.match.status = DiscogsMatch.SUGGESTED
         self.match.save()
-        self._candidate(confidence=DiscogsMatch.EXACT)
-
-        with mock.patch.object(discogs_api, "_request", return_value=self._release_payload()):
+        DiscogsCandidate.objects.create(match=self.match, discogs_release_id=42, title="Pink Champagne",
+                                        confidence=DiscogsMatch.EXACT, rank=0)
+        with mock.patch.object(discogs_api, "fetch_release_detail", return_value=_detail()):
             response = self.client.post(reverse("charts:discogs_bulk"), {
                 "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
             }, follow=True)
-
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)
-        self.assertFalse(self.match.needs_detail)
-        self.assertTrue(self.match.has_track_detail)
-        self.assertEqual(self.match.songwriters, "Joe Liggins")
         self.assertContains(response, "full details fetched for 1")
 
-    def test_bulk_confirm_keeps_the_confirm_when_the_detail_fetch_fails(self):
-        # A network failure must not roll back a decision that was
-        # correctly made -- the row stays confirmed, just not yet
-        # enriched, and the message says so.
+    def test_the_confirm_exact_count_excludes_ties(self):
+        # The button's own number must agree with what the action does.
         self.match.status = DiscogsMatch.SUGGESTED
         self.match.save()
-        self._candidate(confidence=DiscogsMatch.EXACT)
-
-        with mock.patch.object(discogs_api, "_request", side_effect=discogs_api.DiscogsError("rate limited")):
-            response = self.client.post(reverse("charts:discogs_bulk"), {
-                "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
-            }, follow=True)
-
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.CONFIRMED)  # decision stands
-        self.assertTrue(self.match.needs_detail)                     # recoverable
-        self.assertContains(response, "still need it")
-
-    def test_bulk_confirm_skips_a_genuine_tie_between_two_exact_candidates(self):
-        # Two DIFFERENT Discogs releases (different ids -- e.g. a US and
-        # a Canadian pressing) both score EXACT for the same recording.
-        # Bulk-confirm must refuse to guess between them rather than
-        # picking whichever happened to come first.
-        self.match.status = DiscogsMatch.SUGGESTED
-        self.match.save()
-        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
-        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
-
-        response = self.client.post(reverse("charts:discogs_bulk"), {
-            "action": "confirm_exact", "match_id": [self.match.id], "querystring": "",
-        }, follow=True)
-
-        self.match.refresh_from_db()
-        self.assertEqual(self.match.status, DiscogsMatch.SUGGESTED)  # untouched, still needs a human
-        self.assertIsNone(self.match.discogs_release_id)
-        self.assertEqual(self.match.candidates.count(), 2)  # shortlist NOT cleared
-        self.assertContains(response, "Skipped 1 with more than one exact match")
-
-    def test_has_ambiguous_exact_tie(self):
-        self.assertFalse(self.match.has_ambiguous_exact_tie)
-        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
-        self.assertFalse(self.match.has_ambiguous_exact_tie)
-        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
-        self.assertTrue(self.match.has_ambiguous_exact_tie)
-
-    def test_page_exact_count_excludes_ambiguous_ties(self):
-        # The "confirm N exact matches" button's own count must agree
-        # with what the action will actually do -- a match with two
-        # EXACT candidates doesn't count towards N, since confirm_exact
-        # will skip it.
-        self.match.status = DiscogsMatch.SUGGESTED
-        self.match.save()
-        self._candidate(discogs_release_id=1, confidence=DiscogsMatch.EXACT, rank=0)
-        self._candidate(discogs_release_id=2, confidence=DiscogsMatch.EXACT, rank=1)
-
+        for rank, rid in enumerate((1, 2)):
+            DiscogsCandidate.objects.create(match=self.match, discogs_release_id=rid, title="Tie",
+                                            confidence=DiscogsMatch.EXACT, rank=rank)
         response = self.client.get(reverse("charts:discogs_queue"), {"status": "suggested"})
         self.assertEqual(response.context["page_exact_ids"], [])
+
+    def test_reset_button(self):
+        self.client.post(reverse("charts:discogs_set_status", args=[self.recording.id]), {"status": "no_match"})
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, DiscogsMatch.NO_MATCH)
 
 
 class DiscogsTokenTests(TestCase):
