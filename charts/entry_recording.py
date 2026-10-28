@@ -116,6 +116,12 @@ def possible_duplicates(new):
     A single AND-across-every-word search would miss signal 2 whenever the
     artist typed doesn't match what's on file -- exactly the case worth
     flagging.
+
+    NOT a duplicate: the FLIP-SIDE of the release being entered -- same
+    label and catalog #, another side, another song. Signal 2 used to flag
+    it every time, so entering any B-side meant clicking past a warning
+    that was never right; a check that always fires stops being read.
+    create_recording mentions the flip-side in a quiet note instead.
     """
     candidates = {}
     for r in search_lib.search_recordings(f"{new.song_title} {new.credit_text}"):
@@ -124,7 +130,24 @@ def possible_duplicates(new):
         label__name__icontains=new.label_name, catalog_number__icontains=new.catalog_number
     ).select_related("song", "label"):
         candidates[r.id] = r
-    return list(candidates.values())[:DUPLICATE_LIMIT]
+    return [r for r in candidates.values() if not _is_flip_side_of(new, r)][:DUPLICATE_LIMIT]
+
+
+def _is_flip_side_of(new, recording):
+    # The other side of the very release `new` is on: the same label and
+    # catalog # exactly, a different side, and a different song. Same side
+    # or same song is NOT a flip-side -- that's what the check is for.
+    return (
+        recording.label.name.casefold() == new.label_name.casefold()
+        and recording.catalog_number == new.catalog_number
+        and recording.side != new.side
+        and _norm_title(recording.song.title) != _norm_title(new.song_title)
+    )
+
+
+def _norm_title(title):
+    # Case- and spacing-blind, so "Slipping around" is the same song.
+    return " ".join(title.casefold().split())
 
 
 def create_recording(new):
@@ -178,6 +201,10 @@ def create_recording(new):
                     f"“{flip.credit_text}”; this side is billed “{recording.credit_text}”. "
                     f"Kept as typed — check the page if that's not how it's printed."
                 )
+            else:
+                # The quiet note that replaced the duplicate check's false
+                # alarm: worth seeing, nothing to decide.
+                notes.append(f"Flip-side of “{flip.song.title}” ({flip.catalog_display}), already on file.")
     # The exact mistake that produced 43 combined-credit rows needing
     # cleanup: typing "Ernest Tubb - Red Foley" into ONE artist box. Not
     # blocking -- credit_text still records the billing correctly and

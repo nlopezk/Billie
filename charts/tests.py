@@ -410,6 +410,23 @@ class EntryRecordingDuplicateCheckTests(TestCase):
                         label_name="Capitol", catalog_number="40065", side="A")
         self.assertEqual(entry_recording_lib.possible_duplicates(new), [self.existing])
 
+    def test_the_flip_side_of_the_release_is_not_a_duplicate(self):
+        # Entering the B-side of Capitol 40065 used to trip signal 2 every time.
+        new = self._new(song_title="A Heart Full of Love", credit_text="Eddy Arnold",
+                        label_name="Capitol", catalog_number="40065", side="B")
+        self.assertEqual(entry_recording_lib.possible_duplicates(new), [])
+
+    def test_same_release_same_side_is_still_a_duplicate(self):
+        new = self._new(song_title="A Heart Full of Love", credit_text="Eddy Arnold",
+                        label_name="Capitol", catalog_number="40065", side="A")
+        self.assertEqual(entry_recording_lib.possible_duplicates(new), [self.existing])
+
+    def test_same_release_same_song_other_side_is_still_a_duplicate(self):
+        # Same song on "the other side" is a mistyped side, not a flip-side.
+        new = self._new(song_title="bouquet of  roses", credit_text="Eddy Arnold",
+                        label_name="Capitol", catalog_number="40065", side="B")
+        self.assertEqual(entry_recording_lib.possible_duplicates(new), [self.existing])
+
     def test_missing_fields_are_named(self):
         new = self._new(song_title="", artist_names=[], label_name="")
         self.assertEqual(new.missing(), ["song title", "artist", "label"])
@@ -433,6 +450,12 @@ class EntryRecordingPageSmokeTests(TestCase):
             "new_artist_0": "Eddy Arnold", "new_label_0": "Capitol",
             "new_catalog_0": "40065-X", "new_side_0": "A", **extra,
         })
+
+    def test_a_flip_side_goes_straight_through(self):
+        response = self._post(new_song_0="A Heart Full of Love", new_catalog_0="40065", new_side_0="B")
+        self.assertTemplateUsed(response, "charts/_entry_resolved.html")
+        self.assertContains(response, "Bouquet of Roses")   # its flip-side, named in a note
+        self.assertEqual(Recording.objects.count(), 2)
 
     def test_a_possible_duplicate_stops_creation(self):
         response = self._post()
@@ -791,10 +814,10 @@ class EntryFormCollaborationTests(TestCase):
         self.assertIn("“Red Foley”", notes[0])
         self.assertIn("“Red Foley With Jordanaires”", notes[0])
 
-    def test_a_flip_side_billed_the_same_says_nothing(self):
+    def test_a_flip_side_billed_the_same_gets_only_a_quiet_note(self):
         self._create(["Ernest Tubb", "Red Foley"])
         _, notes = self._flip(["Ernest Tubb", "Red Foley"])
-        self.assertEqual(notes, [])
+        self.assertEqual(notes, ["Flip-side of “Tennessee Border No. 2” (Decca 46200 A), already on file."])
 
     def test_flip_sides_lists_the_other_sides_of_the_release(self):
         a, _ = self._create(["Ernest Tubb"])

@@ -484,6 +484,12 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   189 releases with both sides enriched, reading one side from the other's cached JSON
   gives exactly what the real fetch stored. No cached copy → the link just still needs
   details, as before. The entry form still makes zero network calls.
+  **The duplicate check no longer flags a release's own flip-side** (same label + catalog
+  # exactly, another side, another song): its label + catalog signal used to fire on
+  EVERY B-side, and a check that always fires stops being read. The new side is created
+  directly with a quiet "Flip-side of … already on file" note (or the billing-conflict
+  note, if billed differently). Same release + same side, or same song on the "other"
+  side, still stops you.
 - **Discogs match workflow, 2026-10-27** — `charts/discogs_workflow.py`. Every step a
   `DiscogsMatch` goes through is one function: `ensure_matches`, `search` /
   `store_shortlist`, `sole_exact_candidate`, `confirm`, `link_manually(..., overwrite=)`,
