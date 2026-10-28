@@ -11,7 +11,7 @@ Two shapes, chosen with the "One row per" dropdown (?group=):
 one row per CHART a recording made (the default -- every number is then
 scoped to a single chart, which is the only scope the magazine actually
 printed), or one row per RECORDING with its charts merged. See the big
-docstring on views._recordings_matrix_query for what merging does to each
+docstring on recordings_matrix._query for what merging does to each
 column and why both modes exist rather than one.
 
 The <form> below drives BOTH the initial page load's filter values (its
@@ -81,7 +81,7 @@ normal, reloadable, bookmarkable/shareable filtered URL).
         hx-push-url puts ?group= in the address bar, which makes a
         collapsed view bookmarkable and shareable like any other. The
         column-header sort links carry it too (see
-        views._recordings_matrix_columns), so sorting cannot bounce you
+        recordings_matrix._columns), so sorting cannot bounce you
         back to the other mode.
         {% endcomment %}
         <label>

@@ -9,14 +9,14 @@ drift out of sync with each other.
 The <thead> lives IN here, not in the parent page, even though its
 column headers don't change per se: each header's sort link is built
 with the CURRENT genre/chart/q/group baked into its querystring (see
-views._recordings_matrix_columns), so it has to re-render on every live
+recordings_matrix._columns), so it has to re-render on every live
 filter update too -- otherwise clicking "sort by Peak" after typing a
 search would silently drop whatever you'd just typed.
 
 Two column labels come from `columns` rather than being written here,
 because they change with the grouping mode: collapsed to one row per
 recording, "Peak" is really "Best peak" (across charts) and "Chart"
-becomes "Charts" (how many). See views._recordings_matrix_query.
+becomes "Charts" (how many). See recordings_matrix._query.
 {% endcomment %}
 {% if group == "recording" %}
 <p class="summary" id="matrix-count">
@@ -65,7 +65,7 @@ becomes "Charts" (how many). See views._recordings_matrix_query.
             <th><a class="sort-link" href="{{ columns.last.href }}">Last entry<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
             {% comment %}
             Discogs link state. Everything shown here is CACHED in our own
-            database (see views._recordings_matrix_query's .values()) --
+            database (see recordings_matrix._query's .values()) --
             rendering this column makes no API call, so the matrix still
             works fine with no internet.
             {% endcomment %}

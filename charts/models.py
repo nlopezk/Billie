@@ -67,6 +67,22 @@ class Song(models.Model):
         return self.title
 
 
+def format_catalog(label_name, catalog_number, side):
+    """"Label CatalogNumber Side", e.g. "MGM 10645 A".
+
+    Formatting only, computed on read: label/catalog_number/side stay
+    separate, unformatted fields in the database (that's what
+    unique_label_catalog_side is built on) -- never bake display
+    formatting into stored data. A function rather than only
+    Recording.catalog_display so pages built from .values() dicts (the
+    recordings matrix, the dashboard) format it the same way.
+    """
+    parts = [label_name, catalog_number]
+    if side:
+        parts.append(side)
+    return " ".join(parts)
+
+
 class Recording(models.Model):
     # One row per physical release: a specific label + catalog number +
     # side. This is the thing a chart position actually points at.
@@ -109,15 +125,7 @@ class Recording(models.Model):
 
     @property
     def catalog_display(self):
-        # "Label CatalogNumber Side", e.g. "MGM 10645 A" -- formatting
-        # only, computed on read. label/catalog_number/side stay separate,
-        # unformatted fields in the database (that's what
-        # unique_label_catalog_side is built on) -- never bake display
-        # formatting into stored data.
-        parts = [self.label.name, self.catalog_number]
-        if self.side:
-            parts.append(self.side)
-        return " ".join(parts)
+        return format_catalog(self.label.name, self.catalog_number, self.side)
 
     def __str__(self):
         return f"{self.credit_text} — {self.song} ({self.catalog_display})"
@@ -162,6 +170,22 @@ class RecordingCredit(models.Model):
 # release-level credits when the track can't be identified.
 
 
+def discogs_url_for(release_id, master_id):
+    """Plain outbound discogs.com link for a release or master id, or "".
+
+    Release preferred (the precise, common case); master is the fallback
+    for a reference that could only be pinned down to the work, not the
+    pressing. Just a URL string -- building it makes no API call. A
+    function rather than only a property so pages built from .values()
+    dicts (the recordings matrix) use the same rule.
+    """
+    if release_id:
+        return f"https://www.discogs.com/release/{release_id}"
+    if master_id:
+        return f"https://www.discogs.com/master/{master_id}"
+    return ""
+
+
 class DiscogsReferenceMixin:
     """
     Shared by DiscogsMatch and DiscogsCandidate: both carry the same pair
@@ -188,13 +212,8 @@ class DiscogsReferenceMixin:
 
     @property
     def discogs_url(self):
-        # Plain outbound link for eyeballing this on discogs.com. Just a
-        # URL string -- rendering it makes no API call.
-        if self.discogs_release_id:
-            return f"https://www.discogs.com/release/{self.discogs_release_id}"
-        if self.discogs_master_id:
-            return f"https://www.discogs.com/master/{self.discogs_master_id}"
-        return ""
+        # Plain outbound link for eyeballing this on discogs.com.
+        return discogs_url_for(self.discogs_release_id, self.discogs_master_id)
 
 
 class DiscogsMatch(DiscogsReferenceMixin, models.Model):

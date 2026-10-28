@@ -114,13 +114,14 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   writes are logged, since none of them go through `ModelAdmin`); see `README.md`'s
   "Auditing changes" section for the full explanation of what it does and doesn't catch.
 - **A read-only recordings matrix, added 2026-08-20** — `/recordings/`
-  (`views.recordings_matrix`, linked from `chart_list.html` and `chart_week.html`). ONE
+  (`views.recordings_matrix`, every row and number from `charts/recordings_matrix.py`'s
+  `build(params)` since 2026-10-27; linked from `chart_list.html` and `chart_week.html`). ONE
   page covering all 5 charts (an earlier same-day version was one matrix per chart —
   replaced same day once it became clear that didn't scale to "just show me everything").
   **Two grouping modes**, picked with the "One row per" dropdown (`?group=`):
   - `chart` (the default) — one row per (chart, recording) pair a recording has actually
     charted on, never merged, since peak/weeks/first/last are only well-defined within a
-    single chart (see the docstring on `views._recordings_matrix_query`).
+    single chart (see the docstring on `recordings_matrix._query`).
   - `recording` (added 2026-10-14, because filtering to Country still showed the same
     record three times, once per Country chart) — one row per recording, with its charts
     merged. The mechanism is just dropping the chart columns out of the `.values()`, so
@@ -142,7 +143,7 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
 
   Both modes share the same filters across the top
   for genre (`Chart.category`), a specific chart, and free-text search (song/artist/label/
-  catalog #, same word-AND/field-OR matching as the entry form's search), all combinable,
+  catalog #, the shared word-AND/field-OR rule in `charts/search.py`), all combinable,
   plus sortable columns via `?sort=&dir=`. Genre + chart + search all live-filter via HTMX
   as you type/select — no page reload — by re-requesting the SAME url+view (`HX-Request`
   header present → render just `_recordings_matrix_results.html`; absent → full page),
@@ -439,6 +440,16 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   rolling back the whole week, a failed EDIT leaving the saved week untouched). Before
   this, the new-week and edit save paths were near-copies and neither had a single test.
   `views._entry_page()` is the one place `entry_week.html`'s context is built.
+- **One recording search, 2026-10-27** — `charts/search.py`. `recording_text_q(text,
+  prefix="", extra_fields=())` is the single word-AND / field-OR rule; the entry form's
+  search, the recordings matrix and both Discogs pages build their search from it (four
+  hand-written copies before). Blank text matches nothing. The entry form's
+  2-character minimum is deliberately NOT in it — that's that search box's request
+  throttle, not a matching rule. Also shared now: `models.format_catalog()` ("Victor
+  21-0328 B") and `models.discogs_url_for()`, so pages built from `.values()` dicts format
+  the same way as `Recording.catalog_display` / `.discogs_url`. The matrix's query moved
+  to `charts/recordings_matrix.py` (`build(params)`, like `dashboard.build`), so its
+  tests call it directly instead of through the test client.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic

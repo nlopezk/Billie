@@ -13,7 +13,7 @@ more than usual. The four that decide what the numbers mean:
     the same Saturday has ONE week at #1, not three. Counting chart-weeks
     instead would let a record triple its total just by being popular in
     three formats at once, and would disagree with the recordings matrix,
-    which already counts this way (see views._recordings_matrix_query).
+    which already counts this way (see recordings_matrix._query).
     In SQL terms: always Count("week_date", distinct=True), never Count("id").
 
 2.  Ties are credited to everyone in them. 39 chart-weeks on file have two
@@ -39,7 +39,7 @@ from math import ceil, floor, log10
 
 from django.db.models import Count, Min, Q
 
-from .models import Chart, ChartEntry
+from .models import Chart, ChartEntry, format_catalog
 
 DEFAULT_TOP_N = 10
 # A ranking is a reading list, not a dump -- past 100 rows the matrix
@@ -194,14 +194,13 @@ def _rank(rows, key, n):
 def _recording_row(row):
     # .values() hands back flat dicts with ORM-path keys; give the template
     # short names and a ready-made catalog string ("Victor 21-0328 B").
-    parts = [row["recording__label__name"], row["recording__catalog_number"]]
-    if row["recording__side"]:
-        parts.append(row["recording__side"])
     return {
         **row,
         "song": row["recording__song__title"],
         "credit_text": row["recording__credit_text"],
-        "catalog_display": " ".join(parts),
+        "catalog_display": format_catalog(
+            row["recording__label__name"], row["recording__catalog_number"], row["recording__side"],
+        ),
         # What the matrix's search box needs to find exactly this record:
         # its label + catalog number, word-AND matched there.
         "matrix_query": f'{row["recording__label__name"]} {row["recording__catalog_number"]}',

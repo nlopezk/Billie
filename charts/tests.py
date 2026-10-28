@@ -17,6 +17,8 @@ from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import lastweek_audit as lastweek_audit_lib
+from . import recordings_matrix as recordings_matrix_lib
+from . import search as search_lib
 from . import discogs as discogs_api
 from . import views
 from . import week_submission
@@ -24,6 +26,55 @@ from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
     Label, Recording, RecordingCredit, Song,
 )
+
+
+class RecordingSearchTests(TestCase):
+    # charts/search.py: the one word-AND / field-OR rule every search page uses.
+
+    def setUp(self):
+        capitol = Label.objects.create(name="Capitol")
+        decca = Label.objects.create(name="Decca")
+        self.tex = Recording.objects.create(
+            label=capitol, catalog_number="304", side="A",
+            song=Song.objects.create(title="Jealous Heart"), credit_text="Tex Ritter",
+        )
+        self.other = Recording.objects.create(
+            label=decca, catalog_number="3040", side="A",
+            song=Song.objects.create(title="Heart of Stone"), credit_text="Red Foley",
+        )
+
+    def _found(self, text, **kw):
+        return set(Recording.objects.filter(search_lib.recording_text_q(text, **kw)))
+
+    def test_words_combine_across_fields(self):
+        # "Capitol 304": no single field holds both words.
+        self.assertEqual(self._found("Capitol 304"), {self.tex})
+
+    def test_every_word_must_match_something(self):
+        self.assertEqual(self._found("heart"), {self.tex, self.other})
+        self.assertEqual(self._found("heart foley"), {self.other})
+        self.assertEqual(self._found("heart nobody"), set())
+
+    def test_blank_text_matches_nothing_not_everything(self):
+        self.assertEqual(self._found("   "), set())
+
+    def test_prefix_searches_through_a_related_model(self):
+        chart = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        entry = ChartEntry.objects.create(chart=chart, week_date=date(1948, 1, 3), position=1, recording=self.tex)
+        found = ChartEntry.objects.filter(search_lib.recording_text_q("ritter", prefix="recording__"))
+        self.assertEqual(list(found), [entry])
+
+    def test_extra_fields_can_match_instead(self):
+        match = DiscogsMatch.objects.create(recording=self.other, matched_track_title="Stone Heart Blues")
+        found = DiscogsMatch.objects.filter(search_lib.recording_text_q(
+            "blues", prefix="recording__", extra_fields=("matched_track_title",),
+        ))
+        self.assertEqual(list(found), [match])
+
+    def test_search_recordings_is_alphabetical_and_limited(self):
+        titles = [r.song.title for r in search_lib.search_recordings("heart")]
+        self.assertEqual(titles, ["Heart of Stone", "Jealous Heart"])
+        self.assertEqual(len(search_lib.search_recordings("heart", limit=1)), 1)
 
 
 class RecordingsMatrixTests(TestCase):
@@ -43,6 +94,10 @@ class RecordingsMatrixTests(TestCase):
             recording=recording or self.recording, **kw,
         )
 
+    def _matrix(self, **params):
+        # The matrix's rows and state straight from the module -- no request.
+        return recordings_matrix_lib.build(params)
+
     def _get(self, **params):
         return self.client.get(reverse("charts:recordings_matrix"), params)
 
@@ -52,9 +107,7 @@ class RecordingsMatrixTests(TestCase):
         self._entry(self.chart, w2, 2)
         self._entry(self.chart, w3, 4)
 
-        response = self._get()
-        self.assertEqual(response.status_code, 200)
-        rows = response.context["rows"]
+        rows = self._matrix()["rows"]
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["peak_position"], 2)  # lowest (best) position across the 3 weeks
@@ -72,7 +125,7 @@ class RecordingsMatrixTests(TestCase):
         self._entry(self.other_chart, w1, 1)
         self._entry(self.other_chart, w2, 1)
 
-        rows = self._get().context["rows"]
+        rows = self._matrix()["rows"]
         self.assertEqual(len(rows), 2)
         by_chart = {r["chart_id"]: r for r in rows}
 
@@ -91,7 +144,7 @@ class RecordingsMatrixTests(TestCase):
         self._entry(self.chart, w1, 1, printed_anomaly_note="printed anomaly")
         self._entry(self.chart, w1, 2, printed_anomaly_note="printed anomaly")
 
-        row = self._get().context["rows"][0]
+        row = self._matrix()["rows"][0]
         self.assertEqual(row["weeks_charted"], 1)
         self.assertEqual(row["peak_position"], 1)
 
@@ -99,14 +152,14 @@ class RecordingsMatrixTests(TestCase):
         self._entry(self.chart, date(1948, 1, 3), 1)  # country
         self._entry(self.other_chart, date(1948, 1, 3), 1)  # rnb
 
-        rows = self._get(genre="country").context["rows"]
+        rows = self._matrix(genre="country")["rows"]
         self.assertEqual([r["chart_id"] for r in rows], [self.chart.id])
 
     def test_chart_filter(self):
         self._entry(self.chart, date(1948, 1, 3), 1)
         self._entry(self.other_chart, date(1948, 1, 3), 1)
 
-        rows = self._get(chart=self.other_chart.id).context["rows"]
+        rows = self._matrix(chart=self.other_chart.id)["rows"]
         self.assertEqual([r["chart_id"] for r in rows], [self.other_chart.id])
 
     def test_search_filters_by_song_artist_label_or_catalog(self):
@@ -119,11 +172,11 @@ class RecordingsMatrixTests(TestCase):
         self._entry(self.chart, date(1948, 1, 3), 2, recording=other_recording)
 
         # Matches by song title...
-        self.assertEqual(len(self._get(q="Test Song").context["rows"]), 1)
+        self.assertEqual(len(self._matrix(q="Test Song")["rows"]), 1)
         # ...or by catalog number...
-        self.assertEqual(len(self._get(q="200").context["rows"]), 1)
+        self.assertEqual(len(self._matrix(q="200")["rows"]), 1)
         # ...and a query with no match returns nothing, not everything.
-        self.assertEqual(len(self._get(q="Nonexistent").context["rows"]), 0)
+        self.assertEqual(len(self._matrix(q="Nonexistent")["rows"]), 0)
 
     def test_hx_request_gets_partial_not_full_page(self):
         self._entry(self.chart, date(1948, 1, 3), 1)
@@ -166,8 +219,9 @@ class RecordingsMatrixCollapsedTests(TestCase):
         )
 
     def _collapsed(self, **params):
+        # Collapsed mode, straight from the module -- no request.
         params.setdefault("group", "recording")
-        return self.client.get(reverse("charts:recordings_matrix"), params)
+        return recordings_matrix_lib.build(params)
 
     def test_one_row_per_recording_however_many_charts(self):
         w1, w2 = date(1951, 1, 6), date(1951, 1, 13)
@@ -176,10 +230,10 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.rnb, w2, 9)
 
         # Default mode still gives one row per chart...
-        self.assertEqual(len(self.client.get(reverse("charts:recordings_matrix")).context["rows"]), 3)
+        self.assertEqual(len(recordings_matrix_lib.build({})["rows"]), 3)
         # ...and the collapsed mode gives exactly one, with a count of
         # how many charts went into it.
-        rows = self._collapsed().context["rows"]
+        rows = self._collapsed()["rows"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["chart_count"], 3)
 
@@ -194,7 +248,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.rnb, w1, 9)
         self._entry(self.jukebox, w2, 2)
 
-        row = self._collapsed().context["rows"][0]
+        row = self._collapsed()["rows"][0]
         self.assertEqual(ChartEntry.objects.count(), 4)
         self.assertEqual(row["weeks_charted"], 2)
 
@@ -206,7 +260,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.jukebox, w1, 7)
         self._entry(self.retail, w1, 2)
 
-        row = self._collapsed().context["rows"][0]
+        row = self._collapsed()["rows"][0]
         self.assertEqual(row["peak_position"], 2)
         self.assertEqual(row["peak_chart_label"], str(self.retail))
         self.assertEqual(row["peak_chart_code"], "CRt")
@@ -221,13 +275,13 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.jukebox, date(1951, 1, 6), 1)
         self._entry(self.jukebox, last, 4)
 
-        row = self._collapsed().context["rows"][0]
+        row = self._collapsed()["rows"][0]
         self.assertEqual(row["first_entry"], first)
         self.assertEqual(row["last_entry"], last)
         self.assertEqual(row["first_chart_id"], self.retail.id)
         self.assertEqual(row["last_chart_id"], self.jukebox.id)
         # And the rendered links point at those two different charts.
-        html = self._collapsed().content.decode()
+        html = self.client.get(reverse("charts:recordings_matrix"), {"group": "recording"}).content.decode()
         self.assertIn(f'href="/{self.retail.id}/1950-12-16/"', html)
         self.assertIn(f'href="/{self.jukebox.id}/1951-02-17/"', html)
 
@@ -238,7 +292,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.jukebox, w1, 1)
         self._entry(self.retail, w1, 6)
 
-        row = self._collapsed().context["rows"][0]
+        row = self._collapsed()["rows"][0]
         self.assertEqual(
             [(b["code"], b["peak"]) for b in row["chart_badges"]],
             [("CJb", 1), ("CRt", 6)],
@@ -251,7 +305,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.jukebox, date(1951, 1, 6), 4)
         self._entry(self.rnb, date(1951, 1, 13), 1)
 
-        row = self._collapsed(genre="country").context["rows"][0]
+        row = self._collapsed(genre="country")["rows"][0]
         self.assertEqual(row["chart_count"], 1)
         self.assertEqual(row["peak_position"], 4)  # NOT the R&B chart's 1
         self.assertEqual(row["weeks_charted"], 1)
@@ -260,11 +314,11 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.jukebox, date(1951, 1, 6), 1)
         self._entry(self.retail, date(1951, 1, 6), 1)
 
-        self.assertEqual(self.client.get(reverse("charts:recordings_matrix")).context["group"], "chart")
-        self.assertEqual(len(self.client.get(reverse("charts:recordings_matrix")).context["rows"]), 2)
-        junk = self.client.get(reverse("charts:recordings_matrix"), {"group": "nonsense"})
-        self.assertEqual(junk.context["group"], "chart")
-        self.assertEqual(len(junk.context["rows"]), 2)
+        self.assertEqual(recordings_matrix_lib.build({})["group"], "chart")
+        self.assertEqual(len(recordings_matrix_lib.build({})["rows"]), 2)
+        junk = recordings_matrix_lib.build({"group": "nonsense"})
+        self.assertEqual(junk["group"], "chart")
+        self.assertEqual(len(junk["rows"]), 2)
 
     def test_sorting_by_charts_column_does_not_un_collapse(self):
         # ?sort=chart orders by chart__category, a column that isn't in
@@ -279,7 +333,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         self._entry(self.retail, date(1951, 1, 6), 1)
         self._entry(self.jukebox, date(1951, 1, 6), 2, recording=one_chart)
 
-        rows = self._collapsed(sort="chart", dir="desc").context["rows"]
+        rows = self._collapsed(sort="chart", dir="desc")["rows"]
         self.assertEqual(len(rows), 2)  # still one row each, not three
         # Descending by chart count: the 2-chart recording comes first.
         self.assertEqual([r["chart_count"] for r in rows], [2, 1])
@@ -290,7 +344,7 @@ class RecordingsMatrixCollapsedTests(TestCase):
         # collapsed view would bounce it back to unfiltered per-chart.
         self._entry(self.jukebox, date(1951, 1, 6), 1)
 
-        columns = self._collapsed(genre="country", q="Boogie").context["columns"]
+        columns = self._collapsed(genre="country", q="Boogie")["columns"]
         for key in ("peak", "song", "weeks"):
             self.assertIn("group=recording", columns[key]["href"])
             self.assertIn("genre=country", columns[key]["href"])
@@ -299,11 +353,11 @@ class RecordingsMatrixCollapsedTests(TestCase):
     def test_headers_rename_the_two_columns_that_change_meaning(self):
         self._entry(self.jukebox, date(1951, 1, 6), 1)
 
-        per_chart = self.client.get(reverse("charts:recordings_matrix")).context["columns"]
+        per_chart = recordings_matrix_lib.build({})["columns"]
         self.assertEqual(per_chart["peak"]["label"], "Peak")
         self.assertEqual(per_chart["chart"]["label"], "Chart")
 
-        collapsed = self._collapsed().context["columns"]
+        collapsed = self._collapsed()["columns"]
         self.assertEqual(collapsed["peak"]["label"], "Best peak")
         self.assertEqual(collapsed["chart"]["label"], "Charts")
 
