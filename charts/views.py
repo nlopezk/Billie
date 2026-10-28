@@ -14,7 +14,7 @@
 
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import urlencode
 
 from django.core.exceptions import ValidationError
@@ -26,6 +26,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
+from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import lastweek_audit as lastweek_audit_lib
@@ -35,71 +36,6 @@ from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
     Recording, RecordingCredit, Song,
 )
-
-
-def last_week_on_file(chart, week, recording_ids):
-    """What the DATABASE knows about each recording's previous week.
-
-    Returns (prev_on_file, positions, charted_before):
-      prev_on_file   -- is the previous Saturday's chart for `chart` entered
-                        at all? If not (a gap, or the chart's first week on
-                        file), "not on last week's chart" can't be told
-                        apart from "last week simply isn't here".
-      positions      -- {recording_id: position on that previous chart}.
-      charted_before -- the recordings that appeared on `chart` at ANY
-                        earlier week: what separates a re-entry from a debut.
-
-    This is the single source of "was it on the chart last week?" for the
-    browser and the entry form. It deliberately does NOT read
-    printed_last_week_position: that field is only filled when a last-week
-    number happened to be TYPED, so treating an empty one as "wasn't on
-    the chart" made every record resolved by search show as NEW
-    (2026-10-18: a whole Country Jockeys week, 1951-04-07, read as ten
-    debuts when nine were carryovers).
-    """
-    previous = week - timedelta(days=7)
-    positions = {}
-    rows = chart.entries.filter(week_date=previous).values_list("recording_id", "position")
-    for rec_id, position in rows:
-        # min(): the 2 accepted printed anomalies list ONE record twice in
-        # one week (docs/audit/same_recording_repeated.csv) -- take its best.
-        positions[rec_id] = min(position, positions.get(rec_id, position))
-    # A chart week "exists" exactly when it has rows, so the query above
-    # already answers this -- no second query needed.
-    prev_on_file = bool(positions)
-    charted_before = set(
-        chart.entries.filter(week_date__lt=week, recording_id__in=recording_ids)
-        .values_list("recording_id", flat=True)
-    )
-    return prev_on_file, positions, charted_before
-
-
-def classify_movement(position, printed, on_file, prev_on_file, charted_before):
-    """(movement, conflict) for one chart entry.
-
-    movement is "up" / "down" / "same" / "new" / "re" / "unknown":
-      * Previous week ON FILE: compare against where the record actually
-        was on it -- the data, which stays consistent with the neighbouring
-        weeks however this week's row was entered. Not on it at all:
-        "new" if it never charted here before, "re" (re-entry) if it did.
-      * Previous week NOT on file: the typed number is the only evidence,
-        so use it if there is one; otherwise "unknown" -- not "new",
-        because nothing says it wasn't there.
-
-    conflict is True when a typed (printed) last-week number disagrees
-    with the previous week on file -- either a typo or a genuine printing
-    quirk, and per CLAUDE.md non-negotiable #4 it is SURFACED, never
-    silently resolved. The printed value is never changed here.
-    """
-    basis = on_file if prev_on_file else printed
-    if basis is not None:
-        movement = "up" if basis > position else ("down" if basis < position else "same")
-    elif prev_on_file:
-        movement = "re" if charted_before else "new"
-    else:
-        movement = "unknown"
-    conflict = prev_on_file and printed is not None and printed != on_file
-    return movement, conflict
 
 
 def chart_switch_options(current_chart, week):
@@ -173,11 +109,14 @@ def chart_week(request, chart_id, week_date=None):
         if selected_week not in all_weeks:
             raise Http404("No entries for this chart on that date.")
 
-    # Prev/next week for the navigation arrows -- just the neighbors of
-    # selected_week in the sorted list already loaded above, no extra query.
+    # Prev/next arrows: the neighbouring chart weeks ON FILE, for
+    # navigation only -- they skip any gap. Deliberately NOT the previous
+    # chart that movement is measured against (chart_week.ChartWeek), which
+    # is the previous publication date whether or not it's entered; see
+    # docs/adr/0001-previous-chart-is-previous-publication.md.
     idx = all_weeks.index(selected_week)
-    prev_week = all_weeks[idx - 1] if idx > 0 else None
-    next_week = all_weeks[idx + 1] if idx < len(all_weeks) - 1 else None
+    prev_week_on_file = all_weeks[idx - 1] if idx > 0 else None
+    next_week_on_file = all_weeks[idx + 1] if idx < len(all_weeks) - 1 else None
 
     # The printed chart name active on this specific week, from ChartEra --
     # NOT stored per-entry, looked up by date range (see CLAUDE.md's
@@ -200,25 +139,19 @@ def chart_week(request, chart_id, week_date=None):
     for e in entries:
         position_counts[e.position] = position_counts.get(e.position, 0) + 1
 
-    # Movement and "last week" come from the previous week ON FILE, not
-    # from whether a last-week number was typed -- see last_week_on_file.
-    prev_on_file, last_positions, charted_before = last_week_on_file(
-        chart, selected_week, {e.recording_id for e in entries}
-    )
+    # Movement and "last week" come from the previous chart on file, not
+    # from whether a last-week number was typed -- see ChartWeek.movement.
+    week = chart_week_lib.ChartWeek(chart, selected_week)
     rows = []
     for e in entries:
-        on_file = last_positions.get(e.recording_id)
-        movement, conflict = classify_movement(
-            e.position, e.printed_last_week_position, on_file, prev_on_file,
-            e.recording_id in charted_before,
-        )
+        moved = week.movement(e.recording_id, e.position, e.printed_last_week_position)
         rows.append({
             "entry": e,
-            "movement": movement,
+            "movement": moved.code,
             # Where it really was last week, per the data -- shown (in
             # italics, as computed) when no number was typed in.
-            "last_on_file": on_file,
-            "conflict": conflict,
+            "last_on_file": moved.last_on_file,
+            "conflict": moved.conflict,
             "is_tie": position_counts[e.position] > 1,
         })
 
@@ -244,10 +177,10 @@ def chart_week(request, chart_id, week_date=None):
         "chart_options": chart_switch_options(chart, selected_week),
         "era": era,
         "selected_week": selected_week,
-        "prev_week": prev_week,
-        "next_week": next_week,
+        "prev_week_on_file": prev_week_on_file,
+        "next_week_on_file": next_week_on_file,
         "rows": rows,
-        "prev_on_file": prev_on_file,
+        "prev_on_file": week.previous_on_file,
         "conflict_count": sum(r["conflict"] for r in rows),
         # Rows whose "Last wk" is shown computed (no number typed) -- the
         # template adds a one-line key under the table when there are any.
@@ -660,54 +593,6 @@ def lastweek_audit(request):
 #                         "save the whole week atomically" rule.
 
 
-def _last_week_hint(chart, recording, week_date):
-    """Where `recording` sat on `chart` the previous Saturday, per the data.
-
-    Shown in the entry form when a row was resolved WITHOUT typing a
-    last-week number (picked by search, or an edited week saved without
-    one), so a carryover picked by search is visibly a carryover. Only a
-    hint: the last-week box is never filled from it -- that box is for
-    what the magazine printed (CLAUDE.md, "Derived fields as a typo
-    detector"). None if it wasn't on last week's chart (or that week
-    isn't on file). Same rule as last_week_on_file: best position if a
-    printed anomaly lists it twice.
-    """
-    entry = (
-        chart.entries.filter(week_date=week_date - timedelta(days=7), recording=recording)
-        .order_by("position").first()
-    )
-    return entry.position if entry else None
-
-
-def _week_streak(chart, recording, before_week):
-    """
-    Walk backward week-by-week (7-day steps) from `before_week`, counting
-    how many CONSECUTIVE prior weeks `recording` appears in `chart` (at
-    any position), and the best (lowest) position seen in that streak.
-
-    This is ONLY ever shown as a "computed, for comparison" hint next to
-    the printed peak/weeks-on-chart inputs -- never auto-filled. Per
-    CLAUDE.md's "Derived fields as a typo detector" section, the magazine's
-    printed value is what gets stored; this just helps a mismatch catch
-    the eye immediately instead of needing a separate audit pass later.
-
-    Returns (weeks_so_far, best_position_so_far), both None if there's no
-    unbroken run of prior appearances immediately before this week.
-    """
-    weeks_so_far = 0
-    best_position = None
-    cursor = before_week
-    while True:
-        cursor = cursor - timedelta(days=7)
-        entry = chart.entries.filter(week_date=cursor, recording=recording).order_by("position").first()
-        if entry is None:
-            break
-        weeks_so_far += 1
-        if best_position is None or entry.position < best_position:
-            best_position = entry.position
-    return (weeks_so_far or None, best_position)
-
-
 def entry_week(request, chart_id):
     chart = get_object_or_404(Chart, pk=chart_id)
 
@@ -724,14 +609,14 @@ def entry_week(request, chart_id):
             raise Http404("Malformed week date.")
     elif last_entered:
         # Default to the week right after whatever's most recently on file.
-        week_date = last_entered + timedelta(days=7)
+        week_date = chart_week_lib.next_chart_date(last_entered)
     else:
         # A chart with literally nothing on file yet (not the case for any
         # of the 5 real charts today, but the schema allows adding a 6th
         # someday) -- there's no sensible date to guess, so just ask.
         return render(request, "charts/entry_week.html", {"chart": chart, "week_date": None})
 
-    previous_week_date = week_date - timedelta(days=7)
+    previous_week_date = chart_week_lib.previous_chart_date(week_date)
     previous_week_count = chart.entries.filter(week_date=previous_week_date).count()
     row_count = previous_week_count or 10  # first-ever week for this chart: a reasonable starting guess
 
@@ -864,7 +749,7 @@ def _save_entry_week(request, chart):
     except (ValueError, TypeError):
         return redirect("charts:entry_week", chart_id=chart.id)
 
-    previous_week_date = week_date - timedelta(days=7)
+    previous_week_date = chart_week_lib.previous_chart_date(week_date)
     cleaned_rows, rows_for_rerender, errors, next_index = _parse_submitted_rows(request)
 
     if not errors:
@@ -906,7 +791,7 @@ def entry_week_edit(request, chart_id, week_date):
     if not chart.entries.filter(week_date=target_week).exists():
         raise Http404("Nothing on file for this chart and week -- nothing to edit.")
 
-    previous_week_date = target_week - timedelta(days=7)
+    previous_week_date = chart_week_lib.previous_chart_date(target_week)
 
     if request.method == "POST":
         cleaned_rows, rows_for_rerender, errors, next_index = _parse_submitted_rows(request)
@@ -937,12 +822,13 @@ def entry_week_edit(request, chart_id, week_date):
         .select_related("recording", "recording__song", "recording__label")
         .order_by("position", "id")
     )
+    week = chart_week_lib.ChartWeek(chart, target_week)
     rows = []
     for i, e in enumerate(existing):
-        weeks_hint, peak_hint = _week_streak(chart, e.recording, target_week)
+        weeks_hint, peak_hint = week.streak(e.recording)
         rows.append({
             "last_week_hint": (
-                _last_week_hint(chart, e.recording, target_week)
+                week.last_week_position(e.recording_id)
                 if e.printed_last_week_position is None else None
             ),
             "index": i,
@@ -991,14 +877,11 @@ def entry_resolve(request, chart_id):
     except (ValueError, TypeError):
         return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": "not a number", "include_wks_hint_oob": True})
 
-    previous_week_date = week_date - timedelta(days=7)
-    matches = list(
-        chart.entries.filter(week_date=previous_week_date, position=last_week_position)
-        .select_related("recording", "recording__song", "recording__label")
-    )
+    week = chart_week_lib.ChartWeek(chart, week_date)
+    matches = week.resolve(last_week_position)
 
     if not matches:
-        error = f"nothing at #{last_week_position} on {previous_week_date}"
+        error = f"nothing at #{last_week_position} on {week.previous_date}"
         return render(request, "charts/_entry_resolved.html", {"row": row, "recording": None, "error": error, "include_wks_hint_oob": True})
 
     if len(matches) > 1:
@@ -1009,7 +892,7 @@ def entry_resolve(request, chart_id):
         })
 
     recording = matches[0].recording
-    weeks_hint, peak_hint = _week_streak(chart, recording, week_date)
+    weeks_hint, peak_hint = week.streak(recording)
     return render(request, "charts/_entry_resolved.html", {
         "row": row, "recording": recording, "weeks_hint": weeks_hint, "peak_hint": peak_hint,
         "include_wks_hint_oob": True,
@@ -1120,8 +1003,9 @@ def entry_select(request, chart_id):
     if week_str:
         try:
             week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
-            weeks_hint, peak_hint = _week_streak(chart, recording, week_date)
-            last_week_hint = _last_week_hint(chart, recording, week_date)
+            week = chart_week_lib.ChartWeek(chart, week_date)
+            weeks_hint, peak_hint = week.streak(recording)
+            last_week_hint = week.last_week_position(recording.id)
         except ValueError:
             pass
 
@@ -1287,8 +1171,9 @@ def entry_create(request, chart_id):
     if week_str:
         try:
             week_date = datetime.strptime(week_str, "%Y-%m-%d").date()
-            weeks_hint, peak_hint = _week_streak(chart, recording, week_date)
-            last_week_hint = _last_week_hint(chart, recording, week_date)
+            week = chart_week_lib.ChartWeek(chart, week_date)
+            weeks_hint, peak_hint = week.streak(recording)
+            last_week_hint = week.last_week_position(recording.id)
         except ValueError:
             pass
 

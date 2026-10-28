@@ -13,10 +13,12 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import lastweek_audit as lastweek_audit_lib
 from . import discogs as discogs_api
+from . import views
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
     Label, Recording, RecordingCredit, Song,
@@ -2058,11 +2060,13 @@ class DashboardTests(TestCase):
 
 
 # =============================================================================
-# Chart browser movement -- from last week's chart ON FILE, not from
-# whether a last-week number was typed (views.classify_movement).
+# Chart week (charts/chart_week.py) -- the previous chart, last-week
+# resolution, movement and streaks, tested through ChartWeek itself. The
+# previous chart is the previous PUBLICATION date, never "the previous week
+# on file" (docs/adr/0001-previous-chart-is-previous-publication.md).
 # =============================================================================
 
-class ChartWeekMovementTests(TestCase):
+class ChartWeekTests(TestCase):
     W1, W2, W3, W4 = date(1951, 3, 17), date(1951, 3, 24), date(1951, 3, 31), date(1951, 4, 7)
 
     def setUp(self):
@@ -2084,9 +2088,55 @@ class ChartWeekMovementTests(TestCase):
             printed_last_week_position=typed_lw, **kw,
         )
 
-    def _rows(self, week):
-        response = self.client.get(reverse("charts:chart_week", args=[self.chart.id, week.isoformat()]))
-        return {r["entry"].recording.song.title: r for r in response.context["rows"]}, response
+    def _moves(self, week):
+        # {title: Movement} for every entry on `week`, straight from ChartWeek.
+        cw = chart_week_lib.ChartWeek(self.chart, week)
+        return {
+            e.recording.song.title: cw.movement(e.recording_id, e.position, e.printed_last_week_position)
+            for e in self.chart.entries.filter(week_date=week).select_related("recording__song")
+        }
+
+    # ---- the previous chart
+
+    def test_previous_chart_is_one_publication_back(self):
+        self.assertEqual(chart_week_lib.previous_chart_date(self.W4), self.W3)
+        self.assertEqual(chart_week_lib.next_chart_date(self.W3), self.W4)
+
+    def test_a_gap_is_not_bridged_to_an_older_week_on_file(self):
+        # W2 not entered: the previous chart of W3 is W2 -- NOT W1, the most
+        # recent week on file -- so "#1" resolves to nothing rather than to
+        # W1's #1, a record two issues old.
+        self._entry(self.W1, 1, "Two issues old")
+        cw = chart_week_lib.ChartWeek(self.chart, self.W3)
+        self.assertFalse(cw.previous_on_file)
+        self.assertEqual(cw.resolve(1), [])
+
+    # ---- last-week resolution
+
+    def test_resolve_a_last_week_number(self):
+        self._entry(self.W3, 1, "Top")
+        self._entry(self.W3, 2, "Second")
+        matches = chart_week_lib.ChartWeek(self.chart, self.W4).resolve(2)
+        self.assertEqual([m.recording.song.title for m in matches], ["Second"])
+
+    def test_resolve_a_tie_returns_every_record_at_that_position(self):
+        # The caller asks which one -- never guesses.
+        self._entry(self.W3, 3, "Tied first")
+        self._entry(self.W3, 3, "Tied second")
+        matches = chart_week_lib.ChartWeek(self.chart, self.W4).resolve(3)
+        self.assertEqual([m.recording.song.title for m in matches], ["Tied first", "Tied second"])
+
+    def test_resolve_a_position_nobody_held(self):
+        self._entry(self.W3, 1, "Only one")
+        self.assertEqual(chart_week_lib.ChartWeek(self.chart, self.W4).resolve(9), [])
+
+    def test_last_week_position_for_a_pick_made_by_search(self):
+        self._entry(self.W3, 6, "Carried over")
+        cw = chart_week_lib.ChartWeek(self.chart, self.W4)
+        self.assertEqual(cw.last_week_position(self._rec("Carried over").id), 6)
+        self.assertIsNone(cw.last_week_position(self._rec("Not there").id))
+
+    # ---- movement
 
     def test_carryover_without_a_typed_number_is_not_new(self):
         # The 2026-10-18 report: a week entered by search, no last-week
@@ -2098,12 +2148,12 @@ class ChartWeekMovementTests(TestCase):
         self._entry(self.W4, 2, "Climbs")
         self._entry(self.W4, 5, "Falls")
 
-        rows, _ = self._rows(self.W4)
-        self.assertEqual(rows["Stays"]["movement"], "same")
-        self.assertEqual(rows["Climbs"]["movement"], "up")
-        self.assertEqual(rows["Falls"]["movement"], "down")
-        self.assertEqual(rows["Climbs"]["last_on_file"], 4)
-        self.assertFalse(any(r["conflict"] for r in rows.values()))
+        moves = self._moves(self.W4)
+        self.assertEqual(moves["Stays"].code, "same")
+        self.assertEqual(moves["Climbs"].code, "up")
+        self.assertEqual(moves["Falls"].code, "down")
+        self.assertEqual(moves["Climbs"].last_on_file, 4)
+        self.assertFalse(any(m.conflict for m in moves.values()))
 
     def test_new_versus_re_entry(self):
         self._entry(self.W1, 3, "Comes back")
@@ -2112,9 +2162,9 @@ class ChartWeekMovementTests(TestCase):
         self._entry(self.W3, 2, "Comes back")
         self._entry(self.W3, 3, "Brand new")
 
-        rows, _ = self._rows(self.W3)
-        self.assertEqual(rows["Comes back"]["movement"], "re")
-        self.assertEqual(rows["Brand new"]["movement"], "new")
+        moves = self._moves(self.W3)
+        self.assertEqual(moves["Comes back"].code, "re")
+        self.assertEqual(moves["Brand new"].code, "new")
 
     def test_a_typed_number_that_disagrees_is_flagged_and_kept(self):
         self._entry(self.W3, 6, "Mismatch")
@@ -2123,31 +2173,28 @@ class ChartWeekMovementTests(TestCase):
         self._entry(self.W4, 4, "Phantom", typed_lw=2)    # not on W3 at all
         self._entry(self.W4, 1, "Phantom filler", typed_lw=1)  # agrees
 
-        rows, response = self._rows(self.W4)
-        self.assertTrue(rows["Mismatch"]["conflict"])
-        self.assertTrue(rows["Phantom"]["conflict"])
-        self.assertFalse(rows["Phantom filler"]["conflict"])
+        moves = self._moves(self.W4)
+        self.assertTrue(moves["Mismatch"].conflict)
+        self.assertTrue(moves["Phantom"].conflict)
+        self.assertFalse(moves["Phantom filler"].conflict)
         # Movement follows the data; the printed number itself is untouched.
-        self.assertEqual(rows["Mismatch"]["movement"], "up")
+        self.assertEqual(moves["Mismatch"].code, "up")
         self.assertEqual(ChartEntry.objects.get(week_date=self.W4, position=3).printed_last_week_position, 7)
-        self.assertEqual(response.context["conflict_count"], 2)
-        self.assertContains(response, "disagree with last week")
 
-    def test_previous_week_not_on_file(self):
+    def test_previous_chart_not_on_file(self):
         # W2 missing (a gap): the typed number is the only evidence.
         self._entry(self.W1, 1, "Old")
         self._entry(self.W3, 2, "Typed", typed_lw=5)
         self._entry(self.W3, 4, "Untyped")
 
-        rows, _ = self._rows(self.W3)
-        self.assertEqual(rows["Typed"]["movement"], "up")
-        self.assertEqual(rows["Untyped"]["movement"], "unknown")
-        self.assertFalse(rows["Typed"]["conflict"])  # nothing on file to disagree WITH
+        moves = self._moves(self.W3)
+        self.assertEqual(moves["Typed"].code, "up")
+        self.assertEqual(moves["Untyped"].code, "unknown")
+        self.assertFalse(moves["Typed"].conflict)  # nothing on file to disagree WITH
 
     def test_the_charts_first_week_on_file_is_unknown_not_new(self):
         self._entry(self.W1, 1, "Already there")
-        rows, _ = self._rows(self.W1)
-        self.assertEqual(rows["Already there"]["movement"], "unknown")
+        self.assertEqual(self._moves(self.W1)["Already there"].code, "unknown")
 
     def test_a_record_listed_twice_last_week_uses_its_best_position(self):
         # The accepted Savoy 731 printing anomaly: one record, two rows, one week.
@@ -2155,15 +2202,56 @@ class ChartWeekMovementTests(TestCase):
         self._entry(self.W3, 7, "Double", printed_anomaly_note="printed twice")
         self._entry(self.W4, 3, "Double", typed_lw=3)
 
-        rows, _ = self._rows(self.W4)
-        self.assertEqual(rows["Double"]["last_on_file"], 3)
-        self.assertFalse(rows["Double"]["conflict"])
+        move = self._moves(self.W4)["Double"]
+        self.assertEqual(move.last_on_file, 3)
+        self.assertFalse(move.conflict)
+
+    # ---- streaks
+
+    def test_streak_counts_consecutive_previous_charts_and_best_position(self):
+        self._entry(self.W1, 2, "Runner")
+        self._entry(self.W2, 5, "Gap filler")   # Runner missing in W2: the run breaks here
+        self._entry(self.W3, 4, "Runner")
+        self._entry(self.W4, 9, "Runner")
+        cw = chart_week_lib.ChartWeek(self.chart, date(1951, 4, 14))
+        self.assertEqual(cw.streak(self._rec("Runner")), (2, 4))
+        self.assertEqual(cw.streak(self._rec("Gap filler")), (None, None))
+
+    # ---- the shared rules the last-week audit also uses
+
+    def test_shared_rules(self):
+        self.assertEqual(chart_week_lib.best_positions([(1, 7), (2, 4), (1, 3)]), {1: 3, 2: 4})
+        self.assertTrue(chart_week_lib.last_week_conflict(7, 6, True))
+        self.assertTrue(chart_week_lib.last_week_conflict(2, None, True))
+        self.assertFalse(chart_week_lib.last_week_conflict(5, None, False))
+        self.assertFalse(chart_week_lib.last_week_conflict(None, 4, True))
+
+
+class ChartWeekPageSmokeTests(TestCase):
+    # One request per page that renders ChartWeek's answers, to prove the
+    # wiring; the logic itself is covered by ChartWeekTests above.
+    W3, W4 = date(1951, 3, 31), date(1951, 4, 7)
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="jockeys", publication_weekday=5)
+        self.rec = Recording.objects.create(
+            label=Label.objects.create(name="Victor"), catalog_number="1", side="A",
+            song=Song.objects.create(title="Mismatch"), credit_text="Somebody",
+        )
+        ChartEntry.objects.create(chart=self.chart, week_date=self.W3, position=6, recording=self.rec)
+
+    def test_week_page_shows_conflicts(self):
+        ChartEntry.objects.create(
+            chart=self.chart, week_date=self.W4, position=3, recording=self.rec, printed_last_week_position=7,
+        )
+        response = self.client.get(reverse("charts:chart_week", args=[self.chart.id, self.W4.isoformat()]))
+        self.assertEqual(response.context["conflict_count"], 1)
+        self.assertEqual(response.context["rows"][0]["movement"], "up")
+        self.assertContains(response, "with last week")
 
     def test_entry_form_search_pick_shows_where_it_was_last_week(self):
-        rec = self._rec("Carried over")
-        self._entry(self.W3, 6, "Carried over")
         response = self.client.post(reverse("charts:entry_select", args=[self.chart.id]), {
-            "row": "0", "recording_id": str(rec.id), "week": self.W4.isoformat(),
+            "row": "0", "recording_id": str(self.rec.id), "week": self.W4.isoformat(),
         })
         self.assertEqual(response.context["last_week_hint"], 6)
         self.assertContains(response, "last week #6")
@@ -2260,14 +2348,20 @@ class LastWeekAuditTests(TestCase):
         self.assertEqual(ctx["individual"], [])
 
     def test_counts_match_the_week_pages_conflict_marks(self):
-        # Same definition as views.classify_movement -- the two pages must agree.
+        # The audit's bulk loader and ChartWeek (behind the week pages' ⚠
+        # marks) share chart_week.last_week_conflict -- the two must agree.
         self._e(0, 1, "A")
         self._e(0, 2, "B")
         self._e(1, 1, "A", lw=1)                 # agrees
         self._e(1, 2, "B", lw=5)                 # disagrees
         self._e(1, 3, "C", lw=7)                 # disagrees (not on last week)
-        week_page = self.client.get(reverse("charts:chart_week", args=[self.chart.id, self.WEEKS[1].isoformat()]))
-        self.assertEqual(lastweek_audit_lib.build({})["total"], week_page.context["conflict_count"])
+        cw = chart_week_lib.ChartWeek(self.chart, self.WEEKS[1])
+        marks = sum(
+            cw.movement(e.recording_id, e.position, e.printed_last_week_position).conflict
+            for e in self.chart.entries.filter(week_date=self.WEEKS[1])
+        )
+        self.assertEqual(marks, 2)
+        self.assertEqual(lastweek_audit_lib.build({})["total"], marks)
 
     def test_a_noted_anomaly_moves_to_already_noted(self):
         self._e(0, 1, "A")
@@ -2307,8 +2401,8 @@ class ChartSwitcherTests(TestCase):
             ChartEntry.objects.create(chart=self.retail, week_date=w, position=1, recording=rec)
 
     def _options(self, chart, week):
-        response = self.client.get(reverse("charts:chart_week", args=[chart.id, week.isoformat()]))
-        return {o["chart"].id: o for o in response.context["chart_options"]}
+        # A plain function of (chart, week) -- no request needed.
+        return {o["chart"].id: o for o in views.chart_switch_options(chart, week)}
 
     def test_switching_keeps_the_same_week(self):
         options = self._options(self.jukebox, self.W2)

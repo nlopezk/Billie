@@ -25,13 +25,12 @@ INDIVIDUAL disagreements -- everything else. For those the per-row
 checks below are meaningful, and each row gets the first cause that fits.
 """
 from collections import defaultdict
-from datetime import timedelta
 
 from django.utils.html import escape
 
+from .chart_week import best_positions, last_week_conflict, previous_chart_date
 from .models import Chart, ChartEntry, Recording
 
-WEEK = timedelta(days=7)
 # A week counts as a "column week" (part of a stretch) at this many
 # disagreements, provided they're also at least half its typed numbers.
 COLUMN_WEEK_MIN = 4
@@ -52,7 +51,8 @@ class _Data:
     hundreds of targeted queries."""
 
     def __init__(self):
-        self.pos_of = defaultdict(dict)                       # (chart, week) -> {rec: best position}
+        self.pos_of = {}                                      # (chart, week) -> {rec: best position}
+        pairs = defaultdict(list)                             # (chart, week) -> [(rec, position)]
         self.at_pos = defaultdict(lambda: defaultdict(list))  # (chart, week) -> {position: [rec]}
         self.typed = defaultdict(list)                        # (chart, week) -> [entry dicts with a typed LW]
         self.first_week = {}                                  # (chart, rec) -> first week on that chart
@@ -62,15 +62,16 @@ class _Data:
         )
         for entry_id, chart, week, rec, pos, lw, note in rows:
             key = (chart, week)
-            # Best position if a printed anomaly lists one record twice in a
-            # week -- same rule as views.last_week_on_file.
-            self.pos_of[key][rec] = min(pos, self.pos_of[key].get(rec, pos))
+            pairs[key].append((rec, pos))
             self.at_pos[key][pos].append(rec)
             if lw is not None:
                 self.typed[key].append({"id": entry_id, "rec": rec, "position": pos, "typed": lw, "note": note})
             fk = (chart, rec)
             if fk not in self.first_week or week < self.first_week[fk]:
                 self.first_week[fk] = week
+        # Best position if a printed anomaly lists one record twice in a
+        # week -- the SAME rule function the week pages use, so the two agree.
+        self.pos_of = {key: best_positions(p) for key, p in pairs.items()}
         self.recordings = {
             r.id: r for r in Recording.objects.select_related("song", "label")
         }
@@ -83,17 +84,16 @@ class _Data:
 # --------------------------------------------------------------- finding
 
 def _disagreements(data):
-    """Every typed last-week number whose previous week IS on file and
-    disagrees with it -- the same test as views.classify_movement's
-    `conflict`, so this page and the ⚠ marks on the week pages always agree."""
+    """Every typed last-week number whose previous chart IS on file and
+    disagrees with it -- chart_week.last_week_conflict, the same function
+    behind the ⚠ marks on the week pages, so the two always agree."""
     found = []
     for (chart, week), entries in data.typed.items():
-        prev = (chart, week - WEEK)
-        if prev not in data.pos_of:
-            continue  # nothing on file to disagree WITH
+        prev = (chart, previous_chart_date(week))
+        previous_on_file = prev in data.pos_of
         for e in entries:
-            on_file = data.pos_of[prev].get(e["rec"])
-            if on_file != e["typed"]:
+            on_file = data.pos_of.get(prev, {}).get(e["rec"])
+            if last_week_conflict(e["typed"], on_file, previous_on_file):
                 found.append({**e, "chart": chart, "week": week, "on_file": on_file})
     return found
 
@@ -109,7 +109,7 @@ def _stretches(data, rows):
     )
     runs = []
     for key in column_weeks:
-        if runs and runs[-1][-1][0] == key[0] and key[1] - runs[-1][-1][1] == WEEK:
+        if runs and runs[-1][-1][0] == key[0] and previous_chart_date(key[1]) == runs[-1][-1][1]:
             runs[-1].append(key)
         else:
             runs.append([key])
@@ -126,7 +126,7 @@ def _stretch_evidence(data, run, by_week, all_stretch_weeks):
     rest = [k for k in chart_weeks if k not in all_stretch_weeks]
     typed_n = sum(len(data.typed[k]) for k in run)
     carry_n = sum(
-        sum(1 for rec in data.pos_of[k] if rec in data.pos_of.get((chart, k[1] - WEEK), {}))
+        sum(1 for rec in data.pos_of[k] if rec in data.pos_of.get((chart, previous_chart_date(k[1])), {}))
         for k in run
     )
     ties_in = sum(data.week_has_ties(k) for k in run)
@@ -146,7 +146,7 @@ def _stretch_evidence(data, run, by_week, all_stretch_weeks):
     # the signature of a column copied down in a spreadsheet.
     copied = []
     for key in run:
-        prev = (chart, key[1] - WEEK)
+        prev = (chart, previous_chart_date(key[1]))
         this_col = {e["position"]: e["typed"] for e in data.typed[key]}
         prev_col = {e["position"]: e["typed"] for e in data.typed.get(prev, [])}
         if len(this_col) >= 4 and sum(prev_col.get(p) == v for p, v in this_col.items()) >= len(this_col) - 1:
@@ -208,13 +208,13 @@ def _diagnose(data, row):
     order from most specific to most generic."""
     chart, week, rec = row["chart"], row["week"], row["rec"]
     T, O = row["typed"], row["on_file"]
-    prev = (chart, week - WEEK)
+    prev = (chart, previous_chart_date(week))
     occupants = data.at_pos[prev].get(T, [])
     title = _norm(data.recordings[rec].song.title)
     other_version = next(
         (x for x in occupants if x != rec and _norm(data.recordings[x].song.title) == title), None
     )
-    two_back = data.pos_of.get((chart, week - 2 * WEEK), {}).get(rec)
+    two_back = data.pos_of.get((chart, previous_chart_date(previous_chart_date(week))), {}).get(rec)
     when = lambda d: d.strftime("%b %d, %Y").replace(" 0", " ")
 
     if O is not None:
@@ -239,7 +239,7 @@ def _diagnose(data, row):
                     f"One of the two weeks may be linked to the wrong version of the song.")
         if two_back == T:
             return ("two_back", "Matches two weeks back",
-                    f"It was #{T} on {when(week - 2 * WEEK)}, the week before last. The printed number may "
+                    f"It was #{T} on {when(previous_chart_date(previous_chart_date(week)))}, the week before last. The printed number may "
                     f"have been taken from the wrong week.")
         if abs(T - O) == 1:
             return ("off_by_one", "One place off",
@@ -262,7 +262,7 @@ def _diagnose(data, row):
                 f"row, or last week's, may be linked to the wrong version.")
     if two_back is not None:
         return ("missing", "Missing from last week?",
-                f"On the chart two weeks ago (#{two_back}, {when(week - 2 * WEEK)}) and this week, but not on last "
+                f"On the chart two weeks ago (#{two_back}, {when(previous_chart_date(previous_chart_date(week)))}) and this week, but not on last "
                 f"week's chart on file. It may have been left out when last week was entered.")
     if not occupants:
         last = max(data.pos_of[prev].values())
@@ -285,7 +285,7 @@ def _diagnose(data, row):
 
 def _row_view(data, row):
     rec = data.recordings[row["rec"]]
-    prev = (row["chart"], row["week"] - WEEK)
+    prev = (row["chart"], previous_chart_date(row["week"]))
     occupants = data.at_pos[prev].get(row["typed"], [])
     return {
         **row,
@@ -300,7 +300,7 @@ def _row_view(data, row):
             f"{data.recordings[x].song.title} — {data.recordings[x].credit_text}"
             for x in occupants if x != row["rec"]
         ],
-        "prev_week": row["week"] - WEEK,
+        "prev_week": previous_chart_date(row["week"]),
     }
 
 

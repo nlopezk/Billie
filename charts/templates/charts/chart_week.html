@@ -45,8 +45,8 @@ strung through the subtitle sentence.
             disabled (aria-disabled), rather than vanishing or turning into
             plain text -- so the bar doesn't change shape at the ends.
             {% endcomment %}
-            {% if prev_week %}
-                <a class="btn" href="{% url 'charts:chart_week' chart.id prev_week|date:'Y-m-d' %}">&larr; {{ prev_week }}</a>
+            {% if prev_week_on_file %}
+                <a class="btn" href="{% url 'charts:chart_week' chart.id prev_week_on_file|date:'Y-m-d' %}">&larr; {{ prev_week_on_file }}</a>
             {% else %}
                 <span class="btn" aria-disabled="true">&larr; First week on file</span>
             {% endif %}
@@ -77,8 +77,8 @@ strung through the subtitle sentence.
         </div>
 
         <div>
-            {% if next_week %}
-                <a class="btn" href="{% url 'charts:chart_week' chart.id next_week|date:'Y-m-d' %}">{{ next_week }} &rarr;</a>
+            {% if next_week_on_file %}
+                <a class="btn" href="{% url 'charts:chart_week' chart.id next_week_on_file|date:'Y-m-d' %}">{{ next_week_on_file }} &rarr;</a>
             {% else %}
                 <span class="btn" aria-disabled="true">Last week on file &rarr;</span>
             {% endif %}
@@ -134,8 +134,8 @@ strung through the subtitle sentence.
                     {% if row.is_tie %}<span class="tie-badge" title="Tied with another recording this week">T</span>{% endif %}
                 </td>
                 {% comment %}
-                Movement comes from last week's chart ON FILE (views.
-                classify_movement), never from whether a last-week number
+                Movement comes from the previous chart ON FILE (chart_week.
+                ChartWeek.movement), never from whether a last-week number
                 happened to be typed. RE = re-entry: on this chart before,
                 but not last week. Blank = last week isn't on file, so
                 there's nothing to compare against.

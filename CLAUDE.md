@@ -378,9 +378,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
   which is only filled when a last-week number is *typed* — so a week entered by search
   (Country Jockeys 1951-04-07) read as ten debuts when nine were carryovers; 131 entries
-  across the database were shown wrongly as NEW. Now `views.last_week_on_file()` is the
-  single source of "was it on the chart last week?" and `views.classify_movement()`
-  turns it into up / down / same / **new** (never on this chart before) / **re**
+  across the database were shown wrongly as NEW. Now `charts/chart_week.py`'s
+  `ChartWeek` (see the 2026-10-27 bullet below) is the single source of "was it on the
+  chart last week?", and `ChartWeek.movement()` turns it into up / down / same / **new** (never on this chart before) / **re**
   (re-entry: on it before, not last week) / **unknown** (previous week not on file — a
   gap or the chart's first week; *not* "new", since nothing says it wasn't there). With
   no previous week on file, a typed number is the only evidence and is used.
@@ -390,8 +390,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     hover, plus a count above the table (non-negotiable #4).
   - **Those disagreements are listed and diagnosed at `/audit/last-week/`** (built
     2026-10-18; `charts/lastweek_audit.py`, button on the chart list, and a "See why"
-    button in each week's warning). Of ~9,100 typed last-week numbers, 489 disagree with
-    the previous week on file. They split into two very different things, reported
+    button in each week's warning). When built, 489 of ~9,100 typed last-week numbers
+    disagreed with the previous week on file; after the owner's corrections since, **5
+    remain** (checked 2026-10-27). The 489 split into two very different things, reported
     differently on purpose:
     - **460 sit in three unbroken stretches of R&B Jukebox** (1943-08-07 for 9 weeks,
       1943-10-16 for 42, 1944-08-12 for 15), where most of each week's column is wrong.
@@ -415,8 +416,21 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
       `LastWeekAuditTests` (one per cause, plus: total equals the week pages' ⚠ count,
       and titles are escaped inside the HTML explanations).
   - The entry form shows "last week #N" on a row picked by search (or an edited week
-    saved without a number) — `views._last_week_hint`; a hint only, the box is never
-    filled from it. Tests: `ChartWeekMovementTests`.
+    saved without a number) — `ChartWeek.last_week_position`; a hint only, the box is
+    never filled from it. Tests: `ChartWeekTests`.
+- **Chart week module, 2026-10-27** — `charts/chart_week.py`, from an architecture review
+  (vocabulary in `GLOSSARY.md`, decision in `docs/adr/0001-...`). Everything about "the
+  previous chart" now lives in one place: `ChartWeek(chart, week_date)` answers
+  `previous_on_file`, `resolve(n)` (a typed last-week number → its entries: none / one /
+  a tie, which the caller must ask about), `last_week_position()`, `movement()` and
+  `streak()`. **The previous chart is the previous publication date (7 days back), never
+  "the previous week on file"** — after a gap that would be two issues old and "#4" would
+  quietly resolve to the wrong record. `previous_chart_date()` / `next_chart_date()` are
+  the only place that 7 lives. The last-week audit can't build ~1,300 `ChartWeek`s (too
+  many queries), so it shares the two RULES instead — `best_positions()` and
+  `last_week_conflict()` — and therefore agrees with the week pages by construction. The
+  browser's ‹ prev / next › arrows are named `prev_week_on_file` / `next_week_on_file`
+  because they're navigation (they skip gaps), not chart logic.
 - **Next step when resuming:** get a Discogs token in place and run a first batch
   (`/discogs/` → "Search next 10", or `python manage.py discogs_match --limit 20`) to
   see how well 1940s-50s 78rpm singles actually resolve on Discogs — the matching logic
