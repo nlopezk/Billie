@@ -107,6 +107,14 @@ def create_recording(new):
     aliases, so typing "Joe Turner" reuses "Big Joe Turner" instead of
     quietly creating a second act. Credits are written only for a
     recording created HERE; a reused one keeps the credits it has.
+
+    Two billing checks, both notes only -- nothing is changed by either
+    (non-negotiable #4: surface the conflict, never overwrite):
+      * a REUSED recording whose credited artists differ from the ones
+        typed -- otherwise the typed artists would be dropped silently;
+      * a new FLIP-SIDE billed differently from the other side(s) of its
+        release -- usually a typo, but sometimes really printed that way
+        (Red Foley / "Red Foley With Jordanaires" on Decca 14505).
     """
     with transaction.atomic():
         song, _ = Song.objects.get_or_create(title=new.song_title)
@@ -124,6 +132,23 @@ def create_recording(new):
                 RecordingCredit.objects.create(recording=recording, artist=artist, credit_order=order)
 
     notes = []
+    if not created:
+        on_file = _credited_artists(recording)
+        if [a.id for a in on_file] != [a.id for a in artists]:
+            notes.append(
+                f"{recording.catalog_display} was already on file, credited to "
+                f"{_names(on_file)} (printed “{recording.credit_text}”), and was used as it is. "
+                f"What you typed — {_names(artists)} — was NOT saved. If the page really "
+                f"credits it differently, fix it in the admin."
+            )
+    else:
+        for flip in flip_sides(recording):
+            if flip.credit_text != recording.credit_text or _credited_artists(flip) != artists:
+                notes.append(
+                    f"Its flip-side ({flip.side or 'no side'}, “{flip.song.title}”) is billed "
+                    f"“{flip.credit_text}”; this side is billed “{recording.credit_text}”. "
+                    f"Kept as typed — check the page if that's not how it's printed."
+                )
     # The exact mistake that produced 43 combined-credit rows needing
     # cleanup: typing "Ernest Tubb - Red Foley" into ONE artist box. Not
     # blocking -- credit_text still records the billing correctly and
@@ -138,3 +163,22 @@ def create_recording(new):
                 f"gets filed as one act."
             )
     return recording, notes
+
+
+def flip_sides(recording):
+    """The other recordings on `recording`'s release (same label and
+    catalog number, another side), by side."""
+    return list(
+        Recording.objects.filter(label=recording.label, catalog_number=recording.catalog_number)
+        .exclude(pk=recording.pk).select_related("song").order_by("side")
+    )
+
+
+def _credited_artists(recording):
+    # The recording's artists in billing (credit) order.
+    return [c.artist for c in recording.credits.select_related("artist").order_by("credit_order")]
+
+
+def _names(artists):
+    return " / ".join(a.canonical_name for a in artists) or "nobody"
+

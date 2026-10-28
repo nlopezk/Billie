@@ -632,6 +632,49 @@ class EntryFormCollaborationTests(TestCase):
         self.assertEqual(first, again)
         self.assertEqual(Recording.objects.filter(catalog_number="46200").count(), 1)
 
+    def test_a_reused_recording_with_different_artists_warns_and_changes_nothing(self):
+        first, _ = self._create(["Ernest Tubb"])
+        again, notes = self._create(["Red Foley"])
+        self.assertEqual(again, first)
+        self.assertEqual([c.artist.canonical_name for c in again.credits.all()], ["Ernest Tubb"])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Ernest Tubb", notes[0])
+        self.assertIn("Red Foley", notes[0])
+        self.assertIn("NOT saved", notes[0])
+
+    def test_a_reused_recording_with_the_same_artists_says_nothing(self):
+        self._create(["Ernest Tubb"])
+        _, notes = self._create(["Ernest Tubb"])
+        self.assertEqual(notes, [])
+
+    def _flip(self, artists, credit_text="", side="B", title="The Flip"):
+        names = list(artists)
+        return entry_recording_lib.create_recording(entry_recording_lib.NewRecording(
+            song_title=title, artist_names=names, credit_text=credit_text or " - ".join(names),
+            label_name="Decca", catalog_number="46200", side=side,
+        ))
+
+    def test_a_flip_side_billed_differently_gets_a_note_but_is_kept(self):
+        # Decca 14505 really is printed this way: Red Foley on A,
+        # "Red Foley With Jordanaires" on B.
+        self._create(["Red Foley"])
+        flip, notes = self._flip(["Red Foley"], credit_text="Red Foley With Jordanaires")
+        self.assertEqual(flip.credit_text, "Red Foley With Jordanaires")   # kept as typed
+        self.assertEqual(len(notes), 1)
+        self.assertIn("“Red Foley”", notes[0])
+        self.assertIn("“Red Foley With Jordanaires”", notes[0])
+
+    def test_a_flip_side_billed_the_same_says_nothing(self):
+        self._create(["Ernest Tubb", "Red Foley"])
+        _, notes = self._flip(["Ernest Tubb", "Red Foley"])
+        self.assertEqual(notes, [])
+
+    def test_flip_sides_lists_the_other_sides_of_the_release(self):
+        a, _ = self._create(["Ernest Tubb"])
+        b, _ = self._flip(["Ernest Tubb"])
+        self.assertEqual(entry_recording_lib.flip_sides(a), [b])
+        self.assertEqual(entry_recording_lib.flip_sides(b), [a])
+
     def test_joined_name_in_one_box_still_creates_but_warns(self):
         # Non-blocking on purpose -- credit_text records the billing
         # correctly either way and /credits/ can unpick it -- but the

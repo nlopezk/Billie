@@ -463,6 +463,13 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   artist name becomes an `Artist` the same way here and in a /credits/ split, via
   `credits.resolve_or_create_artist()`. `views._render_resolved()` is the one place a
   picked or created row gets its weeks / last-week hints.
+  **Two billing notes, never changes** (since 2026-10-27): (1) a REUSED recording (same
+  label + catalog # + side already on file) whose credited artists differ from the ones
+  typed says so, naming both — before, the typed artists were dropped silently; (2) a new
+  FLIP-SIDE billed differently from the other side(s) of its release gets a note, since
+  it's usually a typo but sometimes really printed that way (4 such releases on file, e.g.
+  Decca 14505). `entry_recording.flip_sides(recording)` is the shared "other sides of this
+  release" lookup.
 - **Discogs match workflow, 2026-10-27** — `charts/discogs_workflow.py`. Every step a
   `DiscogsMatch` goes through is one function: `ensure_matches`, `search` /
   `store_shortlist`, `sole_exact_candidate`, `confirm`, `link_manually(..., overwrite=)`,
