@@ -130,7 +130,7 @@ reachable by hovering.
                     <td class="num rank">{{ r.rank }}</td>
                     <td class="wrap">
                         <a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ r.matrix_query|urlencode }}{{ scope }}">{{ r.song }}</a>
-                        <span class="ranking-meta">{{ r.credit_text }} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
+                        <span class="ranking-meta">{% include "charts/_credit.html" with credit=r.credit_text artist_id=r.artist_id %} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
                     </td>
                     <td class="num ranking-key">{{ r.weeks_at_1 }}</td>
                     <td class="num muted">{{ r.weeks_on }}</td>
@@ -158,7 +158,7 @@ reachable by hovering.
                     <td class="num rank">{{ r.rank }}</td>
                     <td class="wrap">
                         <a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ r.matrix_query|urlencode }}{{ scope }}">{{ r.song }}</a>
-                        <span class="ranking-meta">{{ r.credit_text }} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
+                        <span class="ranking-meta">{% include "charts/_credit.html" with credit=r.credit_text artist_id=r.artist_id %} &middot; <span class="nowrap">{{ r.catalog_display }}</span></span>
                     </td>
                     <td class="num ranking-key">{{ r.weeks_on }}</td>
                     <td class="num muted">{{ r.peak }}</td>
@@ -185,7 +185,7 @@ reachable by hovering.
                 {% for a in top_artists.rows %}
                 <tr>
                     <td class="num rank">{{ a.rank }}</td>
-                    <td class="wrap"><a class="ranking-title" href="{% url 'charts:recordings_matrix' %}?group=recording&q={{ a.name|urlencode }}{{ scope }}">{{ a.name }}</a></td>
+                    <td class="wrap"><a class="ranking-title" href="{% url 'charts:artist_profile' a.artist_id %}">{{ a.name }}</a></td>
                     <td class="num ranking-key">{{ a.weeks_on }}</td>
                     <td class="num muted">{{ a.recordings }}</td>
                     <td class="num muted">{{ a.record_weeks }}</td>

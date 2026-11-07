@@ -374,6 +374,35 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     Each graph has a "Show as table" twin; marks are focusable with a shared tooltip.
   - Verified against a brute-force recount in plain Python sets: zero mismatches on all
     data and on Country/1950.
+- **Artist pages, built 2026-11-07** — `/artists/` (browser) and `/artists/<id>/`
+  (profile); every number from `charts/artists.py` (`browse`, `profile`), views thin,
+  "Artists" in the top nav. **An artist's records are the ones they're CREDITED on**
+  (`RecordingCredit`), never a printed-text match, so a **collaboration** (GLOSSARY.md)
+  counts in full for each act, the same definition as the dashboard's Top artists; all
+  numbers use the dashboard's definitions, so the two pages agree (checked: Louis Jordan
+  342 weeks / 58 records on both).
+  - **Browser:** search matching canonical name, alias or a printed credit ("sinatra"
+    finds Frank Sinatra through "James - Sinatra"; every word must match), Genre/Chart
+    filters, a sortable table (weeks, records, best peak, first/last week, chart
+    badges). Live-filters via HTMX like the matrix.
+  - **Profile:** a career header (name, **"Printed as"** = every printed credit their
+    records carried, aliases, span, charts), then the dashboard's filter row with the
+    **slider running over the artist's own span** (the median artist charted for 8
+    weeks, which would be a sliver of all 453), then: headline numbers (weeks on chart,
+    records, best peak naming the record, weeks at #1, charts), **Records on chart per
+    month** (per week for short spans), Labels (only if more than one), a Discography
+    (the recordings matrix's one-row-per-recording query, which gained `artist` and
+    `from`/`to` scopes for this), and Collaborators (only if any). The dashboard's
+    rankings are deliberately absent: for one artist they duplicate the discography.
+    The filter row and its script are shared partials now (`_range_filters.html`,
+    `_range_script.html`, `dashboard.range_context()`), so both pages run the same code.
+  - **Links:** a printed credit links to the profile when **exactly one** artist is
+    credited (`models.sole_credited_artist_ids`, rendered by `_credit.html`), text kept
+    as printed; a collaboration stays plain text. Linked on the chart browser, the
+    recordings matrix and the dashboard (rankings + Top artists names), deliberately
+    not on the audits, the Discogs pages or the entry form. A per-record timeline graph
+    is GitHub issue #4. Tests: `ArtistBrowseTests`, `ArtistProfileTests`,
+    `ArtistLinkTests`.
 - **Movement comes from the data, not from typed last-week numbers (fixed 2026-10-18).**
   The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
   which is only filled when a last-week number is *typed* — so a week entered by search

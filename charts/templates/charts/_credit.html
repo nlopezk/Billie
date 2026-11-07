@@ -1,0 +1,7 @@
+{% comment %}
+charts/templates/charts/_credit.html -- a recording's printed credit,
+exactly as printed (non-negotiable #4), linked to the artist's profile
+when exactly ONE artist is credited (models.sole_credited_artist_ids).
+A collaboration has no single artist to point at, so it stays plain text.
+Context: credit, artist_id (None for a collaboration).
+{% endcomment %}{% if artist_id %}<a class="artist-link" href="{% url 'charts:artist_profile' artist_id %}">{{ credit }}</a>{% else %}{{ credit }}{% endif %}

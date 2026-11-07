@@ -1,0 +1,65 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/artist_profile.html -- one artist's profile
+(/artists/<id>/).
+
+The header describes the whole career and doesn't change with the
+filters: name, every printed credit their records carried ("Printed as",
+the magazine's own words, never altered), aliases, span on file and
+charts. Below it, the dashboard's filter row -- with the slider running
+over the ARTIST'S span only -- scopes everything in #dash-results
+(_artist_profile_results.html). Every number comes from charts/artists.py,
+by credited artist: a collaboration counts in full for each act.
+{% endcomment %}
+{% block title %}{{ artist.canonical_name }}{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>{{ artist.canonical_name }}</h1>
+            <p class="subtitle">
+                {% if first_week %}
+                    On file {{ first_week|date:"M j, Y" }} &ndash; {{ last_week|date:"M j, Y" }}
+                    {% for c in charts %}<span class="chart-badge" title="{{ c }}">{{ c }}</span>{% endfor %}
+                {% else %}
+                    No chart entries on file.
+                {% endif %}
+            </p>
+        </div>
+        <a class="btn btn-ghost" href="{% url 'charts:artist_list' %}">All artists</a>
+    </div>
+
+    {% if printed_as or aliases %}
+    <p class="artist-printed-as">
+        <span class="muted">Printed as</span>
+        {% for text, records in printed_as %}
+            <span class="printed-credit" title="{{ records }} record{{ records|pluralize }}">&ldquo;{{ text }}&rdquo;</span>{% if not forloop.last %} &middot; {% endif %}
+        {% endfor %}
+        {% if aliases %}
+            <span class="muted">&middot; also known as</span>
+            {% for a in aliases %}&ldquo;{{ a }}&rdquo;{% if not forloop.last %}, {% endif %}{% endfor %}
+        {% endif %}
+    </p>
+    {% endif %}
+
+    {% if has_data %}
+        {% comment %}
+        The filter row only when there's a range to filter: an artist on
+        file for a single week has nothing for a slider to do.
+        {% endcomment %}
+        {% if week_points|length > 1 %}
+        {% url 'charts:artist_profile' artist.id as filter_url %}
+        {% include "charts/_range_filters.html" with filter_url=filter_url show_top_n=False all_weeks_label="Whole span" %}
+        {{ week_points|json_script:"dash-weeks" }}
+        {% endif %}
+
+        <div id="dash-results" class="dash-results">
+            {% include "charts/_artist_profile_results.html" %}
+        </div>
+
+        {% include "charts/_range_script.html" %}
+    {% endif %}
+{% endblock %}

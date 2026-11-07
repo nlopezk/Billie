@@ -33,6 +33,9 @@ urlpatterns = [
     # filter row (date range, genre, chart). Read-only. Same top-level
     # placement reasoning as recordings/ above.
     path("dashboard/", views.dashboard, name="dashboard"),
+    # Artist browser (search + sortable table) and one artist's profile.
+    path("artists/", views.artist_list, name="artist_list"),
+    path("artists/<int:artist_id>/", views.artist_profile, name="artist_profile"),
 
     # /audit/last-week/                        -- every typed last-week number
     # that disagrees with the previous week on file, with the likely cause.

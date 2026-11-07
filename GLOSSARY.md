@@ -100,6 +100,10 @@ _Avoid_: Performer, act name
 **Alias**:
 Another observed spelling or billing of an artist.
 
+**Collaboration**:
+A recording credited to two or more artists; it counts in full for each of them.
+_Avoid_: Duet (unless it is one), split credit
+
 **Printed anomaly**:
 A chart entry the magazine printed in a way the data can't otherwise represent, kept as
 printed with a note.

@@ -1,0 +1,89 @@
+{% comment %}
+charts/templates/charts/_range_filters.html
+
+The date-range filter row shared by the dashboard and an artist profile:
+a two-handle slider over `week_points` (every week on file for the
+dashboard; just the artist's own span for a profile), Year shortcuts,
+Genre, Chart, and -- dashboard only -- Top N. Re-GETs `filter_url` via
+HTMX on any change and swaps #dash-results. The slider itself is driven
+by _range_script.html.
+
+Context: filter_url, show_top_n, all_weeks_label (optional), plus what
+dashboard.range_context() and parse_filters() provide.
+{% endcomment %}
+{% comment %}
+hx-trigger, piece by piece:
+  * change from:select.dash-filter -- Genre / Chart. The Year shortcut
+    select is deliberately NOT .dash-filter: it has to move the slider
+    handles BEFORE the request goes out, so its own script fires the
+    request (via range-changed) once the hidden dates are updated.
+  * range-changed -- custom event the slider script fires when a
+    handle is RELEASED (not on every pixel of a drag: 437 requests
+    per sweep would be absurd, and the labels already update live).
+  * input changed delay:500ms from:#top-n -- typing a new N.
+hx-indicator puts .htmx-request on the results while they reload, and
+the CSS dims them -- the old numbers stay put instead of flashing.
+{% endcomment %}
+<form id="dash-filters" class="filter-bar dash-filter-bar" method="get" action="{{ filter_url }}"
+      hx-get="{{ filter_url }}" hx-target="#dash-results" hx-push-url="true"
+      hx-indicator="#dash-results"
+      hx-trigger="change from:select.dash-filter, range-changed, input changed delay:500ms from:#top-n">
+
+    <input type="hidden" name="from" id="range-from" value="{{ filters.date_from|date:'Y-m-d' }}">
+    <input type="hidden" name="to" id="range-to" value="{{ filters.date_to|date:'Y-m-d' }}">
+
+    <div class="range-field">
+        <span class="range-heading">
+            Weeks
+            <span id="range-label" class="range-label">{{ filters.date_from|date:"M j, Y" }} &ndash; {{ filters.date_to|date:"M j, Y" }} &middot; {{ range_weeks }} week{{ range_weeks|pluralize }}</span>
+        </span>
+        <div class="range-slider">
+            <div class="range-track"><div class="range-fill" id="range-fill"></div></div>
+            {% comment %}
+            No `name` on either: they're the handles, not the data. The
+            hidden inputs above are what the form submits.
+            {% endcomment %}
+            <input type="range" id="range-lo" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ from_index }}" aria-label="First week">
+            <input type="range" id="range-hi" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ to_index }}" aria-label="Last week">
+        </div>
+    </div>
+
+    <label>
+        Year
+        <select id="year-preset" aria-label="Jump to a year">
+            <option value="" {% if not preset %}selected{% endif %}>Custom</option>
+            <option value="all" {% if preset == "all" %}selected{% endif %}>{{ all_weeks_label|default:"All weeks" }}</option>
+            {% for y in year_options %}
+            <option value="{{ y.year }}" data-first="{{ y.first }}" data-last="{{ y.last }}" {% if preset == y.year|stringformat:"s" %}selected{% endif %}>{{ y.year }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    <label>
+        Genre
+        <select name="genre" class="dash-filter">
+            <option value="">All genres</option>
+            {% for value, label in genre_choices %}
+            <option value="{{ value }}" {% if value == filters.genre %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    <label>
+        Chart
+        <select name="chart" class="dash-filter">
+            <option value="">All charts</option>
+            {% for c in all_charts %}
+            <option value="{{ c.id }}" {% if filters.chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    {% if show_top_n %}
+    <label>
+        Top
+        <input type="number" name="n" id="top-n" value="{{ filters.n }}" min="1" max="100" class="top-n-input">
+    </label>
+    {% endif %}
+</form>
+

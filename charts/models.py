@@ -13,6 +13,8 @@
 # points at docs/schema.sql (regenerated after every migration), not here,
 # for the actual applied SQL.
 
+from collections import defaultdict
+
 from django.db import models
 from django.core.exceptions import ValidationError
 
@@ -168,6 +170,24 @@ class RecordingCredit(models.Model):
 # are per-TRACK though, so those get pulled by finding this side's track
 # within the release's tracklist (see charts/discogs.py), falling back to
 # release-level credits when the track can't be identified.
+
+
+def sole_credited_artist_ids(recording_ids):
+    """{recording_id: artist_id} for the recordings credited to exactly ONE
+    artist; collaborations are left out.
+
+    What decides whether a printed credit is shown as a link to an artist
+    profile: "Lester Young's Quartet" has one credited artist (Lester
+    Young), so it links to him; "James - Sinatra" credits two, so it stays
+    plain text -- one link can't honestly point at both. One query for any
+    number of recordings.
+    """
+    credited = defaultdict(set)
+    for recording_id, artist_id in RecordingCredit.objects.filter(
+        recording_id__in=recording_ids
+    ).values_list("recording_id", "artist_id"):
+        credited[recording_id].add(artist_id)
+    return {rec: next(iter(artists)) for rec, artists in credited.items() if len(artists) == 1}
 
 
 def discogs_url_for(release_id, master_id):

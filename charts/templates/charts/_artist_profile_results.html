@@ -1,0 +1,139 @@
+{% comment %}
+charts/templates/charts/_artist_profile_results.html -- everything on an
+artist profile that the filter row scopes: headline numbers, records on
+chart over time, labels (only with more than one), the discography and
+collaborators (only if any). Rendered by {% include %} on a full page
+load and directly as the HTMX response to a filter change.
+
+The graph is the dashboard's plain HTML/CSS bar chart (same classes, same
+shared tooltip via data-tip-*, same "Show as table" twin) -- offline, no
+chart library. Every number is from charts/artists.py.
+{% endcomment %}
+<section class="kpi-row" aria-label="Headline numbers">
+    {% for k in kpis %}
+    <div class="kpi" title="{{ k.hint }}">
+        <div class="kpi-label">{{ k.label }}</div>
+        <div class="kpi-value">{{ k.value }}</div>
+        {% if k.sub %}<div class="kpi-sub">{{ k.sub }}</div>{% endif %}
+    </div>
+    {% endfor %}
+</section>
+
+<div class="viz-grid">
+    <figure class="viz-card">
+        <figcaption>
+            <h2>Records on chart per {{ records_over_time.unit }}</h2>
+            <p class="viz-sub">How many of their records were on a selected chart &mdash; a record on for several weeks of one {{ records_over_time.unit }} counts once.</p>
+        </figcaption>
+        <div class="viz-columns-wrap">
+            <div class="viz-plot">
+                {% for t in records_over_time.ticks %}
+                <div class="viz-gridline" style="bottom: {{ t.pct }}%;"><span>{{ t.value }}</span></div>
+                {% endfor %}
+                <div class="viz-columns">
+                    {% for b in records_over_time.buckets %}
+                    <div class="viz-col" tabindex="0" data-tip-value="{{ b.value }} record{{ b.value|pluralize }}" data-tip-label="{{ b.label }}"
+                         aria-label="{{ b.label }}: {{ b.value }} record{{ b.value|pluralize }} on chart">
+                        <div class="viz-bar" style="height: {{ b.height_pct }}%;"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="viz-x-axis">
+                {% for b in records_over_time.buckets %}<span>{{ b.axis_label }}</span>{% endfor %}
+            </div>
+        </div>
+        <details class="viz-table">
+            <summary>Show as table</summary>
+            <div class="viz-table-scroll">
+                <table class="dense-table">
+                    <thead><tr><th>{{ records_over_time.unit|capfirst }}</th><th class="num">Records on chart</th></tr></thead>
+                    <tbody>
+                        {% for b in records_over_time.buckets %}<tr><td>{{ b.label }}</td><td class="num">{{ b.value }}</td></tr>{% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </figure>
+
+    {% if labels|length > 1 %}
+    <figure class="viz-card">
+        <figcaption>
+            <h2>Labels</h2>
+            <p class="viz-sub">Records per label.</p>
+        </figcaption>
+        <div class="viz-hbars">
+            {% for l in labels %}
+            <span class="viz-hbar-name">{{ l.label }}</span>
+            <div class="viz-hbar-track" tabindex="0" data-tip-value="{{ l.value }} record{{ l.value|pluralize }}" data-tip-label="{{ l.label }}"
+                 aria-label="{{ l.label }}: {{ l.value }} record{{ l.value|pluralize }}">
+                <div class="viz-hbar" style="width: {{ l.width_pct }}%;"></div>
+                <span class="viz-hbar-value">{{ l.value }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </figure>
+    {% endif %}
+</div>
+
+<section class="ranking-card">
+    <h2>Discography</h2>
+    <p class="summary">{{ discography.total_rows }} record{{ discography.total_rows|pluralize }} on the selected charts, one row each, merged across charts.</p>
+    {% with columns=discography.columns %}
+    <div class="table-wrap">
+    <table class="dense-table">
+        <colgroup>
+            <col style="width: 5.25rem;"><col><col style="width: 11rem;"><col style="width: 7.5rem;">
+            <col style="width: 8rem;"><col style="width: 4.25rem;"><col style="width: 5.5rem;"><col style="width: 5.5rem;">
+        </colgroup>
+        <thead>
+            <tr>
+                <th class="num"><a class="sort-link" href="{{ columns.peak.href }}">{{ columns.peak.label }}<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
+                <th><a class="sort-link" href="{{ columns.song.href }}">Song<span class="sort-arrow">{{ columns.song.arrow }}</span></a></th>
+                <th><a class="sort-link" href="{{ columns.artist.href }}">Printed credit<span class="sort-arrow">{{ columns.artist.arrow }}</span></a></th>
+                <th><a class="sort-link" href="{{ columns.chart.href }}">{{ columns.chart.label }}<span class="sort-arrow">{{ columns.chart.arrow }}</span></a></th>
+                <th>Label / catalog #</th>
+                <th class="num" title="Calendar weeks on any selected chart -- a week on three charts at once counts once"><a class="sort-link" href="{{ columns.weeks.href }}">Weeks<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
+                <th><a class="sort-link" href="{{ columns.first.href }}">First<span class="sort-arrow">{{ columns.first.arrow }}</span></a></th>
+                <th><a class="sort-link" href="{{ columns.last.href }}">Last<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in discography.rows %}
+            <tr>
+                <td class="pos num">
+                    {{ r.peak_position }}
+                    {% if r.peak_chart_code %}<span class="peak-source" title="Best position on any chart &mdash; this one came from {{ r.peak_chart_label }}">{{ r.peak_chart_code }}</span>{% endif %}
+                </td>
+                <td class="wrap">{{ r.recording__song__title }}</td>
+                {# The printed credit, as printed; a collaboration's other act is in Collaborators below. #}
+                <td class="wrap">{{ r.recording__credit_text }}</td>
+                <td>{% for b in r.chart_badges %}<span class="chart-badge" title="{{ b.label }} &mdash; peak {{ b.peak }}">{{ b.code }}</span>{% endfor %}</td>
+                <td>{{ r.catalog_display }}</td>
+                <td class="num">{{ r.weeks_charted }}</td>
+                <td><a href="{% url 'charts:chart_week' r.first_chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a></td>
+                <td><a href="{% url 'charts:chart_week' r.last_chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="8" class="empty-row">Nothing of theirs on the selected charts in this range.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endwith %}
+</section>
+
+{% if collaborators %}
+<section class="ranking-card">
+    <h2>Collaborators</h2>
+    <p class="summary">Artists credited alongside them on a record in this range.</p>
+    <table class="dense-table">
+        <thead><tr><th>Artist</th><th class="num">Records together</th></tr></thead>
+        <tbody>
+            {% for c in collaborators %}
+            <tr><td class="wrap"><a href="{% url 'charts:artist_profile' c.id %}">{{ c.name }}</a></td><td class="num">{{ c.records }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}

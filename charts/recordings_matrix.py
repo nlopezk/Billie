@@ -18,7 +18,9 @@ from urllib.parse import urlencode
 from django.db.models import Count, Max, Min
 
 from . import search as search_lib
-from .models import Chart, ChartEntry, discogs_url_for, format_catalog
+from datetime import date
+
+from .models import Chart, ChartEntry, discogs_url_for, format_catalog, sole_credited_artist_ids
 
 
 def build(params):
@@ -116,6 +118,14 @@ def _query(params):
     sort = params.get("sort", "peak")
     direction = params.get("dir", "asc")
     group = params.get("group", "chart")
+    # Two scopes the matrix page itself never sets, used by an artist
+    # profile's discography (charts/artists.py): only this artist's
+    # recordings (by credit -- a collaboration counts for each act), and
+    # only weeks inside the profile's date window.
+    artist_id = params.get("artist", "")
+    if not str(artist_id).isdigit():
+        artist_id = ""
+    date_from, date_to = _parse_date(params.get("from")), _parse_date(params.get("to"))
     if sort not in RECORDINGS_MATRIX_SORTS:
         sort = "peak"
     if group not in RECORDINGS_MATRIX_GROUPS:
@@ -127,6 +137,14 @@ def _query(params):
         entries = entries.filter(chart__category=genre)
     if chart_id:
         entries = entries.filter(chart_id=chart_id)
+    if artist_id:
+        # A recording credits an artist at most once (unique_recording_artist),
+        # so this join can't duplicate entries and inflate any count.
+        entries = entries.filter(recording__credits__artist_id=artist_id)
+    if date_from:
+        entries = entries.filter(week_date__gte=date_from)
+    if date_to:
+        entries = entries.filter(week_date__lte=date_to)
     if q:
         # The shared recording search (charts/search.py) -- "Capitol 304"
         # finds a Capitol release cataloged 304 here too.
@@ -275,7 +293,18 @@ def _query(params):
             tooltip_lines.append(f"Written by: {row['recording__discogs__songwriters']}")
         row["discogs_tooltip"] = "\n".join(tooltip_lines) or "No details cached yet"
 
-    state = {"genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction, "group": group}
+    # Each row's printed credit links to its artist's profile when exactly
+    # ONE artist is credited; collaborations stay plain text.
+    sole_artist = sole_credited_artist_ids([row["recording_id"] for row in rows])
+    for row in rows:
+        row["artist_id"] = sole_artist.get(row["recording_id"])
+
+    state = {
+        "genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction, "group": group,
+        "artist": artist_id,
+        "from": date_from.isoformat() if date_from else "",
+        "to": date_to.isoformat() if date_to else "",
+    }
     return rows, state
 
 
@@ -302,6 +331,9 @@ def _columns(state):
         params = {
             "genre": state["genre"], "chart": state["chart"], "q": state["q"],
             "group": state["group"], "sort": key, "dir": next_dir,
+            # Carried too, so sorting an artist profile's discography keeps
+            # its date window (empty -- and so left out -- on the matrix page).
+            "from": state["from"], "to": state["to"],
         }
         columns[key] = {
             "label": label,
@@ -310,3 +342,13 @@ def _columns(state):
             "arrow": ("▲" if state["dir"] == "asc" else "▼") if is_active else "",
         }
     return columns
+
+
+def _parse_date(value):
+    # An ISO date, or None for a missing or malformed one -- a bad value
+    # just means "no date limit", never an error page.
+    try:
+        return date.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+

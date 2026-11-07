@@ -1,0 +1,43 @@
+{% comment %}
+charts/templates/charts/_artist_list_results.html -- the artist browser's
+table. Rendered by {% include %} on a full page load and directly as the
+HTMX response to a filter change, so the two can't drift. The header
+lives in here because each sort link carries the current filters
+(artists.browse builds them).
+{% endcomment %}
+<p class="summary">{{ rows|length }} artist{{ rows|length|pluralize }}{% if q %} matching &ldquo;{{ q }}&rdquo;{% endif %}.</p>
+<div class="table-wrap">
+<table class="dense-table">
+    <colgroup>
+        <col>
+        <col style="width: 5rem;"><col style="width: 5rem;"><col style="width: 5.5rem;">
+        <col style="width: 7rem;"><col style="width: 7rem;"><col style="width: 9rem;">
+    </colgroup>
+    <thead>
+        <tr>
+            <th><a class="sort-link" href="{{ columns.name.href }}">{{ columns.name.label }}<span class="sort-arrow">{{ columns.name.arrow }}</span></a></th>
+            <th class="num" title="Calendar weeks with at least one of their records on a chart in scope"><a class="sort-link" href="{{ columns.weeks.href }}">{{ columns.weeks.label }}<span class="sort-arrow">{{ columns.weeks.arrow }}</span></a></th>
+            <th class="num" title="Different records that charted (collaborations included)"><a class="sort-link" href="{{ columns.records.href }}">{{ columns.records.label }}<span class="sort-arrow">{{ columns.records.arrow }}</span></a></th>
+            <th class="num" title="Best position any of their records reached"><a class="sort-link" href="{{ columns.peak.href }}">{{ columns.peak.label }}<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.first.href }}">{{ columns.first.label }}<span class="sort-arrow">{{ columns.first.arrow }}</span></a></th>
+            <th><a class="sort-link" href="{{ columns.last.href }}">{{ columns.last.label }}<span class="sort-arrow">{{ columns.last.arrow }}</span></a></th>
+            <th>Charts</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for a in rows %}
+        <tr>
+            <td class="wrap"><a href="{% url 'charts:artist_profile' a.id %}">{{ a.name }}</a></td>
+            <td class="num">{{ a.weeks_on }}</td>
+            <td class="num">{{ a.records }}</td>
+            <td class="num">{{ a.peak }}</td>
+            <td>{{ a.first|date:"M j, Y" }}</td>
+            <td>{{ a.last|date:"M j, Y" }}</td>
+            <td>{% for b in a.charts %}<span class="chart-badge" title="{{ b.label }}">{{ b.code }}</span>{% endfor %}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="empty-row">No artists match these filters.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>

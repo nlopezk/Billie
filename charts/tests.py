@@ -14,6 +14,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from . import artists as artists_lib
 from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
@@ -2823,6 +2824,177 @@ class WeekSubmissionPageSmokeTests(TestCase):
         self.assertTrue(response.context["is_edit"])
         self.assertTrue(response.context["errors"])
         self.assertEqual(self.chart.entries.count(), 1)
+
+
+# =============================================================================
+# Artist pages (charts/artists.py): the browser and an artist profile.
+# An artist's records are the ones they're CREDITED on, so a collaboration
+# counts in full for each act; every number uses the dashboard's definitions.
+# =============================================================================
+
+class ArtistPagesTestBase(TestCase):
+    W = [date(1950, 1, 7) + timedelta(days=7 * i) for i in range(10)]   # consecutive Saturdays
+
+    def setUp(self):
+        self.jukebox = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        self.retail = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.rnb = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.decca = Label.objects.create(name="Decca")
+        self.tubb = Artist.objects.create(canonical_name="Ernest Tubb")
+        self.foley = Artist.objects.create(canonical_name="Red Foley")
+        ArtistAlias.objects.create(artist=self.tubb, alias_text="Ernie Tubb")
+        self.solo = self._rec("Slipping Around", ["Ernest Tubb"], "Ernest Tubb And His Texas Troubadours", "46173")
+        self.duet = self._rec("Tennessee Border No. 2", ["Ernest Tubb", "Red Foley"], "Ernest Tubb - Red Foley", "46200")
+        self.other = self._rec("Chattanoogie Shoe Shine Boy", ["Red Foley"], "Red Foley", "46205")
+
+    def _rec(self, title, artists, credit, catalog, label=None):
+        rec = Recording.objects.create(label=label or self.decca, catalog_number=catalog, side="A",
+                                       song=Song.objects.create(title=title), credit_text=credit)
+        for order, name in enumerate(artists, start=1):
+            RecordingCredit.objects.create(recording=rec, credit_order=order,
+                                           artist=Artist.objects.get(canonical_name=name))
+        return rec
+
+    def _on(self, chart, rec, *weeks_and_positions):
+        for week_i, position in weeks_and_positions:
+            ChartEntry.objects.create(chart=chart, week_date=self.W[week_i], position=position, recording=rec)
+
+
+class ArtistBrowseTests(ArtistPagesTestBase):
+
+    def setUp(self):
+        super().setUp()
+        self._on(self.jukebox, self.solo, (0, 3), (1, 1), (2, 2))
+        self._on(self.retail, self.solo, (1, 4))                  # same week as jukebox week 1: counts once
+        self._on(self.jukebox, self.duet, (3, 5))
+        self._on(self.rnb, self.other, (5, 7))
+
+    def _rows(self, **params):
+        return {r["name"]: r for r in artists_lib.browse(params)["rows"]}
+
+    def test_numbers_by_credit_with_collaborations_counting_for_each(self):
+        rows = self._rows()
+        self.assertEqual((rows["Ernest Tubb"]["weeks_on"], rows["Ernest Tubb"]["records"], rows["Ernest Tubb"]["peak"]), (4, 2, 1))
+        self.assertEqual((rows["Red Foley"]["weeks_on"], rows["Red Foley"]["records"]), (2, 2))
+        self.assertEqual(rows["Ernest Tubb"]["first"], self.W[0])
+        self.assertEqual([b["code"] for b in rows["Ernest Tubb"]["charts"]], ["CJb", "CRt"])
+
+    def test_default_sort_is_most_weeks_first(self):
+        self.assertEqual([r["name"] for r in artists_lib.browse({})["rows"]], ["Ernest Tubb", "Red Foley"])
+
+    def test_search_matches_name_alias_and_printed_credit(self):
+        self.assertEqual(set(self._rows(q="foley")), {"Red Foley", "Ernest Tubb"})   # Tubb via "Ernest Tubb - Red Foley"
+        self.assertEqual(set(self._rows(q="ernie")), {"Ernest Tubb"})                # the alias
+        self.assertEqual(set(self._rows(q="troubadours")), {"Ernest Tubb"})          # a printed credit
+        self.assertEqual(set(self._rows(q="tubb troubadours")), {"Ernest Tubb"})     # every word must match
+
+    def test_genre_and_chart_filters(self):
+        self.assertEqual(set(self._rows(genre="rnb")), {"Red Foley"})
+        rows = self._rows(chart=str(self.retail.id))
+        self.assertEqual(set(rows), {"Ernest Tubb"})
+        self.assertEqual(rows["Ernest Tubb"]["weeks_on"], 1)
+
+    def test_sort_links_keep_the_filters(self):
+        href = artists_lib.browse({"q": "red foley", "genre": "country"})["columns"]["name"]["href"]
+        self.assertIn("q=red+foley", href)
+        self.assertIn("genre=country", href)
+
+    def test_page_renders_and_live_filter_gets_the_partial(self):
+        self.assertContains(self.client.get(reverse("charts:artist_list")), reverse("charts:artist_profile", args=[self.tubb.id]))
+        live = self.client.get(reverse("charts:artist_list"), {"q": "foley"}, HTTP_HX_REQUEST="true")
+        self.assertTemplateUsed(live, "charts/_artist_list_results.html")
+        self.assertTemplateNotUsed(live, "charts/artist_list.html")
+
+
+class ArtistProfileTests(ArtistPagesTestBase):
+
+    def setUp(self):
+        super().setUp()
+        self._on(self.jukebox, self.solo, (0, 3), (1, 1), (2, 2))
+        self._on(self.retail, self.solo, (1, 1))
+        self._on(self.jukebox, self.duet, (4, 5), (5, 6))
+        # Somebody else in week 3, so that week is on file (weeks on file
+        # are any chart's, as on the dashboard) while Tubb is off the chart.
+        Artist.objects.create(canonical_name="Somebody")
+        self._on(self.rnb, self._rec("Filler", ["Somebody"], "Somebody", "1"), (3, 1))
+
+    def _kpis(self, profile):
+        return {k["label"]: k["value"] for k in profile["kpis"]}
+
+    def test_headline_numbers(self):
+        p = artists_lib.profile(self.tubb, {})
+        self.assertEqual(self._kpis(p), {"Weeks on chart": "5", "Records": "2", "Best peak": "#1",
+                                         "Weeks at #1": "1", "Charts": "2"})
+        self.assertEqual(p["kpis"][2]["sub"], "Slipping Around")
+
+    def test_a_collaboration_is_on_both_profiles(self):
+        self.assertEqual(self._kpis(artists_lib.profile(self.foley, {}))["Records"], "1")
+        self.assertEqual(artists_lib.profile(self.foley, {})["collaborators"],
+                         [{"id": self.tubb.id, "name": "Ernest Tubb", "records": 1}])
+
+    def test_the_slider_runs_over_the_artists_own_span(self):
+        self._on(self.rnb, self.other, (9, 1))   # another artist's later week mustn't stretch it
+        p = artists_lib.profile(self.tubb, {})
+        self.assertEqual([w for w, _ in p["week_points"]], [w.isoformat() for w in self.W[0:6]])
+
+    def test_the_date_window_scopes_everything(self):
+        p = artists_lib.profile(self.tubb, {"from": self.W[4].isoformat(), "to": self.W[5].isoformat()})
+        self.assertEqual(self._kpis(p)["Weeks on chart"], "2")
+        self.assertEqual([r["recording__song__title"] for r in p["discography"]["rows"]], ["Tennessee Border No. 2"])
+
+    def test_records_on_chart_per_week_counts_records_not_rows(self):
+        buckets = artists_lib.profile(self.tubb, {})["records_over_time"]["buckets"]
+        self.assertEqual([b["value"] for b in buckets], [1, 1, 1, 0, 1, 1])   # week 1: one record on two charts = 1
+
+    def test_printed_as_and_aliases(self):
+        p = artists_lib.profile(self.tubb, {})
+        self.assertEqual([text for text, _ in p["printed_as"]],
+                         ["Ernest Tubb - Red Foley", "Ernest Tubb And His Texas Troubadours"])
+        self.assertEqual(p["aliases"], ["Ernie Tubb"])
+
+    def test_labels_listed_and_discography_sortable_with_window_kept(self):
+        capitol = Label.objects.create(name="Capitol")
+        later = self._rec("Another One", ["Ernest Tubb"], "Ernest Tubb", "100", label=capitol)
+        self._on(self.jukebox, later, (5, 9))
+        p = artists_lib.profile(self.tubb, {"from": self.W[0].isoformat(), "to": self.W[5].isoformat()})
+        self.assertEqual([l["label"] for l in p["labels"]], ["Decca", "Capitol"])
+        self.assertIn(f"from={self.W[0].isoformat()}", p["discography"]["columns"]["weeks"]["href"])
+
+    def test_profile_page_and_live_partial(self):
+        url = reverse("charts:artist_profile", args=[self.tubb.id])
+        page = self.client.get(url)
+        self.assertContains(page, "Ernest Tubb And His Texas Troubadours")
+        self.assertContains(page, reverse("charts:artist_profile", args=[self.foley.id]))   # collaborator link
+        live = self.client.get(url, {"chart": str(self.jukebox.id)}, HTTP_HX_REQUEST="true")
+        self.assertTemplateUsed(live, "charts/_artist_profile_results.html")
+        self.assertEqual(self.client.get(reverse("charts:artist_profile", args=[999])).status_code, 404)
+
+
+class ArtistLinkTests(ArtistPagesTestBase):
+    # A printed credit links to the profile when exactly one artist is
+    # credited; a collaboration stays plain text.
+
+    def setUp(self):
+        super().setUp()
+        self._on(self.jukebox, self.solo, (0, 1))
+        self._on(self.jukebox, self.duet, (0, 2))
+
+    def test_sole_credited_artist_ids(self):
+        from .models import sole_credited_artist_ids
+        self.assertEqual(sole_credited_artist_ids([self.solo.id, self.duet.id]), {self.solo.id: self.tubb.id})
+
+    def test_chart_week_matrix_and_dashboard_link_single_credits_only(self):
+        profile = f'href="{reverse("charts:artist_profile", args=[self.tubb.id])}"'
+        for url in (reverse("charts:chart_week", args=[self.jukebox.id, self.W[0].isoformat()]),
+                    reverse("charts:recordings_matrix"),
+                    reverse("charts:dashboard")):
+            html = self.client.get(url).content.decode()
+            self.assertIn(f'<a class="artist-link" {profile}>Ernest Tubb And His Texas Troubadours</a>', html, url)
+            self.assertNotIn(">Ernest Tubb - Red Foley</a>", html, url)
+
+    def test_dashboard_top_artists_link_to_profiles(self):
+        html = self.client.get(reverse("charts:dashboard")).content.decode()
+        self.assertIn(f'href="{reverse("charts:artist_profile", args=[self.foley.id])}">Red Foley</a>', html)
 
 
 # =============================================================================

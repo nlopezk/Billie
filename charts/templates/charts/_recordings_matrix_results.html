@@ -89,7 +89,7 @@ becomes "Charts" (how many). See recordings_matrix._query.
                 {% endif %}
             </td>
             <td class="wrap">{{ r.recording__song__title }}</td>
-            <td class="wrap">{{ r.recording__credit_text }}</td>
+            <td class="wrap">{% include "charts/_credit.html" with credit=r.recording__credit_text artist_id=r.artist_id %}</td>
             <td class="wrap">
                 {% if group == "recording" %}
                     {% comment %}

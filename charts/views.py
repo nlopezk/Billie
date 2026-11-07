@@ -22,6 +22,7 @@ from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
+from . import artists as artists_lib
 from . import chart_week as chart_week_lib
 from . import credits as credits_lib
 from . import dashboard as dashboard_lib
@@ -34,7 +35,7 @@ from . import discogs as discogs_api
 from . import discogs_workflow
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
-    Recording, Song,
+    Recording, Song, sole_credited_artist_ids,
 )
 
 
@@ -145,11 +146,15 @@ def chart_week(request, chart_id, week_date=None):
     # Weeks on chart / run / peak: COMPUTED from the entries on file (one
     # query for the whole week), never typed -- shown as computed.
     standings = week.standings({e.recording_id for e in entries})
+    # A printed credit links to its artist's profile when exactly one
+    # artist is credited; collaborations stay plain text.
+    sole_artist = sole_credited_artist_ids([e.recording_id for e in entries])
     rows = []
     for e in entries:
         moved = week.movement(e.recording_id, e.position, e.printed_last_week_position)
         rows.append({
             "standing": standings[e.recording_id],
+            "artist_id": sole_artist.get(e.recording_id),
             "entry": e,
             "movement": moved.code,
             # Where it really was last week, per the data -- shown (in
@@ -239,6 +244,36 @@ def dashboard(request):
     if request.headers.get("HX-Request"):
         return render(request, "charts/_dashboard_results.html", context)
     return render(request, "charts/dashboard.html", context)
+
+
+def artist_list(request):
+    # The artist browser: search (name, alias or printed credit), genre and
+    # chart filters, sortable table -- every number from artists_lib.browse.
+    # Same one-URL, two-renders pattern as the recordings matrix: an HTMX
+    # live-filter request gets just the results partial back.
+    context = {
+        **artists_lib.browse(request.GET),
+        "genre_choices": Chart.CATEGORY_CHOICES,
+        "all_charts": Chart.objects.order_by("category", "method"),
+    }
+    if request.headers.get("HX-Request"):
+        return render(request, "charts/_artist_list_results.html", context)
+    return render(request, "charts/artist_list.html", context)
+
+
+def artist_profile(request, artist_id):
+    # One artist's profile: the dashboard's filter row and definitions,
+    # scoped to the recordings they're credited on (artists_lib.profile).
+    # The filter row's HTMX requests get just the results partial back.
+    artist = get_object_or_404(Artist, pk=artist_id)
+    context = {
+        **artists_lib.profile(artist, request.GET),
+        "genre_choices": Chart.CATEGORY_CHOICES,
+        "all_charts": Chart.objects.order_by("category", "method"),
+    }
+    if request.headers.get("HX-Request"):
+        return render(request, "charts/_artist_profile_results.html", context)
+    return render(request, "charts/artist_profile.html", context)
 
 
 def lastweek_audit(request):

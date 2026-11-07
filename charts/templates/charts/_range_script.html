@@ -1,0 +1,110 @@
+{% comment %}
+charts/templates/charts/_range_script.html
+
+The script behind _range_filters.html's two-handle date slider and Year
+shortcuts, plus the ONE shared tooltip for every graph mark inside
+#dash-results. Shared by the dashboard and an artist profile; it reads the
+week list from the #dash-weeks json_script the page renders.
+{% endcomment %}
+{# One shared tooltip for every graph mark, positioned by the script below. #}
+<div id="dash-tip" class="viz-tip" role="tooltip" hidden><strong></strong><span></span></div>
+
+<script>
+(function () {
+    // ------------------------------------------------ date-range slider
+    const form = document.getElementById("dash-filters");
+    if (!form) return;  // no data on file -> no filter row at all
+    // [[iso, "Jan 8, 1944"], ...] -- display strings made server-side,
+    // see dashboard.build() for why JS never parses these dates itself.
+    const weeks = JSON.parse(document.getElementById("dash-weeks").textContent);
+    const lo = document.getElementById("range-lo");
+    const hi = document.getElementById("range-hi");
+    const fromInput = document.getElementById("range-from");
+    const toInput = document.getElementById("range-to");
+    const label = document.getElementById("range-label");
+    const fill = document.getElementById("range-fill");
+    const preset = document.getElementById("year-preset");
+    const last = weeks.length - 1;
+
+    function sync(moved) {
+        let a = Number(lo.value), b = Number(hi.value);
+        // Handles can meet but never cross: whichever one was dragged
+        // past the other gets stopped at it.
+        if (a > b) {
+            if (moved === lo) { a = b; lo.value = a; } else { b = a; hi.value = b; }
+        }
+        fromInput.value = weeks[a][0];
+        toInput.value = weeks[b][0];
+        const n = b - a + 1;
+        label.textContent = weeks[a][1] + " – " + weeks[b][1] + " · " + n + (n === 1 ? " week" : " weeks");
+        // The highlighted stretch of track between the two handles.
+        fill.style.left = (a / last * 100) + "%";
+        fill.style.right = (100 - b / last * 100) + "%";
+        // When both handles sit together at the far right, the LOW one
+        // must be on top or it could never be dragged back out from
+        // under the high one.
+        lo.style.zIndex = (a === b && a > last / 2) ? "3" : "1";
+    }
+
+    function changed() {
+        // A dragged range no longer matches a Year shortcut.
+        preset.value = "";
+        htmx.trigger(form, "range-changed");
+    }
+
+    lo.addEventListener("input", () => sync(lo));
+    hi.addEventListener("input", () => sync(hi));
+    // `change` fires on release (mouse) or per key press (arrow keys),
+    // which is the right moment to fetch.
+    lo.addEventListener("change", changed);
+    hi.addEventListener("change", changed);
+
+    preset.addEventListener("change", () => {
+        const opt = preset.selectedOptions[0];
+        if (preset.value === "all") { lo.value = 0; hi.value = last; }
+        else if (preset.value) { lo.value = opt.dataset.first; hi.value = opt.dataset.last; }
+        else return;  // "Custom" is just a label, nothing to jump to
+        sync(null);
+        htmx.trigger(form, "range-changed");
+    });
+
+    sync(null);
+
+    // ------------------------------------------------ graph tooltip
+    // ONE tooltip element for every bar, driven by event delegation on
+    // the results container -- which survives HTMX swapping its
+    // contents, so the listeners never need re-attaching. Text goes in
+    // with textContent, never innerHTML: label names are data.
+    const results = document.getElementById("dash-results");
+    const tip = document.getElementById("dash-tip");
+    const tipValue = tip.querySelector("strong");
+    const tipLabel = tip.querySelector("span");
+
+    function show(mark, x, y) {
+        tipValue.textContent = mark.dataset.tipValue;
+        tipLabel.textContent = mark.dataset.tipLabel;
+        tip.hidden = false;
+        // Keep it on screen: flip to the left of the pointer near the
+        // right edge.
+        const w = tip.offsetWidth;
+        const left = (x + 14 + w > window.innerWidth) ? x - 14 - w : x + 14;
+        tip.style.left = (left + window.scrollX) + "px";
+        tip.style.top = (y + 14 + window.scrollY) + "px";
+    }
+    function hide() { tip.hidden = true; }
+
+    results.addEventListener("pointermove", (e) => {
+        const mark = e.target.closest("[data-tip-value]");
+        if (mark) show(mark, e.clientX, e.clientY); else hide();
+    });
+    results.addEventListener("pointerleave", hide);
+    // Keyboard: the same details on focus as on hover, anchored to the mark.
+    results.addEventListener("focusin", (e) => {
+        const mark = e.target.closest("[data-tip-value]");
+        if (!mark) return;
+        const r = mark.getBoundingClientRect();
+        show(mark, r.left + r.width / 2, r.top);
+    });
+    results.addEventListener("focusout", hide);
+})();
+</script>

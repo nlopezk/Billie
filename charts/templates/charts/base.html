@@ -632,6 +632,8 @@ through each page's subtitle, styled nine slightly different ways.
         .kpi { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.9rem; cursor: help; }
         .kpi-label { font-size: var(--fs-sm); color: var(--muted); }
         .kpi-value { font-size: 1.75rem; font-weight: 600; line-height: 1.2; }
+        /* A tile's small second line (artist profile: which record the best peak is). */
+        .kpi-sub { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
         /* Graphs: the timeline gets the wide column, labels the narrow one. */
         .viz-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
@@ -703,6 +705,10 @@ through each page's subtitle, styled nine slightly different ways.
         .ranking-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 1rem; align-items: start; }
         .ranking-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; }
         .ranking-card h2 { margin: 0 0 0.6rem; font-size: 1rem; }
+        /* Artist profile: full-width cards stack below the graphs, so they need air between them. */
+        .dash-results > .ranking-card { margin-top: 1rem; }
+        .artist-printed-as { margin: -0.4rem 0 1rem; font-size: var(--fs-sm); }
+        .page-header .subtitle .chart-badge { margin-left: 0.4rem; }
         .ranking-table td { vertical-align: top; }
         .ranking-table .rank { color: var(--muted); }
         .ranking-title { font-weight: 600; }
@@ -786,6 +792,10 @@ through each page's subtitle, styled nine slightly different ways.
            result takes the width, the flip-side button only what it needs. */
         .search-results li { display: flex; gap: 0.35rem; align-items: stretch; }
         .search-results .flip-side-btn { width: auto; flex: none; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
+        /* A printed credit linked to its artist's profile: reads as the text
+           it is (it's data, printed as-is), and shows it's a link on hover. */
+        a.artist-link { color: inherit; text-decoration: none; }
+        a.artist-link:hover, a.artist-link:focus-visible { color: var(--accent); text-decoration: underline; }
         .search-hint { color: var(--muted); font-size: var(--fs-sm); margin: 0.25rem 0; }
         .create-new-btn { color: var(--muted); border-style: dashed; margin-top: 0.25rem; font-size: var(--fs-sm); }
         .confirm-create-btn { color: var(--new); border-color: var(--new); margin-top: 0.35rem; font-size: var(--fs-sm); }
@@ -851,6 +861,8 @@ Set once here rather than repeated on each button.
                    class="{% if n == 'dashboard' %}active{% endif %}">Dashboard</a>
                 <a href="{% url 'charts:recordings_matrix' %}"
                    class="{% if n == 'recordings_matrix' %}active{% endif %}">Recordings</a>
+                <a href="{% url 'charts:artist_list' %}"
+                   class="{% if n == 'artist_list' or n == 'artist_profile' %}active{% endif %}">Artists</a>
                 <a href="{% url 'charts:discogs_queue' %}"
                    class="{% if n == 'discogs_queue' or n == 'discogs_audit' %}active{% endif %}">Discogs</a>
                 <a href="{% url 'charts:credit_queue' %}"

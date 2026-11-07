@@ -161,7 +161,7 @@ strung through the subtitle sentence.
                     {% endif %}
                 </td>
                 <td class="wrap">
-                    <strong>{{ row.entry.recording.song }}</strong> &mdash; {{ row.entry.recording.credit_text }}
+                    <strong>{{ row.entry.recording.song }}</strong> &mdash; {% include "charts/_credit.html" with credit=row.entry.recording.credit_text artist_id=row.artist_id %}
                     {% if row.entry.printed_anomaly_note %}
                         <span class="anomaly-note" title="Printed anomaly, kept as-is -- see docs/audit/">&#9888; {{ row.entry.printed_anomaly_note }}</span>
                     {% endif %}

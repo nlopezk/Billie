@@ -1,0 +1,59 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/artist_list.html -- the artist browser (/artists/).
+
+A search box (canonical name, alias, or printed credit: "sinatra" finds
+Frank Sinatra through "James - Sinatra"), Genre and Chart filters, and a
+sortable table of every artist in scope. Live-filters like the recordings
+matrix: HTMX re-GETs this same URL and swaps #artist-results, with
+hx-push-url keeping a filtered view bookmarkable. Every number comes from
+charts/artists.py (browse), by CREDITED artist -- a collaboration counts
+for each act in it.
+{% endcomment %}
+{% block title %}Artists{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Artists</h1>
+            <p class="subtitle">Every credited artist, with their weeks on chart, records and best peak.</p>
+        </div>
+    </div>
+
+    <form id="artist-filters" class="filter-bar" method="get" action="{% url 'charts:artist_list' %}"
+          hx-get="{% url 'charts:artist_list' %}" hx-target="#artist-results" hx-push-url="true"
+          hx-trigger="change from:select, input changed delay:300ms from:input[type=search], search from:input[type=search]">
+        {# sort/dir ride along so filtering keeps the column you sorted by. #}
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="dir" value="{{ dir }}">
+        <label class="search-label">
+            Search
+            <input type="search" name="q" value="{{ q }}" placeholder="name, alias or printed credit..." autofocus>
+        </label>
+        <label>
+            Genre
+            <select name="genre">
+                <option value="">All genres</option>
+                {% for value, label in genre_choices %}
+                <option value="{{ value }}" {% if value == genre %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Chart
+            <select name="chart">
+                <option value="">All charts</option>
+                {% for c in all_charts %}
+                <option value="{{ c.id }}" {% if chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </form>
+
+    <div id="artist-results">
+        {% include "charts/_artist_list_results.html" %}
+    </div>
+{% endblock %}

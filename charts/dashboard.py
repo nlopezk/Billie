@@ -39,7 +39,7 @@ from math import ceil, floor, log10
 
 from django.db.models import Count, Min, Q
 
-from .models import Chart, ChartEntry, format_catalog
+from .models import Chart, ChartEntry, format_catalog, sole_credited_artist_ids
 
 DEFAULT_TOP_N = 10
 # A ranking is a reading list, not a dump -- past 100 rows the matrix
@@ -221,7 +221,7 @@ def top_number_ones(entries, n):
         .filter(weeks_at_1__gt=0)
         .order_by("-weeks_at_1", "-weeks_on", "recording__song__title")
     )
-    return _rank([_recording_row(r) for r in rows], "weeks_at_1", n)
+    return _rank(_with_artist_links([_recording_row(r) for r in rows]), "weeks_at_1", n)
 
 
 def top_recordings(entries, n):
@@ -232,7 +232,16 @@ def top_recordings(entries, n):
         .annotate(weeks_on=Count("week_date", distinct=True), peak=Min("position"))
         .order_by("-weeks_on", "peak", "recording__song__title")
     )
-    return _rank([_recording_row(r) for r in rows], "weeks_on", n)
+    return _rank(_with_artist_links([_recording_row(r) for r in rows]), "weeks_on", n)
+
+
+def _with_artist_links(rows):
+    # Each ranking row's printed credit links to its artist's profile when
+    # exactly one artist is credited (models.sole_credited_artist_ids).
+    sole_artist = sole_credited_artist_ids([r["recording_id"] for r in rows])
+    for r in rows:
+        r["artist_id"] = sole_artist.get(r["recording_id"])
+    return rows
 
 
 def top_artists(entries, n):
@@ -434,6 +443,23 @@ def build(params):
 
     entries = filtered_entries(filters)
     debuts = debuts_over_time(filters, weeks)
+    return {
+        "has_data": True,
+        "filters": filters,
+        **range_context(filters, weeks),
+        "kpis": headline_numbers(entries, debuts["total"]),
+        "debuts": debuts,
+        "labels": top_labels(entries),
+        "number_ones": top_number_ones(entries, filters["n"]),
+        "top_recordings": top_recordings(entries, filters["n"]),
+        "top_artists": top_artists(entries, filters["n"]),
+    }
+
+
+def range_context(filters, weeks):
+    """What the date-range slider and its Year shortcuts need, for the
+    weeks the slider runs over. Shared by the dashboard (every week on
+    file) and an artist profile (only the artist's own span)."""
     # Safe: parse_filters guarantees both dates are real entries of weeks.
     from_index = weeks.index(filters["date_from"])
     to_index = weeks.index(filters["date_to"])
@@ -454,8 +480,6 @@ def build(params):
         )
 
     return {
-        "has_data": True,
-        "filters": filters,
         # Parallel [iso, display] pairs for the slider's JS, which turns an
         # index into a date. Display strings come from HERE, not from JS
         # Date parsing: new Date("1944-01-08") is midnight UTC, which reads
@@ -466,10 +490,4 @@ def build(params):
         "range_weeks": to_index - from_index + 1,
         "year_options": year_options,
         "preset": preset,
-        "kpis": headline_numbers(entries, debuts["total"]),
-        "debuts": debuts,
-        "labels": top_labels(entries),
-        "number_ones": top_number_ones(entries, filters["n"]),
-        "top_recordings": top_recordings(entries, filters["n"]),
-        "top_artists": top_artists(entries, filters["n"]),
     }
