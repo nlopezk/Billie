@@ -20,6 +20,7 @@ from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import entry_recording as entry_recording_lib
 from . import lastweek_audit as lastweek_audit_lib
+from . import playlists as playlists_lib
 from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
 from . import discogs as discogs_api
@@ -28,7 +29,7 @@ from . import views
 from . import week_submission
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
-    Label, Recording, RecordingCredit, Song,
+    Label, Playlist, PlaylistItem, Recording, RecordingCredit, Song,
 )
 
 
@@ -3167,3 +3168,203 @@ class ChartSwitcherTests(TestCase):
 
     def test_a_chart_with_nothing_on_file_is_left_out(self):
         self.assertNotIn(self.empty.id, self._options(self.jukebox, self.W2))
+
+
+class MatrixThresholdTests(TestCase):
+    # The recordings matrix's Peak <= N and Weeks >= N filters (added for the
+    # playlist picker), and how they combine with a date window: inside a
+    # window they test the PEAK IN RANGE (GLOSSARY.md), not the all-time one.
+
+    W49b = date(1949, 12, 31)
+    W50a, W50b, W50c = date(1950, 1, 7), date(1950, 1, 14), date(1950, 1, 21)
+
+    def setUp(self):
+        self.rnb = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.rnb_retail = Chart.objects.create(category="rnb", method="retail", publication_weekday=5)
+        label = Label.objects.create(name="Savoy")
+
+        def rec(title, cat):
+            return Recording.objects.create(
+                label=label, catalog_number=cat, side="A",
+                song=Song.objects.create(title=title), credit_text="Someone",
+            )
+        # Hit #1 in 1949, then no better than #9 in 1950.
+        self.faded = rec("Faded", "1")
+        ChartEntry.objects.create(chart=self.rnb, week_date=self.W49b, position=1, recording=self.faded)
+        ChartEntry.objects.create(chart=self.rnb, week_date=self.W50a, position=9, recording=self.faded)
+        # #2 in December 1949, still #4 in January 1950.
+        self.lingered = rec("Lingered", "2")
+        ChartEntry.objects.create(chart=self.rnb, week_date=self.W49b, position=2, recording=self.lingered)
+        ChartEntry.objects.create(chart=self.rnb, week_date=self.W50a, position=4, recording=self.lingered)
+        # Three 1950 weeks: #3 on Jukebox, #7 on Retail (the same weeks).
+        self.long = rec("Long", "3")
+        for w in (self.W50a, self.W50b, self.W50c):
+            ChartEntry.objects.create(chart=self.rnb, week_date=w, position=3, recording=self.long)
+            ChartEntry.objects.create(chart=self.rnb_retail, week_date=w, position=7, recording=self.long)
+
+    def _songs(self, **params):
+        return sorted({r["recording__song__title"] for r in recordings_matrix_lib.build(params)["rows"]})
+
+    def test_peak_threshold_without_a_window_uses_all_time_peak(self):
+        self.assertEqual(self._songs(group="recording", peak="2"), ["Faded", "Lingered"])
+
+    def test_peak_in_range_excludes_a_record_that_peaked_before_the_window(self):
+        # Faded was #1 in 1949 but only #9 in 1950: not "1950, top 5".
+        # Lingered reached #4 IN 1950, so it is in.
+        songs = self._songs(group="recording", peak="5", **{"from": "1950-01-01", "to": "1950-12-31"})
+        self.assertEqual(songs, ["Lingered", "Long"])
+
+    def test_weeks_threshold_counts_distinct_weeks_across_charts_when_collapsed(self):
+        # Long: 3 calendar weeks on two charts -> 3, not 6.
+        self.assertEqual(self._songs(group="recording", weeks="3"), ["Long"])
+        self.assertEqual(self._songs(group="recording", weeks="4"), [])
+
+    def test_per_chart_mode_tests_each_charts_own_peak(self):
+        rows = recordings_matrix_lib.build({"group": "chart", "peak": "5", "q": "Long"})["rows"]
+        # Only the Jukebox row (#3) passes; the Retail row peaked at #7.
+        self.assertEqual([r["chart_id"] for r in rows], [self.rnb.id])
+
+    def test_junk_thresholds_are_ignored(self):
+        self.assertEqual(len(recordings_matrix_lib.build({"group": "recording", "peak": "x", "weeks": "0"})["rows"]), 3)
+
+    def test_headers_say_in_range_only_when_the_window_cuts_something_off(self):
+        whole = recordings_matrix_lib.build({"from": "1949-12-31", "to": "1950-01-21"})
+        self.assertEqual(whole["columns"]["peak"]["label"], "Peak")
+        part = recordings_matrix_lib.build({"from": "1950-01-01", "to": "1950-01-21"})
+        self.assertEqual(part["columns"]["peak"]["label"], "Peak in range")
+        self.assertEqual(part["columns"]["weeks"]["label"], "Weeks in range")
+
+    def test_sort_links_carry_the_thresholds(self):
+        cols = recordings_matrix_lib.build({"peak": "5", "weeks": "2"})["columns"]
+        self.assertIn("peak=5", cols["song"]["href"])
+        self.assertIn("weeks=2", cols["song"]["href"])
+
+
+class PlaylistTests(TestCase):
+    # charts/playlists.py: a playlist is a fixed, hand-picked, ordered list
+    # of recordings (GLOSSARY.md).
+
+    W1, W2 = date(1950, 1, 7), date(1950, 1, 14)
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.other = Chart.objects.create(category="country", method="jukebox", publication_weekday=5)
+        label = Label.objects.create(name="Decca")
+        self.recs = []
+        for i, title in enumerate(["Alpha", "Bravo", "Charlie"], start=1):
+            r = Recording.objects.create(
+                label=label, catalog_number=str(100 + i), side="A",
+                song=Song.objects.create(title=title), credit_text=f"Artist {i}",
+            )
+            ChartEntry.objects.create(chart=self.chart, week_date=self.W1, position=i, recording=r)
+            self.recs.append(r)
+        # Alpha is on two charts and two weeks, so it has several matrix rows.
+        ChartEntry.objects.create(chart=self.other, week_date=self.W1, position=5, recording=self.recs[0])
+        ChartEntry.objects.create(chart=self.chart, week_date=self.W2, position=1, recording=self.recs[0])
+        self.playlist, _ = playlists_lib.create("Test list")
+
+    def _order(self):
+        return [i.recording.song.title for i in self.playlist.items.select_related("recording__song")]
+
+    def test_names_are_unique_ignoring_case_and_never_blank(self):
+        self.assertIsNone(playlists_lib.create("test LIST")[0])
+        self.assertIsNone(playlists_lib.create("   ")[0])
+        other, _ = playlists_lib.create("Other")
+        self.assertIsNotNone(playlists_lib.rename(other, "Test List"))
+        self.assertIsNone(playlists_lib.rename(other, "Renamed"))
+
+    def test_ticking_is_idempotent_and_appends(self):
+        playlists_lib.set_member(self.playlist, self.recs[1].id, True)
+        playlists_lib.set_member(self.playlist, self.recs[1].id, True)
+        playlists_lib.set_member(self.playlist, self.recs[0].id, True)
+        self.assertEqual(self._order(), ["Bravo", "Alpha"])
+        playlists_lib.set_member(self.playlist, self.recs[1].id, False)
+        playlists_lib.set_member(self.playlist, self.recs[1].id, False)
+        self.assertEqual(self._order(), ["Alpha"])
+
+    def test_add_all_keeps_existing_places_and_follows_the_given_order(self):
+        playlists_lib.set_member(self.playlist, self.recs[1].id, True)
+        added = playlists_lib.add_all(self.playlist, [self.recs[2].id, self.recs[1].id, self.recs[0].id])
+        self.assertEqual(added, 2)
+        self.assertEqual(self._order(), ["Bravo", "Charlie", "Alpha"])
+        self.assertEqual(playlists_lib.remove_all(self.playlist, [self.recs[2].id, self.recs[0].id]), 2)
+        self.assertEqual(self._order(), ["Bravo"])
+
+    def test_a_recording_on_several_rows_counts_once(self):
+        rows = recordings_matrix_lib.build({"group": "chart"})["rows"]
+        self.assertGreater(len(rows), 3)
+        self.assertEqual(sorted(playlists_lib.recording_ids_in_rows(rows)), sorted(r.id for r in self.recs))
+
+    def test_move_swaps_with_the_neighbour_and_stops_at_the_ends(self):
+        playlists_lib.add_all(self.playlist, [r.id for r in self.recs])
+        playlists_lib.move(self.playlist, self.recs[2].id, "up")
+        self.assertEqual(self._order(), ["Alpha", "Charlie", "Bravo"])
+        playlists_lib.move(self.playlist, self.recs[0].id, "up")
+        playlists_lib.move(self.playlist, self.recs[1].id, "down")
+        self.assertEqual(self._order(), ["Alpha", "Charlie", "Bravo"])
+
+    def test_rows_are_in_playlist_order_with_all_data_numbers(self):
+        playlists_lib.add_all(self.playlist, [self.recs[2].id, self.recs[0].id])
+        rows = playlists_lib.rows(self.playlist)
+        self.assertEqual([r["recording__song__title"] for r in rows], ["Charlie", "Alpha"])
+        # Alpha: 2 calendar weeks, best peak 1, on two charts.
+        self.assertEqual((rows[1]["weeks_charted"], rows[1]["peak_position"], len(rows[1]["chart_badges"])), (2, 1, 2))
+        self.assertTrue(rows[0]["is_first"] and rows[1]["is_last"])
+
+    def test_a_recording_with_no_entries_left_still_shows(self):
+        playlists_lib.set_member(self.playlist, self.recs[2].id, True)
+        ChartEntry.objects.filter(recording=self.recs[2]).delete()
+        rows = playlists_lib.rows(self.playlist)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["no_entries"])
+
+    def test_deleting_a_recording_drops_it_and_deleting_a_playlist_keeps_recordings(self):
+        playlists_lib.add_all(self.playlist, [r.id for r in self.recs])
+        ChartEntry.objects.filter(recording=self.recs[1]).delete()
+        self.recs[1].delete()
+        self.assertEqual(self._order(), ["Alpha", "Charlie"])
+        self.playlist.delete()
+        self.assertEqual(PlaylistItem.objects.count(), 0)
+        self.assertEqual(Recording.objects.count(), 2)
+
+    def test_exports(self):
+        playlists_lib.add_all(self.playlist, [self.recs[1].id, self.recs[0].id])
+        self.assertEqual(playlists_lib.export_text(self.playlist), "Artist 2 - Bravo\nArtist 1 - Alpha\n")
+        lines = playlists_lib.export_csv(self.playlist).splitlines()
+        self.assertEqual(lines[0].split(",")[:3], ["#", "Song", "Artist (as printed)"])
+        self.assertTrue(lines[2].startswith("2,Alpha,Artist 1,Decca,101,A,1,2,1950-01-07,1950-01-14"))
+
+    # --- the views: thin, but the bulk button's scope is worth pinning ---
+
+    def test_add_all_view_adds_every_match_of_the_posted_filters(self):
+        url = reverse("charts:playlist_bulk", args=[self.playlist.id])
+        self.client.post(url, {"action": "add", "group": "chart", "chart": str(self.chart.id), "peak": "2"})
+        self.assertEqual(sorted(self._order()), ["Alpha", "Bravo"])
+        self.client.post(url, {"action": "remove", "group": "recording", "q": "Alpha"})
+        self.assertEqual(self._order(), ["Bravo"])
+
+    def test_toggle_view_and_writes_are_post_only(self):
+        url = reverse("charts:playlist_toggle", args=[self.playlist.id])
+        self.assertEqual(self.client.get(url, {"recording": self.recs[0].id, "on": "1"}).status_code, 405)
+        response = self.client.post(url, {"recording": self.recs[0].id, "on": "1"})
+        self.assertContains(response, 'hx-swap-oob="true"')
+        self.assertEqual(self._order(), ["Alpha"])
+        self.client.post(url, {"recording": self.recs[0].id})  # unticked: no "on"
+        self.assertEqual(self._order(), [])
+
+    def test_pages_render(self):
+        playlists_lib.add_all(self.playlist, [r.id for r in self.recs])
+        for name in ("playlist_detail", "playlist_pick"):
+            self.assertEqual(self.client.get(reverse(f"charts:{name}", args=[self.playlist.id])).status_code, 200)
+        self.assertContains(self.client.get(reverse("charts:playlist_list")), "Test list")
+        pick = self.client.get(reverse("charts:playlist_pick", args=[self.playlist.id]), {"q": "Alpha"})
+        self.assertContains(pick, "Add all 1")
+        self.assertContains(pick, "checked")
+        export = self.client.get(reverse("charts:playlist_export", args=[self.playlist.id, "csv"]))
+        self.assertEqual(export["Content-Type"], "text/csv; charset=utf-8")
+        missing = self.client.get(reverse("charts:playlist_export", args=[self.playlist.id, "exe"]))
+        self.assertEqual(missing.status_code, 404)
+
+    def test_create_view_goes_to_the_picker(self):
+        response = self.client.post(reverse("charts:playlist_list"), {"name": "Fresh"})
+        self.assertRedirects(response, reverse("charts:playlist_pick", args=[Playlist.objects.get(name="Fresh").id]))

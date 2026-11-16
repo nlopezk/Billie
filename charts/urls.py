@@ -33,6 +33,19 @@ urlpatterns = [
     # filter row (date range, genre, chart). Read-only. Same top-level
     # placement reasoning as recordings/ above.
     path("dashboard/", views.dashboard, name="dashboard"),
+    # Playlists (GLOSSARY.md): hand-picked lists of recordings, for export.
+    # The picker is the recordings matrix with tick boxes; every write
+    # below is POST-only.
+    path("playlists/", views.playlist_list, name="playlist_list"),
+    path("playlists/<int:playlist_id>/", views.playlist_detail, name="playlist_detail"),
+    path("playlists/<int:playlist_id>/pick/", views.playlist_pick, name="playlist_pick"),
+    path("playlists/<int:playlist_id>/toggle/", views.playlist_toggle, name="playlist_toggle"),
+    path("playlists/<int:playlist_id>/bulk/", views.playlist_bulk, name="playlist_bulk"),
+    path("playlists/<int:playlist_id>/move/<int:recording_id>/", views.playlist_move, name="playlist_move"),
+    path("playlists/<int:playlist_id>/remove/<int:recording_id>/", views.playlist_remove, name="playlist_remove"),
+    path("playlists/<int:playlist_id>/rename/", views.playlist_rename, name="playlist_rename"),
+    path("playlists/<int:playlist_id>/delete/", views.playlist_delete, name="playlist_delete"),
+    path("playlists/<int:playlist_id>/export.<str:fmt>", views.playlist_export, name="playlist_export"),
     # Artist browser (search + sortable table) and one artist's profile.
     path("artists/", views.artist_list, name="artist_list"),
     path("artists/<int:artist_id>/", views.artist_profile, name="artist_profile"),

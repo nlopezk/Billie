@@ -1,0 +1,115 @@
+{% comment %}
+charts/templates/charts/_matrix_filters.html
+
+The recordings matrix's filter row, shared by /recordings/ and the playlist
+picker (/playlists/<id>/pick/): the dashboard's two-handle date slider and
+Year shortcuts, Genre, Chart, "One row per", Peak (N or better), Weeks (at
+least N) and Search. Every change re-GETs `filter_url` via HTMX and swaps
+#matrix-results, with hx-push-url keeping the address bar bookmarkable.
+
+The form's id is "dash-filters" on purpose: _range_script.html (the
+dashboard's slider script, reused as-is) finds the form by that id and
+fires `range-changed` on it when a slider handle is released.
+
+hx-trigger, piece by piece:
+  * change from:select.dash-filter -- Genre / Chart / One row per. The
+    Year shortcut select is NOT .dash-filter: it moves the slider first,
+    then the script fires range-changed.
+  * range-changed -- a slider handle released, or a Year picked.
+  * input changed delay:400ms from:input.matrix-input -- typing in the
+    Peak / Weeks / Search boxes, waiting for a pause.
+  * search from:input[type=search] -- the search box's clear (x) button.
+
+Context: filter_url, plus what views._matrix_context provides.
+{% endcomment %}
+<form id="dash-filters" class="filter-bar dash-filter-bar" method="get" action="{{ filter_url }}"
+      hx-get="{{ filter_url }}" hx-target="#matrix-results" hx-push-url="true"
+      hx-indicator="#matrix-results"
+      hx-trigger="change from:select.dash-filter, range-changed, input changed delay:400ms from:input.matrix-input, search from:input[type=search]">
+
+    {# Set by clicking a column heading; ride along so filtering keeps the sort. #}
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+
+    {% if week_points %}
+    <input type="hidden" name="from" id="range-from" value="{{ filters.date_from|date:'Y-m-d' }}">
+    <input type="hidden" name="to" id="range-to" value="{{ filters.date_to|date:'Y-m-d' }}">
+
+    <div class="range-field">
+        <span class="range-heading">
+            Weeks on file
+            <span id="range-label" class="range-label">{{ filters.date_from|date:"M j, Y" }} &ndash; {{ filters.date_to|date:"M j, Y" }} &middot; {{ range_weeks }} week{{ range_weeks|pluralize }}</span>
+        </span>
+        <div class="range-slider">
+            <div class="range-track"><div class="range-fill" id="range-fill"></div></div>
+            <input type="range" id="range-lo" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ from_index }}" aria-label="First week">
+            <input type="range" id="range-hi" min="0" max="{{ week_points|length|add:'-1' }}" step="1" value="{{ to_index }}" aria-label="Last week">
+        </div>
+    </div>
+
+    <label>
+        Year
+        <select id="year-preset" aria-label="Jump to a year">
+            <option value="" {% if not preset %}selected{% endif %}>Custom</option>
+            <option value="all" {% if preset == "all" %}selected{% endif %}>All weeks</option>
+            {% for y in year_options %}
+            <option value="{{ y.year }}" data-first="{{ y.first }}" data-last="{{ y.last }}" {% if preset == y.year|stringformat:"s" %}selected{% endif %}>{{ y.year }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    {% endif %}
+
+    <label>
+        Genre
+        <select name="genre" class="dash-filter">
+            <option value="">All genres</option>
+            {% for value, label in genre_choices %}
+            <option value="{{ value }}" {% if value == genre %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    <label>
+        Chart
+        <select name="chart" class="dash-filter">
+            <option value="">All charts</option>
+            {% for c in all_charts %}
+            <option value="{{ c.id }}" {% if chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    {% comment %}
+    Grouping mode -- see recordings_matrix._query's docstring. It also
+    decides what Peak / Weeks below test: per chart, or best peak and
+    distinct weeks across charts.
+    {% endcomment %}
+    <label>
+        One row per
+        <select name="group" class="dash-filter" title="Recording + chart: one row for each chart a record made, every number scoped to that one chart (what the magazine printed). Recording: one row per record, merged across charts -- peak becomes the best reached anywhere.">
+            <option value="chart" {% if group != "recording" %}selected{% endif %}>Recording + chart</option>
+            <option value="recording" {% if group == "recording" %}selected{% endif %}>Recording</option>
+        </select>
+    </label>
+
+    {% comment %}
+    Thresholds on the numbers each row shows, so inside a date window they
+    test the peak / weeks IN that window (GLOSSARY.md: peak in range).
+    "More than 3 weeks" is typed as 4: the box means "at least".
+    {% endcomment %}
+    <label title="Only rows whose peak is this position or better (lower)">
+        Peak &le;
+        <input type="number" name="peak" value="{{ peak }}" min="1" max="100" class="matrix-input top-n-input" placeholder="any">
+    </label>
+
+    <label title="Only rows with at least this many weeks on chart">
+        Weeks &ge;
+        <input type="number" name="weeks" value="{{ weeks }}" min="1" class="matrix-input top-n-input" placeholder="any">
+    </label>
+
+    <label class="search-label">
+        Search
+        <input type="search" name="q" value="{{ q }}" class="matrix-input" placeholder="song, artist, label, catalog #...">
+    </label>
+</form>
+{% if week_points %}{{ week_points|json_script:"dash-weeks" }}{% endif %}

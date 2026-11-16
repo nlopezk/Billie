@@ -593,3 +593,53 @@ class ChartEntry(models.Model):
 
     # Weeks on chart, run and peak are computed on read, never stored --
     # see chart_week.ChartWeek.standings.
+
+
+# =============================================================================
+# Playlists (added 2026-11-15)
+# =============================================================================
+#
+# A PLAYLIST (GLOSSARY.md) is a named list of recordings picked by hand on
+# /playlists/<id>/pick/ -- one by one, or "add all" for everything the
+# current filters match. It stores exactly what was picked: it is NOT a saved
+# filter, so entering more chart weeks never changes it. The owner's framing:
+# it's an "export to playlist" feature, saved so it can be pushed to Spotify
+# one day. Kept deliberately small for that reason -- nothing Spotify-specific
+# yet, and nothing here is ever read by the chart browser or the entry form.
+
+class Playlist(models.Model):
+    # Unique so two playlists can never be confused in the list or an export.
+    name = models.CharField(max_length=200, unique=True)
+    description = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class PlaylistItem(models.Model):
+    # One recording in one playlist, at one place in its order.
+    #
+    # on_delete=CASCADE on BOTH sides, by the owner's decision: deleting a
+    # playlist only removes the list (never the recordings), and deleting a
+    # recording in the admin quietly drops it from any playlist -- "deleted
+    # is deleted, a playlist is just an export".
+    playlist = models.ForeignKey(Playlist, on_delete=models.CASCADE, related_name="items")
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="playlist_items")
+    # Sort key for the playlist's order (a Spotify playlist is ordered). New
+    # picks go to the end as max + 1; removals leave gaps, which is harmless
+    # because only the relative order is ever read.
+    position = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["playlist", "position"]
+        constraints = [
+            # A recording appears in a playlist once at most.
+            models.UniqueConstraint(fields=["playlist", "recording"], name="unique_playlist_recording"),
+        ]
+
+    def __str__(self):
+        return f"{self.playlist} #{self.position}: {self.recording_id}"

@@ -403,6 +403,31 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     not on the audits, the Discogs pages or the entry form. A per-record timeline graph
     is GitHub issue #4. Tests: `ArtistBrowseTests`, `ArtistProfileTests`,
     `ArtistLinkTests`.
+- **Playlists, built 2026-11-15** — `/playlists/` (list + create), `/playlists/<id>/`
+  (the playlist: reorder ↑↓, remove, rename/delete, export CSV or "Artist - Song" text),
+  `/playlists/<id>/pick/` (the picker). Every rule in `charts/playlists.py`; models
+  `Playlist` + `PlaylistItem` (migration `0009`, new tables only). A **playlist**
+  (GLOSSARY.md) is a fixed, hand-picked, ordered list of recordings, **not a saved
+  filter** — entering more weeks never changes it. The owner's framing: an "export to
+  playlist" feature, kept so it can be pushed to Spotify later (no Spotify code yet).
+  - **The picker is the recordings matrix with a tick box per row**, sharing its filter
+    row (`_matrix_filters.html`) and results partial (`picker` flag). Each tick saves at
+    once (`playlist_toggle`, count updated out-of-band), so changing filters never loses
+    a pick. **"Add all N" acts on every recording the filters match** (the filter form is
+    POSTed and the query re-run server-side), appended in the matrix's current sort
+    order; ones already in keep their place. Opens one row per recording; in per-chart
+    mode ticking any row of a recording ticks all of them.
+  - **The matrix gained three filters, on /recordings/ too:** the dashboard's date
+    slider + Year shortcuts, **Peak ≤ N** and **Weeks ≥ N** (SQL `HAVING` on the row's
+    own numbers). Inside a date window those are the **peak in range** / weeks in range
+    (GLOSSARY.md), and the headers say so (`state["windowed"]`): a record at #1 in 1949
+    and #9 in 1950 is NOT in "1950, peak 5 or better". Per-chart mode tests each chart's
+    own peak; collapsed mode the best peak / distinct weeks.
+  - **The playlist page shows all-data numbers** (best peak, weeks, first/last, chart
+    badges), not the window it was picked with — a playlist doesn't remember filters.
+    Deleting a recording quietly drops it from playlists (owner: "deleted is deleted");
+    deleting a playlist never touches recordings. Tests: `MatrixThresholdTests`,
+    `PlaylistTests`.
 - **Movement comes from the data, not from typed last-week numbers (fixed 2026-10-18).**
   The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
   which is only filled when a last-week number is *typed* — so a week entered by search
@@ -598,6 +623,12 @@ Read these before proposing any change in direction.
    calls, and nothing in the chart browser or entry flow degrades when offline. A future
    "Discogs ID" field on the entry form would be acceptable *only* as a manually typed
    value, never as a live lookup that blocks saving a week.
+
+   *Amended again 2026-11-14 (owner's decision).* The spirit, stated plainly: the rule
+   that matters is #1 (charts are entered by hand) plus "the owner can always sit down
+   and work on the charts without internet". Network calls elsewhere are fine when they
+   look something up or send something out (Discogs, and later pushing a playlist to
+   Spotify); they don't each need their own exception. The database stays local.
 3. **Comment code thoroughly.** The owner is using this project to learn. Every non-obvious
    line gets an inline comment explaining *why*, not just *what*. When you present code in
    chat, explain what each block does in prose as well. Verbose is correct here.

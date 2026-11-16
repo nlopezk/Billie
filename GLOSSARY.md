@@ -61,6 +61,11 @@ A recording's best position on one chart up to and including a given week, acros
 its runs; it never gets worse as weeks pass.
 _Avoid_: High, top position
 
+**Peak in range**:
+A recording's best position among only the chart weeks inside a chosen span of dates. A
+recording at #1 in 1949 and no higher than #4 in 1950 has a peak in range of 4 for 1950.
+_Avoid_: Peak (alone, when a date range is set)
+
 ## Records and credits
 
 **Song**:
@@ -103,6 +108,12 @@ Another observed spelling or billing of an artist.
 **Collaboration**:
 A recording credited to two or more artists; it counts in full for each of them.
 _Avoid_: Duet (unless it is one), split credit
+
+**Playlist**:
+A named list of recordings picked by hand, one by one or all at once. It holds exactly
+what was picked: it is not a saved filter and does not change as more chart weeks are
+entered.
+_Avoid_: Saved search, collection, tracklist
 
 **Printed anomaly**:
 A chart entry the magazine printed in a way the data can't otherwise represent, kept as

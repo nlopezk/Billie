@@ -1,0 +1,104 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/playlist_detail.html -- /playlists/<id>/
+
+One playlist in its order. The numbers are the recordings matrix's
+one-row-per-recording ones over ALL data (playlists.rows) -- a playlist
+doesn't remember the filters it was picked with, so it shows each
+recording's best peak and weeks on any chart, like /recordings/.
+
+Move / remove are plain POST forms that redirect back here: a full reload
+is fine for a one-click action and needs no script. Delete asks first
+(confirm()), and only ever deletes the list, never the recordings.
+{% endcomment %}
+{% block title %}{{ playlist.name }}{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>{{ playlist.name }}</h1>
+            <p class="subtitle">
+                {{ rows|length }} recording{{ rows|length|pluralize }}{% if playlist.description %} &middot; {{ playlist.description }}{% endif %}
+            </p>
+        </div>
+        <div class="picker-actions">
+            <a class="btn btn-primary" href="{% url 'charts:playlist_pick' playlist.id %}">Pick recordings</a>
+            <a class="btn btn-ghost" href="{% url 'charts:playlist_export' playlist.id 'csv' %}">Export CSV</a>
+            <a class="btn btn-ghost" href="{% url 'charts:playlist_export' playlist.id 'txt' %}" title="One &ldquo;Artist - Song&rdquo; line per recording">Export text</a>
+        </div>
+    </div>
+
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+    <details class="playlist-edit">
+        <summary>Rename or delete</summary>
+        <form method="post" action="{% url 'charts:playlist_rename' playlist.id %}">
+            {% csrf_token %}
+            <label>Name <input type="text" name="name" value="{{ playlist.name }}" required maxlength="200"></label>
+            <label>Description <input type="text" name="description" value="{{ playlist.description }}" maxlength="500"></label>
+            <button type="submit" class="btn">Save</button>
+        </form>
+        <form method="post" action="{% url 'charts:playlist_delete' playlist.id %}"
+              onsubmit="return confirm('Delete the playlist &ldquo;{{ playlist.name|escapejs }}&rdquo;? The recordings themselves are not touched.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Delete playlist</button>
+        </form>
+    </details>
+
+    <div class="table-wrap">
+    <table class="recordings-table dense-table">
+        <thead>
+            <tr>
+                <th class="num">#</th>
+                <th class="num" title="Best position reached on any chart, over all weeks on file">Best peak</th>
+                <th>Song</th>
+                <th>Artist</th>
+                <th>Charts</th>
+                <th>Label / catalog #</th>
+                <th class="num" title="Calendar weeks on any chart">Weeks</th>
+                <th>First entry</th>
+                <th>Last entry</th>
+                <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in rows %}
+            <tr>
+                <td class="num muted">{{ forloop.counter }}</td>
+                <td class="pos num">
+                    {{ r.peak_position|default:"" }}
+                    {% if r.peak_chart_code %}<span class="peak-source" title="This one came from {{ r.peak_chart_label }}">{{ r.peak_chart_code }}</span>{% endif %}
+                </td>
+                <td class="wrap">{{ r.recording__song__title }}</td>
+                <td class="wrap">{% include "charts/_credit.html" with credit=r.recording__credit_text artist_id=r.artist_id %}</td>
+                <td class="wrap">
+                    {% for b in r.chart_badges %}<span class="chart-badge" title="{{ b.label }} &mdash; peak {{ b.peak }}">{{ b.code }}</span>{% endfor %}
+                    {% if r.no_entries %}<span class="muted" title="Its chart entries were removed after it was picked">no chart entries on file</span>{% endif %}
+                </td>
+                <td>{{ r.catalog_display }}</td>
+                <td class="num">{{ r.weeks_charted|default:"" }}</td>
+                <td>{% if r.first_entry %}<a href="{% url 'charts:chart_week' r.first_chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a>{% endif %}</td>
+                <td>{% if r.last_entry %}<a href="{% url 'charts:chart_week' r.last_chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a>{% endif %}</td>
+                <td>
+                    <div class="playlist-row-actions">
+                        <form method="post" action="{% url 'charts:playlist_move' playlist.id r.recording_id %}">
+                            {% csrf_token %}<input type="hidden" name="direction" value="up">
+                            <button type="submit" class="btn btn-sm btn-icon btn-ghost" title="Move up" aria-label="Move up" {% if r.is_first %}disabled{% endif %}>&uarr;</button>
+                        </form>
+                        <form method="post" action="{% url 'charts:playlist_move' playlist.id r.recording_id %}">
+                            {% csrf_token %}<input type="hidden" name="direction" value="down">
+                            <button type="submit" class="btn btn-sm btn-icon btn-ghost" title="Move down" aria-label="Move down" {% if r.is_last %}disabled{% endif %}>&darr;</button>
+                        </form>
+                        <form method="post" action="{% url 'charts:playlist_remove' playlist.id r.recording_id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-icon btn-ghost" title="Remove from playlist" aria-label="Remove from playlist">&times;</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="10" class="empty-row">Empty so far. Use &ldquo;Pick recordings&rdquo; to add some.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+{% endblock %}

@@ -35,70 +35,17 @@ normal, reloadable, bookmarkable/shareable filtered URL).
         </div>
     </div>
 
-    <form
-        id="matrix-filters"
-        class="filter-bar"
-        method="get"
-        action="{% url 'charts:recordings_matrix' %}"
-        hx-get="{% url 'charts:recordings_matrix' %}"
-        hx-target="#matrix-results"
-        hx-push-url="true"
-        hx-trigger="change from:select, input changed delay:300ms from:input[type=search], search from:input[type=search]"
-    >
-        {% comment %}
-        sort/dir travel as hidden fields, not visible controls -- they're
-        set by clicking a column heading (a plain link, full page load,
-        see _recordings_matrix_results.html), and just need to ride along
-        on every live-filter request so filtering doesn't reset your sort.
-        {% endcomment %}
-        <input type="hidden" name="sort" value="{{ sort }}">
-        <input type="hidden" name="dir" value="{{ dir }}">
+    {% comment %}
+    The filter row is shared with the playlist picker -- see
+    _matrix_filters.html -- and its date slider is the dashboard's, driven
+    by _range_script.html below.
+    {% endcomment %}
+    {% url 'charts:recordings_matrix' as filter_url %}
+    {% include "charts/_matrix_filters.html" with filter_url=filter_url %}
 
-        <label>
-            Genre
-            <select name="genre">
-                <option value="">All genres</option>
-                {% for value, label in genre_choices %}
-                <option value="{{ value }}" {% if value == genre %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        <label>
-            Chart
-            <select name="chart">
-                <option value="">All charts</option>
-                {% for c in all_charts %}
-                <option value="{{ c.id }}" {% if chart == c.id|stringformat:"s" %}selected{% endif %}>{{ c }}</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        {% comment %}
-        Grouping mode. A plain <select> inside the same form as the
-        filters, so it needs no wiring of its own: the form's existing
-        "change from:select" HTMX trigger live-swaps the results, and
-        hx-push-url puts ?group= in the address bar, which makes a
-        collapsed view bookmarkable and shareable like any other. The
-        column-header sort links carry it too (see
-        recordings_matrix._columns), so sorting cannot bounce you
-        back to the other mode.
-        {% endcomment %}
-        <label>
-            One row per
-            <select name="group" title="Recording + chart: one row for each chart a record made, every number scoped to that one chart (what the magazine printed). Recording: one row per record, merged across charts -- peak becomes the best reached anywhere.">
-                <option value="chart" {% if group != "recording" %}selected{% endif %}>Recording + chart</option>
-                <option value="recording" {% if group == "recording" %}selected{% endif %}>Recording</option>
-            </select>
-        </label>
-
-        <label class="search-label">
-            Search
-            <input type="search" name="q" value="{{ q }}" placeholder="song, artist, label, catalog #...">
-        </label>
-    </form>
-
-    <div id="matrix-results">
+    <div id="matrix-results" class="dash-results">
         {% include "charts/_recordings_matrix_results.html" %}
     </div>
+
+    {% include "charts/_range_script.html" %}
 {% endblock %}

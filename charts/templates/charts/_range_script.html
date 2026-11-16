@@ -76,6 +76,9 @@ week list from the #dash-weeks json_script the page renders.
     // contents, so the listeners never need re-attaching. Text goes in
     // with textContent, never innerHTML: label names are data.
     const results = document.getElementById("dash-results");
+    // Pages that reuse the slider without any graphs (the recordings
+    // matrix, the playlist picker) have no #dash-results: no tooltip.
+    if (!results) return;
     const tip = document.getElementById("dash-tip");
     const tipValue = tip.querySelector("strong");
     const tipLabel = tip.querySelector("span");

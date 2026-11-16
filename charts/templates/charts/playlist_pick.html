@@ -1,0 +1,48 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/playlist_pick.html -- /playlists/<id>/pick/
+
+The recordings matrix with a tick box per row, for filling one playlist.
+Same filter row as /recordings/ (_matrix_filters.html), same results table
+(_recordings_matrix_results.html, with `picker` set). Ticks save at once,
+so changing filters never loses a pick; "Add all N" adds every recording
+the current filters match. Opens one row per recording, so each record
+appears (and is ticked) once.
+{% endcomment %}
+{% block title %}Pick: {{ playlist.name }}{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>{{ playlist.name }}</h1>
+            <p class="subtitle">Filter, then tick recordings one by one or add every match at once. Each tick is saved immediately.</p>
+        </div>
+        <a class="btn btn-primary" href="{% url 'charts:playlist_detail' playlist.id %}">Done &mdash; view playlist</a>
+    </div>
+
+    {% url 'charts:playlist_pick' playlist.id as filter_url %}
+    {% include "charts/_matrix_filters.html" with filter_url=filter_url %}
+
+    <div id="matrix-results" class="dash-results">
+        {% include "charts/_recordings_matrix_results.html" %}
+    </div>
+
+    {% include "charts/_range_script.html" %}
+
+    <script>
+    // In one-row-per-chart mode a recording can be several rows. Ticking
+    // any of them changes the SAME playlist membership, so mirror the new
+    // state onto its other rows. Setting .checked from script fires no
+    // `change` event, so this never sends extra requests. Delegated on the
+    // container, which survives HTMX swapping the table inside it.
+    document.getElementById("matrix-results").addEventListener("change", function (e) {
+        const box = e.target.closest(".pick-box");
+        if (!box) return;
+        document.querySelectorAll('.pick-box[data-recording="' + box.dataset.recording + '"]')
+            .forEach(function (other) { other.checked = box.checked; });
+    });
+    </script>
+{% endblock %}

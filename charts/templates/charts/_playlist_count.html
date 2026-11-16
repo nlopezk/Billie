@@ -1,0 +1,12 @@
+{% comment %}
+charts/templates/charts/_playlist_count.html
+
+"N recordings in <playlist>" above the picker's table. Rendered inside the
+results partial normally, and on its own (oob=True) as playlist_toggle's
+whole response: hx-swap-oob replaces the one already on the page by id,
+so a single tick updates the count without re-rendering the table.
+{% endcomment %}
+<span id="playlist-count" class="summary"{% if oob %} hx-swap-oob="true"{% endif %}>
+    <strong>{{ member_count }}</strong> recording{{ member_count|pluralize }} in
+    <a href="{% url 'charts:playlist_detail' playlist.id %}">{{ playlist.name }}</a>
+</span>

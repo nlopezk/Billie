@@ -1,0 +1,50 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/playlist_list.html -- /playlists/
+
+Every playlist (GLOSSARY.md: a hand-picked list of recordings), plus the
+box to start a new one. Creating a playlist goes straight to its picker,
+since a new playlist is empty.
+{% endcomment %}
+{% block title %}Playlists{% endblock %}
+{% block main_class %}page-narrow{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Playlists</h1>
+            <p class="subtitle">Hand-picked lists of recordings, filtered from the matrix and exported as CSV or text.</p>
+        </div>
+    </div>
+
+    <form class="playlist-create" method="post" action="{% url 'charts:playlist_list' %}">
+        {% csrf_token %}
+        <label>
+            New playlist
+            <input type="text" name="name" value="{{ typed_name }}" required maxlength="200"
+                   placeholder="e.g. R&amp;B 1950, peak 5 or better">
+        </label>
+        <button type="submit" class="btn btn-primary">Create and pick recordings</button>
+    </form>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Name</th><th class="num">Recordings</th><th>Created</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for p in playlists %}
+            <tr>
+                <td><a href="{% url 'charts:playlist_detail' p.id %}">{{ p.name }}</a>
+                    {% if p.description %}<div class="muted">{{ p.description }}</div>{% endif %}</td>
+                <td class="num">{{ p.size }}</td>
+                <td>{{ p.created_at|date:"Y-m-d" }}</td>
+                <td><a class="btn btn-sm btn-ghost" href="{% url 'charts:playlist_pick' p.id %}">Pick</a></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4" class="empty-row">No playlists yet. Name one above to start.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+{% endblock %}

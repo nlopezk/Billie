@@ -17,8 +17,9 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from django.core.paginator import Paginator
-from django.db.models import Case, IntegerField, Q, Value, When
-from django.http import Http404
+from django.db.models import Case, Count, IntegerField, Q, Value, When
+from django.http import Http404, HttpResponse
+from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -28,6 +29,7 @@ from . import credits as credits_lib
 from . import dashboard as dashboard_lib
 from . import entry_recording as entry_recording_lib
 from . import lastweek_audit as lastweek_audit_lib
+from . import playlists as playlists_lib
 from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
 from . import week_submission
@@ -35,7 +37,7 @@ from . import discogs as discogs_api
 from . import discogs_workflow
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
-    Recording, Song, sole_credited_artist_ids,
+    Playlist, Recording, Song, sole_credited_artist_ids,
 )
 
 
@@ -219,14 +221,171 @@ def recordings_matrix(request):
     # identical filter/sort logic with no risk of the two drifting apart.
     # Every row and number comes from recordings_matrix_lib.build(), next
     # to its tests -- this view only picks which template to render.
-    context = {
-        **recordings_matrix_lib.build(request.GET),
-        "genre_choices": Chart.CATEGORY_CHOICES,
-        "all_charts": Chart.objects.order_by("category", "method"),
-    }
+    context = _matrix_context(request.GET)
     if request.headers.get("HX-Request"):
         return render(request, "charts/_recordings_matrix_results.html", context)
     return render(request, "charts/recordings_matrix.html", context)
+
+
+def _matrix_context(params, default_group="chart"):
+    """Everything the shared matrix filter row (_matrix_filters.html) and
+    results table need, for the recordings page and the playlist picker.
+
+    The date slider is the dashboard's (dashboard.parse_filters snaps the
+    from/to onto real chart weeks, range_context feeds the slider), and the
+    snapped dates are what the matrix query gets -- so the slider and the
+    numbers in the table can never disagree about the window."""
+    weeks = dashboard_lib.all_weeks()
+    query = {key: params.get(key) for key in params}
+    query.setdefault("group", default_group)
+    context = {}
+    if weeks:
+        filters = dashboard_lib.parse_filters(params, weeks)
+        query["from"] = filters["date_from"].isoformat()
+        query["to"] = filters["date_to"].isoformat()
+        context.update(filters=filters, **dashboard_lib.range_context(filters, weeks))
+    context.update(
+        recordings_matrix_lib.build(query),
+        genre_choices=Chart.CATEGORY_CHOICES,
+        all_charts=Chart.objects.order_by("category", "method"),
+    )
+    return context
+
+
+# =============================================================================
+# Playlists -- /playlists/ (GLOSSARY.md: a hand-picked list of recordings)
+# =============================================================================
+#
+# Every rule lives in charts/playlists.py; these views only read the request
+# and pick a template. Writes are POST-only (@require_POST), so a prefetching
+# browser or a stray GET can never add, remove or delete anything.
+
+def playlist_list(request):
+    # GET: every playlist with its size. POST: create one, then go straight
+    # to its picker -- a new playlist is empty, so picking is the next step.
+    error = None
+    if request.method == "POST":
+        playlist, error = playlists_lib.create(request.POST.get("name"), request.POST.get("description"))
+        if playlist:
+            return redirect("charts:playlist_pick", playlist_id=playlist.pk)
+    playlists = Playlist.objects.annotate(size=Count("items")).order_by("name")
+    return render(request, "charts/playlist_list.html", {
+        "playlists": playlists, "error": error, "typed_name": request.POST.get("name", ""),
+    })
+
+
+def playlist_detail(request, playlist_id):
+    # One playlist, in its order, with all-data numbers per recording.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    return render(request, "charts/playlist_detail.html", {
+        "playlist": playlist,
+        "rows": playlists_lib.rows(playlist),
+        "error": request.session.pop("playlist_error", None),
+    })
+
+
+def _picker_context(playlist, params):
+    # The matrix (one row per recording by default -- each recording once,
+    # so one tick per record) plus what the tick boxes and bulk buttons need.
+    context = _matrix_context(params, default_group="recording")
+    context.update(
+        playlist=playlist,
+        picker=True,
+        members=playlists_lib.member_ids(playlist),
+        member_count=playlist.items.count(),
+        # Distinct recordings, not rows: in one-row-per-chart mode a record
+        # on three charts is three rows but one "add".
+        pick_count=len(playlists_lib.recording_ids_in_rows(context["rows"])),
+    )
+    return context
+
+
+def playlist_pick(request, playlist_id):
+    # The picker: the recordings matrix with a tick box per row. Same
+    # one-URL, two-renders pattern as recordings_matrix.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    context = _picker_context(playlist, request.GET)
+    if request.headers.get("HX-Request"):
+        return render(request, "charts/_recordings_matrix_results.html", context)
+    return render(request, "charts/playlist_pick.html", context)
+
+
+@require_POST
+def playlist_toggle(request, playlist_id):
+    # One tick box. A ticked box sends on=1; an unticked one sends nothing
+    # (that's how HTML checkboxes work), so absence means "remove". Answers
+    # with just the updated count, swapped out-of-band into the picker.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    recording_id = request.POST.get("recording", "")
+    if recording_id.isdigit():
+        playlists_lib.set_member(playlist, int(recording_id), bool(request.POST.get("on")))
+    return render(request, "charts/_playlist_count.html", {
+        "playlist": playlist, "member_count": playlist.items.count(), "oob": True,
+    })
+
+
+@require_POST
+def playlist_bulk(request, playlist_id):
+    # "Add all N" / "Remove all N". The filter form's fields ride along in
+    # the POST (hx-include), so the matrix query re-runs server-side and the
+    # action covers EVERY matching recording -- not just what was on screen,
+    # and never a stale list sent from the browser.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    context = _matrix_context(request.POST, default_group="recording")
+    ids = playlists_lib.recording_ids_in_rows(context["rows"])
+    if request.POST.get("action") == "remove":
+        playlists_lib.remove_all(playlist, ids)
+    else:
+        playlists_lib.add_all(playlist, ids)
+    return render(request, "charts/_recordings_matrix_results.html", _picker_context(playlist, request.POST))
+
+
+@require_POST
+def playlist_move(request, playlist_id, recording_id):
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    playlists_lib.move(playlist, recording_id, request.POST.get("direction", "down"))
+    return redirect("charts:playlist_detail", playlist_id=playlist.pk)
+
+
+@require_POST
+def playlist_remove(request, playlist_id, recording_id):
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    playlists_lib.set_member(playlist, recording_id, False)
+    return redirect("charts:playlist_detail", playlist_id=playlist.pk)
+
+
+@require_POST
+def playlist_rename(request, playlist_id):
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    error = playlists_lib.rename(playlist, request.POST.get("name"), request.POST.get("description", ""))
+    if error:
+        # Through the session so the redirect (a plain GET) can show it.
+        request.session["playlist_error"] = error
+    return redirect("charts:playlist_detail", playlist_id=playlist.pk)
+
+
+@require_POST
+def playlist_delete(request, playlist_id):
+    # Removes the list only; recordings are untouched (PlaylistItem cascades).
+    get_object_or_404(Playlist, pk=playlist_id).delete()
+    return redirect("charts:playlist_list")
+
+
+def playlist_export(request, playlist_id, fmt):
+    # A download: CSV for a spreadsheet, plain "Artist - Song" text for
+    # pasting into a streaming service's import tool.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    if fmt not in ("csv", "txt"):
+        raise Http404("Unknown export format")
+    if fmt == "csv":
+        body, content_type = playlists_lib.export_csv(playlist), "text/csv; charset=utf-8"
+    else:
+        body, content_type = playlists_lib.export_text(playlist), "text/plain; charset=utf-8"
+    response = HttpResponse(body, content_type=content_type)
+    # A filename from the playlist's name, stripped to safe characters.
+    safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in playlist.name).strip() or "playlist"
+    response["Content-Disposition"] = f'attachment; filename="{safe}.{fmt}"'
+    return response
 
 
 def dashboard(request):

@@ -17,7 +17,28 @@ Two column labels come from `columns` rather than being written here,
 because they change with the grouping mode: collapsed to one row per
 recording, "Peak" is really "Best peak" (across charts) and "Chart"
 becomes "Charts" (how many). See recordings_matrix._query.
+
+In the PLAYLIST PICKER (`picker` set, views._picker_context) the same
+table gains a tick box per row and an "Add all / Remove all" bar. A tick
+saves at once (playlist_toggle); the bulk buttons POST the filter form's
+fields (hx-include) so the server re-runs the query and acts on EVERY
+matching recording, then re-renders this partial with the new ticks.
 {% endcomment %}
+{% if picker %}
+<div class="picker-bar">
+    {% include "charts/_playlist_count.html" %}
+    <span class="picker-actions">
+        <button type="button" class="btn btn-sm"
+                hx-post="{% url 'charts:playlist_bulk' playlist.id %}" hx-include="#dash-filters"
+                hx-vals='{"action": "add"}' hx-target="#matrix-results"
+                {% if not pick_count %}disabled{% endif %}>Add all {{ pick_count }}</button>
+        <button type="button" class="btn btn-sm btn-ghost"
+                hx-post="{% url 'charts:playlist_bulk' playlist.id %}" hx-include="#dash-filters"
+                hx-vals='{"action": "remove"}' hx-target="#matrix-results"
+                {% if not pick_count %}disabled{% endif %}>Remove all {{ pick_count }}</button>
+    </span>
+</div>
+{% endif %}
 {% if group == "recording" %}
 <p class="summary" id="matrix-count">
     {{ total_rows }} recording{{ total_rows|pluralize }}, one row each &mdash; merged across every chart.
@@ -29,6 +50,7 @@ becomes "Charts" (how many). See recordings_matrix._query.
 <div class="table-wrap">
 <table class="recordings-table dense-table">
     <colgroup>
+        {% if picker %}<col style="width: 2.25rem;">{% endif %}
         {% comment %}
         The first and fourth columns carry more in collapsed mode -- the
         peak gains a small source-chart line under it, and the Chart cell
@@ -55,6 +77,7 @@ becomes "Charts" (how many). See recordings_matrix._query.
     </colgroup>
     <thead>
         <tr>
+            {% if picker %}<th class="pick-cell"><span class="visually-hidden">In playlist</span></th>{% endif %}
             <th class="num"><a class="sort-link" href="{{ columns.peak.href }}">{{ columns.peak.label }}<span class="sort-arrow">{{ columns.peak.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.song.href }}">Song<span class="sort-arrow">{{ columns.song.arrow }}</span></a></th>
             <th><a class="sort-link" href="{{ columns.artist.href }}">Artist<span class="sort-arrow">{{ columns.artist.arrow }}</span></a></th>
@@ -75,6 +98,23 @@ becomes "Charts" (how many). See recordings_matrix._query.
     <tbody>
         {% for r in rows %}
         <tr>
+            {% if picker %}
+            {% comment %}
+            Not inside any <form>, so htmx sends only this box: its own
+            on=1 when ticked, nothing when unticked, plus the recording id
+            from hx-vals. data-recording lets the page's script tick a
+            recording's OTHER rows too (one-row-per-chart mode).
+            {% endcomment %}
+            <td class="pick-cell">
+                <input type="checkbox" class="pick-box" name="on" value="1"
+                       data-recording="{{ r.recording_id }}"
+                       aria-label="In playlist: {{ r.recording__song__title }}"
+                       {% if r.recording_id in members %}checked{% endif %}
+                       hx-post="{% url 'charts:playlist_toggle' playlist.id %}"
+                       hx-vals='{"recording": "{{ r.recording_id }}"}'
+                       hx-trigger="change" hx-swap="none">
+            </td>
+            {% endif %}
             <td class="pos num">
                 {{ r.peak_position }}
                 {% comment %}
@@ -136,7 +176,7 @@ becomes "Charts" (how many). See recordings_matrix._query.
             </td>
         </tr>
         {% empty %}
-        <tr><td colspan="9" class="empty-row">No recordings match these filters.</td></tr>
+        <tr><td colspan="{% if picker %}10{% else %}9{% endif %}" class="empty-row">No recordings match these filters.</td></tr>
         {% endfor %}
     </tbody>
 </table>

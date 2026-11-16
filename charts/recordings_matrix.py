@@ -126,6 +126,17 @@ def _query(params):
     if not str(artist_id).isdigit():
         artist_id = ""
     date_from, date_to = _parse_date(params.get("from")), _parse_date(params.get("to"))
+    # Two thresholds on the AGGREGATED numbers (added 2026-11-15 for the
+    # playlist picker, shown on this page too): "peak N or better" and "at
+    # least N weeks". Blank, zero or junk means no threshold, never an
+    # error. "More than 3 weeks" is typed as 4: the box says "at least".
+    max_peak = _parse_positive_int(params.get("peak"))
+    min_weeks = _parse_positive_int(params.get("weeks"))
+    # Only for the playlist page (charts/playlists.py): restrict the rows to
+    # one playlist's recordings. Like `artist`, the matrix page never sets it.
+    playlist_id = params.get("playlist", "")
+    if not str(playlist_id).isdigit():
+        playlist_id = ""
     if sort not in RECORDINGS_MATRIX_SORTS:
         sort = "peak"
     if group not in RECORDINGS_MATRIX_GROUPS:
@@ -145,6 +156,10 @@ def _query(params):
         entries = entries.filter(week_date__gte=date_from)
     if date_to:
         entries = entries.filter(week_date__lte=date_to)
+    if playlist_id:
+        # A playlist holds a recording at most once (unique_playlist_recording),
+        # so, like the artist join above, this can't duplicate entries.
+        entries = entries.filter(recording__playlist_items__playlist_id=playlist_id)
     if q:
         # The shared recording search (charts/search.py) -- "Capitol 304"
         # finds a Capitol release cataloged 304 here too.
@@ -192,6 +207,17 @@ def _query(params):
         aggregates["chart_count"] = Count("chart_id", distinct=True)
 
     rows = entries.values(*group_fields).annotate(**aggregates)
+    # Filtering AFTER .annotate() makes these a SQL HAVING, so they test the
+    # very numbers each row shows: the date window, genre and chart filters
+    # above have already narrowed the entries those numbers come from. That
+    # is what makes them a PEAK IN RANGE (GLOSSARY.md): a record at #1 in
+    # 1949 and #9 in 1950 has peak 9 inside a 1950 window, so "1950, peak 5
+    # or better" leaves it out. In one-row-per-chart mode the test is per
+    # chart; collapsed, it is the best peak / distinct weeks across charts.
+    if max_peak:
+        rows = rows.filter(peak_position__lte=max_peak)
+    if min_weeks:
+        rows = rows.filter(weeks_charted__gte=min_weeks)
 
     order_field, _ = RECORDINGS_MATRIX_SORTS[sort]
     if collapsed and sort in RECORDINGS_MATRIX_COLLAPSED_SORTS:
@@ -304,6 +330,12 @@ def _query(params):
         "artist": artist_id,
         "from": date_from.isoformat() if date_from else "",
         "to": date_to.isoformat() if date_to else "",
+        "peak": str(max_peak or ""), "weeks": str(min_weeks or ""),
+        # True when the date window actually cuts something off, so the
+        # headers can say "Peak in range" / "Weeks in range" instead of
+        # passing a windowed number off as the all-time one. A window that
+        # covers every week on file (the slider's default) is no window.
+        "windowed": _is_windowed(date_from, date_to),
     }
     return rows, state
 
@@ -326,6 +358,9 @@ def _columns(state):
             # "Peak" -> "Best peak", "Chart" -> "Charts": the header says
             # what the collapsed number actually is.
             _, label = RECORDINGS_MATRIX_COLLAPSED_SORTS[key]
+        if state.get("windowed") and key in ("peak", "weeks"):
+            # Inside a date window both numbers only count weeks in it.
+            label = f"{label} in range"
         is_active = key == state["sort"]
         next_dir = "desc" if (is_active and state["dir"] == "asc") else "asc"
         params = {
@@ -334,6 +369,7 @@ def _columns(state):
             # Carried too, so sorting an artist profile's discography keeps
             # its date window (empty -- and so left out -- on the matrix page).
             "from": state["from"], "to": state["to"],
+            "peak": state.get("peak", ""), "weeks": state.get("weeks", ""),
         }
         columns[key] = {
             "label": label,
@@ -342,6 +378,24 @@ def _columns(state):
             "arrow": ("▲" if state["dir"] == "asc" else "▼") if is_active else "",
         }
     return columns
+
+
+def _parse_positive_int(value):
+    # A whole number >= 1, or None -- a blank, zero, negative or non-numeric
+    # box just means "no threshold".
+    value = str(value or "").strip()
+    return int(value) if value.isdigit() and int(value) > 0 else None
+
+
+def _is_windowed(date_from, date_to):
+    # Does the from/to window leave out any week on file? One small
+    # aggregate query; no window at all is never "windowed".
+    if not (date_from or date_to):
+        return False
+    span = ChartEntry.objects.aggregate(first=Min("week_date"), last=Max("week_date"))
+    if span["first"] is None:
+        return False
+    return bool((date_from and date_from > span["first"]) or (date_to and date_to < span["last"]))
 
 
 def _parse_date(value):
