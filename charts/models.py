@@ -643,3 +643,154 @@ class PlaylistItem(models.Model):
 
     def __str__(self):
         return f"{self.playlist} #{self.position}: {self.recording_id}"
+
+
+# =============================================================================
+# Spotify matching (added 2026-11-19)
+# =============================================================================
+#
+# Links each Recording to a SPOTIFY TRACK (GLOSSARY.md) -- the same idea as
+# DiscogsMatch/DiscogsCandidate above, built separately and deliberately the
+# same shape, so the two sections read alike. Only /spotify/ writes these;
+# the entry form never touches them (non-negotiable #2: chart work never
+# needs the internet).
+#
+# What counts as a SPOTIFY MATCH is a copy of the same performance, on
+# whichever album is the most official one available; a STAND-IN is a later
+# re-recording by the same artist, accepted only when no copy of the
+# original exists, and shown as such everywhere. A cover is never either.
+
+
+def spotify_url_for(track_id):
+    # Plain outbound link to a Spotify track, from its id. A string, not a
+    # request. Shared by models and pages built from .values() dicts.
+    return f"https://open.spotify.com/track/{track_id}" if track_id else ""
+
+
+class SpotifyTrackFieldsMixin(models.Model):
+    """The snapshot of one Spotify track, shared by a match (what was
+    chosen) and a candidate (what a search turned up). Cached so the
+    queue, the recordings matrix and the playlist page render with no API
+    call at all -- they work offline."""
+
+    spotify_track_id = models.CharField(max_length=40, blank=True)
+    track_name = models.CharField(max_length=300, blank=True)
+    # Every artist Spotify lists on the track, joined with ", ".
+    track_artists = models.CharField(max_length=500, blank=True)
+    album_name = models.CharField(max_length=300, blank=True)
+    # Spotify's own words: "album", "single" or "compilation". Part of how
+    # copies are ranked (the artist's own album beats a compilation).
+    album_type = models.CharField(max_length=20, blank=True)
+    album_artists = models.CharField(max_length=500, blank=True)
+    # As Spotify gives it: "1995", "1995-03" or "1995-03-01" -- precision
+    # varies, so it's kept as text rather than forced into a date.
+    release_date = models.CharField(max_length=10, blank=True)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    # International Standard Recording Code: the same performance often
+    # keeps one ISRC across its album copies, so it's worth keeping.
+    isrc = models.CharField(max_length=20, blank=True)
+
+    class Meta:
+        abstract = True
+
+    @property
+    def spotify_url(self):
+        return spotify_url_for(self.spotify_track_id)
+
+    @property
+    def release_year(self):
+        # The leading four digits, or None when Spotify gave no date.
+        return int(self.release_date[:4]) if self.release_date[:4].isdigit() else None
+
+    @property
+    def duration_display(self):
+        # "2:47" -- how a reader compares lengths at a glance.
+        if not self.duration_ms:
+            return ""
+        seconds = round(self.duration_ms / 1000)
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+class SpotifyMatch(SpotifyTrackFieldsMixin):
+    """One Recording's link (or deliberate non-link) to a Spotify track."""
+
+    # The six states agreed for the workflow (see charts/spotify_workflow.py).
+    UNMATCHED = "unmatched"    # never searched
+    SUGGESTED = "suggested"    # a shortlist is waiting on a human
+    CONFIRMED = "confirmed"    # a human picked a copy of the same performance
+    MANUAL = "manual"          # a human pasted a Spotify link / id
+    STAND_IN = "stand_in"      # a human accepted a same-artist re-recording
+    NO_MATCH = "no_match"      # not on Spotify (searched, or a human said so)
+
+    STATUS_CHOICES = [
+        (UNMATCHED, "Not searched yet"),
+        (SUGGESTED, "Suggested -- needs review"),
+        (CONFIRMED, "Confirmed"),
+        (MANUAL, "Manually entered"),
+        (STAND_IN, "Stand-in (re-recording)"),
+        (NO_MATCH, "Not on Spotify"),
+    ]
+    # States that point at an actual Spotify track.
+    LINKED_STATUSES = [CONFIRMED, MANUAL, STAND_IN]
+    # States where a human (or an empty search) has settled the row.
+    SETTLED_STATUSES = [CONFIRMED, MANUAL, STAND_IN, NO_MATCH]
+
+    recording = models.OneToOneField(Recording, on_delete=models.CASCADE, related_name="spotify")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=UNMATCHED)
+    # Free text for the human: "only the 1958 re-cut is on Spotify", etc.
+    note = models.CharField(max_length=500, blank=True)
+    # The chosen track's JSON as Spotify returned it, minus artwork lists,
+    # so surfacing another field later needs no re-fetch. Small on purpose
+    # (see GitHub issue #2 about the database's size).
+    raw_data = models.JSONField(null=True, blank=True)
+    searched_at = models.DateTimeField(null=True, blank=True)
+    # When the CURRENT link was made -- the audit sorts by it. Separate from
+    # updated_at (auto_now, bumped by any save), same reason as
+    # DiscogsMatch.linked_at.
+    linked_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "Spotify matches"
+        indexes = [models.Index(fields=["status"]), models.Index(fields=["spotify_track_id"])]
+
+    @property
+    def is_linked(self):
+        return self.status in self.LINKED_STATUSES and bool(self.spotify_track_id)
+
+    @property
+    def is_settled(self):
+        return self.status in self.SETTLED_STATUSES
+
+    def __str__(self):
+        return f"{self.recording} -> {self.get_status_display()}"
+
+
+class SpotifyCandidate(SpotifyTrackFieldsMixin):
+    """One Spotify track a search turned up for a recording, held until a
+    human picks one. Transient: re-searching replaces the shortlist, and
+    confirming copies the chosen snapshot onto the SpotifyMatch."""
+
+    # How well the track's text and length fit our recording (see
+    # charts/spotify.py's score_track). Only STRONG can be bulk-confirmed.
+    STRONG = "strong"      # title AND artist agree, plausible 78 length
+    POSSIBLE = "possible"  # title and artist agree, but the length is off
+    WEAK = "weak"          # only the title, or only the artist, agrees
+    CONFIDENCE_CHOICES = [(STRONG, "Strong"), (POSSIBLE, "Possible"), (WEAK, "Weak")]
+
+    match = models.ForeignKey(SpotifyMatch, on_delete=models.CASCADE, related_name="candidates")
+    confidence = models.CharField(max_length=8, choices=CONFIDENCE_CHOICES, blank=True)
+    # The artist's own album released long after the chart run: possibly a
+    # re-recording. Never bulk-confirmed; shown as a warning on the row.
+    possible_rerecording = models.BooleanField(default=False)
+    # Why it was flagged, in words for the row ("released 1958", or "2:06,
+    # other copies ~2:44"). Two independent rules can flag a candidate --
+    # see charts/spotify.py -- so the reason is stored, not re-derived.
+    flag_reason = models.CharField(max_length=120, blank=True)
+    rank = models.PositiveSmallIntegerField(default=0)  # display order, best first
+
+    class Meta:
+        ordering = ["rank"]
+
+    def __str__(self):
+        return f"{self.track_name} -- {self.track_artists} ({self.album_name})"

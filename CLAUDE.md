@@ -220,8 +220,9 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
   `discogs_queue.html` + `_discogs_row.html`). Links each `Recording` to its Discogs
   release, for what Billboard never printed (songwriters, producers, real release year,
   country, genres). Key points:
-  - **`charts/discogs.py` is the only module in the project that touches the network**,
-    and nothing outside the `/discogs/` section imports it. Stdlib-only (`urllib`, no
+  - **`charts/discogs.py` touches the network** (since 2026-11-19 so does
+    `charts/spotify.py`, and those two are the only ones), and nothing outside the
+    `/discogs/` section imports it. Stdlib-only (`urllib`, no
     `requests`), so `requirements.txt` stays at just Django. Every failure mode (no
     token, no internet, 401, 429) is caught and shown on the page — it never 500s.
   - **Two models**: `DiscogsMatch` (one-to-one with `Recording`, carries the status
@@ -428,6 +429,67 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     Deleting a recording quietly drops it from playlists (owner: "deleted is deleted");
     deleting a playlist never touches recordings. Tests: `MatrixThresholdTests`,
     `PlaylistTests`.
+- **Spotify matching, built 2026-11-19** — `/spotify/` (queue) and `/spotify/audit/`;
+  `charts/spotify.py` (API client + matching rules, the second module that touches the
+  network), `charts/spotify_workflow.py` (every step, with a `client` seam like
+  Discogs), `charts/management/commands/spotify_match.py`; models `SpotifyMatch` +
+  `SpotifyCandidate` (migration `0010`, new tables only). Terms in GLOSSARY.md:
+  **Spotify track**, **Spotify match** (a copy of the same performance, on the most
+  official album available), **stand-in** (a same-artist re-recording, accepted only
+  when no copy exists; never a cover). Pushing playlists to Spotify is still issue #5.
+  - **Access:** a Development Mode app under the owner's **Premium** account (required
+    since Feb 2026); `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` / `SPOTIFY_MARKET`
+    (default `CL`, owner's choice) in `.env`. Matching uses the client-credentials flow:
+    no user login, public catalogue only. Feb 2026 limits that shaped the design: search
+    returns **at most 10** results; album `label` and track `popularity` are gone — so no
+    label + catalog # check, and Spotify's **search order stands in for "most listened"**.
+  - **States:** unmatched → suggested → confirmed / manual (pasted link) / stand_in /
+    no_match. Nothing auto-confirms. Confirming needs no network (the candidate holds the
+    whole snapshot); a pasted link fetches the track once.
+  - **Lookup:** strict `track:"…" artist:"…"`, then the Discogs track title/artist when
+    the recording has a linked Discogs match (an extra spelling, never required), then a
+    loose query — stopping at the first STRONG result (usually 1 call). Scoring:
+    `titles_agree` (ignores "- Remastered", brackets, punctuation, accents),
+    `artists_agree` (printed credit, credited artists, aliases, Discogs billing; stopwords
+    like "his orchestra" ignored), plausible 78 length (100–290 s). STRONG = title +
+    artist + length; POSSIBLE = length off; WEAK = only one of title/artist. The audit
+    uses the same rules. **Ranking among copies (owner's order):** confidence → not
+    flagged → artist's own album over a compilation → Spotify's search order → earliest.
+  - **"Possibly a re-recording" flag** = a NON-compilation album released more than
+    `RERECORDING_YEARS` (5) after the recording last charted. Narrowed from the agreed
+    "any release 5+ years later" during the build, because nearly every copy of a 1940s
+    side sits on a 1990+ compilation. Still imperfect: an artist's "Best of" typed
+    `album` by a reissue label gets flagged. Flagged rows are never bulk-confirmed.
+  - **Second flag, by length** (added after the first live test, 2026-11-19): copies of
+    one performance run within seconds of each other, re-recordings don't. A candidate
+    more than `LENGTH_TOLERANCE` (8%) from the median length of the agreeing candidates
+    (needs ≥ 3) is flagged; `SpotifyCandidate.flag_reason` (migration `0011`) says which
+    rule fired. Live check: it caught Louis Jordan's 1956 Mercury re-cuts, Tennessee
+    Ernie's 1957 re-cut and a Crazy Cajun "Slipping Around" that Spotify ranked FIRST,
+    and flagged no real copy. The date flag, by contrast, mostly flagged real copies on
+    reissue "albums"; making it a fallback for < 3 copies only is an open suggestion.
+  - **Batch bug fixed (2026-11-19):** the batch script fired the first row before htmx
+    had processed the page, so the trigger was lost and the batch hung on
+    "searching…". It now starts on DOMContentLoaded, with a 3-second watchdog that
+    re-fires a row whose request never went out. Verified in Edge (Playwright) against a
+    second server on a database copy.
+  - **Each row shows its Discogs link** (`_spotify_discogs_ref.html`, queue and audit)
+    when the recording has a linked Discogs match, for comparing at a glance.
+  - **Queue:** "Search next [50]" (editable, max 200) reloads in batch mode, where rows
+    search themselves ONE AT A TIME in the browser with an "n / N" bar (sequential on
+    purpose: gentle on the rate limit and on SQLite). Optional playlist filter. "Confirm
+    N strong matches" takes a row only when its top candidate is STRONG and unflagged.
+  - **Audit:** shared Spotify tracks whose recordings aren't joined by `reissue_of`
+    (union-find, so chains count), plus every link newest-first with disagreements
+    highlighted. Read-only.
+  - **Elsewhere:** a Spotify column on the recordings matrix / picker
+    (`_spotify_cell.html`, from cache, offline), and on the playlist page with a
+    readiness line ("38 of 56 matched · 3 stand-ins · …", `playlists.spotify_readiness`)
+    and a "Match them" button into the queue filtered to that playlist. The CSV export
+    gained a Spotify column. Tests: `SpotifyTextRuleTests`, `SpotifyMatchingTests`,
+    `SpotifyWorkflowTests` (with `FakeSpotifyClient`), `SpotifyPageTests`.
+  - **Never run against the real API yet** — first step when resuming: create the app,
+    fill `.env`, search one playlist's recordings, and check the flag and the ranking.
 - **Movement comes from the data, not from typed last-week numbers (fixed 2026-10-18).**
   The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
   which is only filled when a last-week number is *typed* — so a week entered by search

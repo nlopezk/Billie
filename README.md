@@ -44,6 +44,14 @@ Then open **http://127.0.0.1:8000/admin/** and log in.
 - There's also a small **read-only chart browser** at the site root (`/`) — pick a chart,
   page through it week by week, see rankings/movement/ties without going through the flat
   admin list. Not a replacement for the admin or the entry form, just a nicer way to look.
+- **Playlists and Spotify matching** — `/playlists/` builds hand-picked lists of
+  recordings from the recordings matrix (filters + tick boxes + "add all"), exported as
+  CSV or text. `/spotify/` links each recording to a Spotify track: an automatic search
+  suggests, you confirm (or paste a link, or mark a later re-recording as a "stand-in").
+  It needs a Spotify app under a **Premium** account: create one at
+  https://developer.spotify.com/dashboard and add to the git-ignored `.env` file
+  `SPOTIFY_CLIENT_ID=...`, `SPOTIFY_CLIENT_SECRET=...` and `SPOTIFY_MARKET=CL`. Only
+  `/spotify/` (and `/discogs/`) ever go online; chart entry never does.
 - Admin is still there for everything else — every table browsable/editable, with
   search-as-you-type on every foreign key.
 - **Admin changes are logged, entry/edit-form changes are not** — see "Auditing changes"

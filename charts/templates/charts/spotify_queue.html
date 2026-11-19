@@ -1,0 +1,239 @@
+{% extends "charts/base.html" %}
+{% load static %}
+{% comment %}
+charts/templates/charts/spotify_queue.html -- /spotify/
+
+The Spotify review queue: link each recording to a Spotify track (GLOSSARY.md:
+Spotify match, stand-in). Talks to the network only when a button here is
+pressed. Mirrors the Discogs queue; see views.spotify_queue.
+
+"Search next [N]" reloads the page in BATCH mode: the next N never-searched
+rows, each searching itself one after another (the script at the bottom),
+with an "n / N" count and a bar so a long run never looks frozen. You can
+review the first rows while the rest are still searching.
+{% endcomment %}
+{% block title %}Spotify matching{% endblock %}
+{% block extra_head %}
+<script src="{% static 'charts/htmx.min.js' %}"></script>
+{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Spotify matching</h1>
+            <p class="subtitle">Link each recording to a copy of the same performance on Spotify (catalogue: {{ market }}).</p>
+        </div>
+    </div>
+    {% include "charts/_spotify_tabs.html" with active="queue" %}
+
+    {% if not has_credentials %}
+    <div class="alert alert-error">
+        <strong>No Spotify credentials configured.</strong>
+        <ol>
+            <li>Log in at <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a>
+                with your Spotify account (it needs Premium: since February 2026 a personal app only works while its owner has Premium).</li>
+            <li>Create an app: any name and description, Redirect URI <code>http://127.0.0.1:8000/</code> (not used yet), and tick <em>Web API</em>.</li>
+            <li>Open the app's <em>Settings</em> and copy its Client ID and Client Secret into the <code>.env</code> file in the project root:</li>
+        </ol>
+        <pre>SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
+SPOTIFY_MARKET=CL</pre>
+        <p><code>.env</code> is git-ignored, so these never get committed. No Spotify login is needed for matching.</p>
+    </div>
+    {% endif %}
+
+    {% for message in messages %}<div class="alert alert-success">{{ message }}</div>{% endfor %}
+
+    <div class="discogs-progress">
+        <div class="progress-bar"><div class="progress-fill" style="width: {{ progress.percent }}%"></div></div>
+        <span class="progress-label">{{ progress.settled }} of {{ progress.total }} recordings settled ({{ progress.percent }}%){% if filters.playlist %} in this playlist{% endif %}</span>
+    </div>
+
+    <form class="filter-bar" method="get" action="{% url 'charts:spotify_queue' %}">
+        <label>
+            Status
+            <select name="status" onchange="this.form.submit()">
+                {% for option in status_options %}
+                <option value="{{ option.value }}" {% if filters.status == option.value %}selected{% endif %}>{{ option.label }} ({{ option.count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Playlist
+            <select name="playlist" onchange="this.form.submit()">
+                <option value="">Every recording</option>
+                {% for p in playlists %}
+                <option value="{{ p.id }}" {% if filters.playlist == p.id|stringformat:"s" %}selected{% endif %}>{{ p.name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="search-label">
+            Search
+            <input type="search" name="q" value="{{ filters.q }}" placeholder="song, artist, label, catalog #...">
+        </label>
+        <button type="submit">Filter</button>
+    </form>
+
+    {% if has_credentials %}
+    <div class="batch-actions">
+        {% if unmatched_count %}
+        {% comment %}
+        A GET form: it just reloads this page in batch mode with the same
+        filters, so a batch can be scoped to one playlist or a search.
+        {% endcomment %}
+        <form method="get" action="{% url 'charts:spotify_queue' %}" class="batch-form">
+            <input type="hidden" name="status" value="{{ filters.status }}">
+            <input type="hidden" name="q" value="{{ filters.q }}">
+            <input type="hidden" name="playlist" value="{{ filters.playlist }}">
+            <button type="submit" class="btn-primary">Search next</button>
+            <input type="number" name="batch" value="{{ batch_default }}" min="1" max="200" class="top-n-input" aria-label="How many to search">
+            <span class="muted">unsearched ({{ unmatched_count }} left)</span>
+        </form>
+        {% endif %}
+
+        {% if strong_ids and not batch %}
+        <form method="post" action="{% url 'charts:spotify_bulk' %}">
+            {% csrf_token %}
+            <input type="hidden" name="querystring" value="{{ querystring }}">
+            {% for match_id in strong_ids %}<input type="hidden" name="match_id" value="{{ match_id }}">{% endfor %}
+            <button type="submit" title="Confirms only rows whose top suggestion is Strong (title and artist agree, plausible 78 length) and not flagged as a possible re-recording.">
+                Confirm {{ strong_ids|length }} strong match{{ strong_ids|length|pluralize:"es" }} on this page
+            </button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if batch %}
+    <div class="discogs-progress" id="batch-progress">
+        <div class="progress-bar"><div class="progress-fill" id="batch-fill" style="width: 0%"></div></div>
+        <span class="progress-label" id="batch-label">Searching 0 / {{ rows|length }}&hellip;</span>
+        <a class="btn btn-sm btn-ghost" href="{% url 'charts:spotify_queue' %}?{{ querystring }}">Back to the queue</a>
+    </div>
+    {% endif %}
+
+    <div class="table-wrap">
+    <table class="discogs-table dense-table" id="spotify-table">
+        <colgroup>
+            <col style="width: 16rem;"><col style="width: 9rem;"><col><col style="width: 9.5rem;">
+        </colgroup>
+        <thead><tr><th>Recording</th><th>Status</th><th>Spotify</th><th></th></tr></thead>
+        <tbody>
+            {% for match in rows %}
+                {% include "charts/_spotify_row.html" with in_batch=batch %}
+            {% empty %}
+            <tr><td colspan="4" class="empty-row">Nothing here with these filters.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    {% if page and page.has_other_pages %}
+    <div class="pager">
+        <div>{% if page.has_previous %}<a class="btn" href="?status={{ filters.status }}&q={{ filters.q|urlencode }}&playlist={{ filters.playlist }}&page={{ page.previous_page_number }}">&larr; Previous</a>{% endif %}</div>
+        <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <div>{% if page.has_next %}<a class="btn" href="?status={{ filters.status }}&q={{ filters.q|urlencode }}&playlist={{ filters.playlist }}&page={{ page.next_page_number }}">Next &rarr;</a>{% endif %}</div>
+    </div>
+    {% endif %}
+
+    {% if batch %}
+    <script>
+    // Batch mode: search the rows ONE AT A TIME, so the count climbs in
+    // order and only one request talks to Spotify at once (gentle on its
+    // rate limit, and on SQLite). Each waiting row has an .auto-search
+    // element; we fire the first one, and when its row comes back (swapped
+    // in without .auto-search) we fire the next. `running` remembers which
+    // row is in flight, so a click on some OTHER row meanwhile can't start
+    // a second search.
+    (function () {
+        const table = document.getElementById("spotify-table");
+        const label = document.getElementById("batch-label");
+        const fill = document.getElementById("batch-fill");
+        let running = null;
+
+        function update() {
+            const total = table.querySelectorAll("tr[data-batch]").length;
+            const waiting = table.querySelectorAll("tr[data-batch] .auto-search").length;
+            const done = total - waiting - (running ? 1 : 0);
+            fill.style.width = (total ? Math.round(100 * done / total) : 100) + "%";
+            label.textContent = done < total
+                ? "Searching " + (done + 1) + " / " + total + "…"
+                : "Done: searched " + total + " / " + total + ". Review the suggestions below.";
+        }
+
+        // Set when htmx actually SENDS the in-flight row's request, so the
+        // watchdog below can tell "fired but never sent" from "waiting on
+        // Spotify".
+        let sent = false;
+
+        function fire(el) {
+            sent = false;
+            htmx.trigger(el, "spotify-next");
+            // Watchdog: a trigger that htmx didn't act on (it wasn't
+            // listening yet) would otherwise stall the whole batch forever.
+            // If nothing was sent within 3 seconds, fire the same row again.
+            const rowId = running;
+            setTimeout(function () {
+                if (running === rowId && !sent && el.isConnected) fire(el);
+            }, 3000);
+        }
+
+        function next() {
+            update();
+            if (running) return;
+            const el = table.querySelector("tr[data-batch] .auto-search");
+            if (!el) return;
+            // Mark it started BEFORE firing, so it is never picked twice.
+            el.classList.remove("auto-search");
+            el.textContent = "searching…";
+            running = el.closest("tr").id;
+            update();
+            fire(el);
+        }
+
+        document.body.addEventListener("htmx:beforeRequest", function (e) {
+            const row = e.detail.elt && e.detail.elt.closest ? e.detail.elt.closest("tr") : null;
+            if (row && row.id === running) sent = true;
+        });
+
+        // A row came back (success, or an error shown on the row).
+        // The in-flight row is finished once the row with its id no longer
+        // holds the element we fired (the server's replacement row never
+        // has one). Any other swap (a click elsewhere) leaves it running.
+        document.body.addEventListener("htmx:afterSettle", function () {
+            if (running) {
+                const row = document.getElementById(running);
+                if (!row || !row.querySelector("[hx-trigger='spotify-next']")) running = null;
+            }
+            next();
+        });
+        // The server couldn't be reached at all: mark the row failed and move on.
+        function failed(e) {
+            const row = e.detail.elt && e.detail.elt.closest ? e.detail.elt.closest("tr") : null;
+            if (row && row.id === running) {
+                const span = row.querySelector("[hx-trigger='spotify-next']");
+                if (span) span.textContent = "failed -- press Search Spotify to retry";
+                if (span) span.removeAttribute("hx-trigger");
+                running = null;
+                next();
+            }
+        }
+        document.body.addEventListener("htmx:sendError", failed);
+        document.body.addEventListener("htmx:responseError", failed);
+
+        // THE BUG THIS FIXES (2026-11-19): this script sits at the end of the
+        // page and used to call next() straight away -- BEFORE htmx had set
+        // up the page's elements (htmx does that on DOMContentLoaded, which
+        // fires after this script runs). The first row's trigger went to an
+        // element htmx wasn't listening on yet, so the batch sat at
+        // "searching..." until some other click happened to unstick it.
+        // Starting on DOMContentLoaded runs AFTER htmx's own listener (htmx
+        // registered first, in <head>), so the elements are ready.
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", next);
+        } else {
+            next();
+        }
+    })();
+    </script>
+    {% endif %}
+{% endblock %}

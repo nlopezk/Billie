@@ -26,7 +26,43 @@ from .models import (
     ChartEntry,
     DiscogsMatch,
     DiscogsCandidate,
+    Playlist,
+    PlaylistItem,
+    SpotifyMatch,
+    SpotifyCandidate,
 )
+
+
+# Spotify matches and playlists: browsable here like everything else. The
+# /spotify/ queue and /playlists/ pages are the real working surfaces; the
+# admin is the "base looker" (CLAUDE.md's Stack section) for checking a row.
+class SpotifyCandidateInline(admin.TabularInline):
+    model = SpotifyCandidate
+    extra = 0
+    fields = ("rank", "confidence", "possible_rerecording", "track_name", "track_artists", "album_name", "release_date")
+    readonly_fields = fields
+
+
+@admin.register(SpotifyMatch)
+class SpotifyMatchAdmin(admin.ModelAdmin):
+    list_display = ("recording", "status", "track_name", "track_artists", "album_name", "linked_at")
+    list_filter = ("status",)
+    search_fields = ("recording__song__title", "recording__credit_text", "track_name", "track_artists")
+    autocomplete_fields = ["recording"]
+    inlines = [SpotifyCandidateInline]
+
+
+class PlaylistItemInline(admin.TabularInline):
+    model = PlaylistItem
+    extra = 0
+    autocomplete_fields = ["recording"]
+
+
+@admin.register(Playlist)
+class PlaylistAdmin(admin.ModelAdmin):
+    list_display = ("name", "created_at")
+    search_fields = ("name",)
+    inlines = [PlaylistItemInline]
 
 
 class ArtistAliasInline(admin.TabularInline):

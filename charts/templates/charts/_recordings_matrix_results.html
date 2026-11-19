@@ -74,6 +74,7 @@ matching recording, then re-renders this partial with the new ticks.
         <col style="width: 5.5rem;">
         <col style="width: 5.5rem;">
         <col style="width: 8rem;">
+        <col style="width: 5.5rem;">
     </colgroup>
     <thead>
         <tr>
@@ -93,6 +94,7 @@ matching recording, then re-renders this partial with the new ticks.
             works fine with no internet.
             {% endcomment %}
             <th>Discogs</th>
+            <th>Spotify</th>
         </tr>
     </thead>
     <tbody>
@@ -174,9 +176,10 @@ matching recording, then re-renders this partial with the new ticks.
                     <span class="muted">&mdash;</span>
                 {% endif %}
             </td>
+            {% include "charts/_spotify_cell.html" with status=r.recording__spotify__status url=r.spotify_url catalog=r.recording__catalog_number %}
         </tr>
         {% empty %}
-        <tr><td colspan="{% if picker %}10{% else %}9{% endif %}" class="empty-row">No recordings match these filters.</td></tr>
+        <tr><td colspan="{% if picker %}11{% else %}10{% endif %}" class="empty-row">No recordings match these filters.</td></tr>
         {% endfor %}
     </tbody>
 </table>

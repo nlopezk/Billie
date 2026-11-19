@@ -1,0 +1,90 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/spotify_audit.html -- /spotify/audit/
+
+Read-only check of what's already linked to Spotify, answering "which of the
+ones I linked did I get wrong?":
+
+1. Spotify tracks shared by recordings that are NOT known reissues of each
+   other (Recording.reissue_of). Two different performances can't be one
+   Spotify track -- usually a mistake, so listed for review, never changed.
+2. Every link, newest first, our data next to Spotify's, with disagreements
+   highlighted by the SAME rules the matching uses (spotify_workflow.audit_row).
+{% endcomment %}
+{% block title %}Spotify audit{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Spotify matching</h1>
+            <p class="subtitle">What's already linked, checked against our data.</p>
+        </div>
+    </div>
+    {% include "charts/_spotify_tabs.html" with active="audit" %}
+
+    <h2>Shared Spotify tracks</h2>
+    {% if shared %}
+    <p class="muted">Each Spotify track below is linked to more than one recording, and those recordings aren't marked as reissues of each other.</p>
+    <div class="table-wrap">
+    <table class="dense-table">
+        <thead><tr><th>Spotify track</th><th>Our recordings</th></tr></thead>
+        <tbody>
+        {% for group in shared %}
+            <tr>
+                <td><a href="https://open.spotify.com/track/{{ group.track_id }}" target="_blank" rel="noopener">&#9654; {{ group.matches.0.track_artists }} &mdash; {{ group.matches.0.track_name }} &nearr;</a></td>
+                <td>
+                    {% for m in group.matches %}
+                    <div>{{ m.recording.song }} <span class="muted">&middot; {{ m.recording.credit_text }} &middot; {{ m.recording.catalog_display }}</span>
+                        <a class="btn btn-sm btn-ghost" href="{% url 'charts:spotify_queue' %}?status=all&amp;q={{ m.recording.catalog_number|urlencode }}">fix</a></div>
+                    {% endfor %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">None: no Spotify track is shared by recordings that aren't known reissues.</p>
+    {% endif %}
+
+    <h2>Linked, newest first</h2>
+    <div class="table-wrap">
+    <table class="dense-table">
+        <thead>
+            <tr><th>Ours</th><th>Spotify</th><th>Album</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+            <tr>
+                <td class="wrap">
+                    <span class="{% if not r.title_ok %}disagree{% endif %}">{{ r.match.recording.song }}</span><br>
+                    <span class="muted {% if not r.artist_ok %}disagree{% endif %}">{{ r.match.recording.credit_text }}</span><br>
+                    <span class="catalog-hint">{{ r.match.recording.catalog_display }}{% if r.last_chart_year %} &middot; charted to {{ r.last_chart_year }}{% endif %}</span>
+                    {% include "charts/_spotify_discogs_ref.html" with d=r.match.recording.discogs %}
+                </td>
+                <td class="wrap">
+                    <a class="{% if not r.title_ok %}disagree{% endif %}" href="{{ r.match.spotify_url }}" target="_blank" rel="noopener">&#9654; {{ r.match.track_name }} &nearr;</a><br>
+                    <span class="muted {% if not r.artist_ok %}disagree{% endif %}">{{ r.match.track_artists }}</span>
+                </td>
+                <td class="wrap">
+                    {{ r.match.album_name }}<br>
+                    <span class="catalog-hint">{{ r.match.album_type }}{% if r.match.release_date %}, <span class="{% if r.late %}disagree{% endif %}">{{ r.match.release_date }}</span>{% endif %}{% if r.match.duration_display %} &middot; <span class="{% if not r.length_ok %}disagree{% endif %}">{{ r.match.duration_display }}</span>{% endif %}</span>
+                </td>
+                <td><span class="status-badge status-{{ r.match.status }}">{{ r.match.get_status_display }}</span></td>
+                <td><a class="btn btn-sm btn-ghost" href="{% url 'charts:spotify_queue' %}?status=all&amp;q={{ r.match.recording.catalog_number|urlencode }}">fix</a></td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="empty-row">Nothing linked yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="muted">Highlighted: a title or artist that doesn't agree with ours, a length implausible for a 78 side, or the artist's own album released more than 5 years after the recording last charted.</p>
+
+    {% if page.has_other_pages %}
+    <div class="pager">
+        <div>{% if page.has_previous %}<a class="btn" href="?page={{ page.previous_page_number }}">&larr; Newer</a>{% endif %}</div>
+        <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <div>{% if page.has_next %}<a class="btn" href="?page={{ page.next_page_number }}">Older &rarr;</a>{% endif %}</div>
+    </div>
+    {% endif %}
+{% endblock %}

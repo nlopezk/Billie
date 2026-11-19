@@ -35,9 +35,11 @@ from . import search as search_lib
 from . import week_submission
 from . import discogs as discogs_api
 from . import discogs_workflow
+from . import spotify as spotify_api
+from . import spotify_workflow
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
-    Playlist, Recording, Song, sole_credited_artist_ids,
+    Playlist, Recording, Song, SpotifyCandidate, SpotifyMatch, sole_credited_artist_ids,
 )
 
 
@@ -280,6 +282,7 @@ def playlist_detail(request, playlist_id):
     return render(request, "charts/playlist_detail.html", {
         "playlist": playlist,
         "rows": playlists_lib.rows(playlist),
+        "spotify": playlists_lib.spotify_readiness(playlist),
         "error": request.session.pop("playlist_error", None),
     })
 
@@ -1398,3 +1401,200 @@ def discogs_bulk(request):
 
     request.session["discogs_messages"] = messages
     return redirect(f"{reverse('charts:discogs_queue')}?{querystring}")
+
+
+# =============================================================================
+# Spotify matching -- /spotify/ (GLOSSARY.md: Spotify track, Spotify match,
+# stand-in). Same shape as the Discogs section above; every rule lives in
+# charts/spotify_workflow.py and charts/spotify.py, these views only read the
+# request and pick a template. Writes are POST-only.
+# =============================================================================
+
+# How many rows "Search next N" offers by default (the box is editable).
+SPOTIFY_DEFAULT_BATCH = 50
+# The most the box accepts in one go -- a batch runs one row at a time in
+# the browser, so this only bounds how long a single page stays busy.
+SPOTIFY_MAX_BATCH = 200
+
+
+def _spotify_filters(params):
+    # The queue's filter state, cleaned: status, search text, playlist.
+    status = params.get("status", "todo")
+    if status not in {"todo", "all"} | {value for value, _ in SpotifyMatch.STATUS_CHOICES}:
+        status = "todo"
+    playlist_id = params.get("playlist", "")
+    if not str(playlist_id).isdigit():
+        playlist_id = ""
+    return {"status": status, "q": params.get("q", "").strip(), "playlist": playlist_id}
+
+
+def _spotify_scope(filters):
+    # Every match the playlist + search filters cover (status not applied).
+    # recording__discogs too: each row shows its Discogs link for comparison.
+    matches = SpotifyMatch.objects.select_related("recording__song", "recording__label", "recording__discogs")
+    if filters["playlist"]:
+        matches = matches.filter(recording__playlist_items__playlist_id=filters["playlist"])
+    if filters["q"]:
+        matches = matches.filter(search_lib.recording_text_q(filters["q"], prefix="recording__"))
+    return matches
+
+
+def spotify_queue(request):
+    # The review queue. Two modes:
+    #   * normal -- the filtered rows, 25 a page;
+    #   * batch (?batch=N) -- the next N never-searched rows in the current
+    #     filter, each searching ITSELF one after another in the browser
+    #     (see spotify_queue.html's script), with an "n / N" progress line,
+    #     so a 50-row run shows progress instead of a frozen page.
+    spotify_workflow.ensure_matches()
+    filters = _spotify_filters(request.GET)
+    scope = _spotify_scope(filters)
+
+    batch_size = request.GET.get("batch", "")
+    batch = int(batch_size) if batch_size.isdigit() and int(batch_size) > 0 else 0
+    batch = min(batch, SPOTIFY_MAX_BATCH)
+
+    if batch:
+        rows = list(
+            scope.filter(status=SpotifyMatch.UNMATCHED)
+            .prefetch_related("candidates")
+            .order_by("recording__song__title", "recording__catalog_number")[:batch]
+        )
+        page = None
+    else:
+        matches = scope.prefetch_related("candidates")
+        if filters["status"] == "todo":
+            matches = matches.filter(status__in=[SpotifyMatch.UNMATCHED, SpotifyMatch.SUGGESTED])
+        elif filters["status"] != "all":
+            matches = matches.filter(status=filters["status"])
+        # Suggested first (they need a decision), then a stable order.
+        matches = matches.annotate(
+            needs_decision=Case(
+                When(status=SpotifyMatch.SUGGESTED, then=Value(0)), default=Value(1), output_field=IntegerField(),
+            )
+        ).order_by("needs_decision", "recording__song__title", "recording__catalog_number")
+        page = Paginator(matches, 25).get_page(request.GET.get("page"))
+        rows = list(page)
+
+    progress = spotify_workflow.progress(scope)
+    # Built here: each option shows its own count, which a template can't
+    # look up by a loop variable.
+    counts = progress["counts"]
+    status_options = [
+        {"value": "todo", "label": "Needs attention",
+         "count": counts.get(SpotifyMatch.UNMATCHED, 0) + counts.get(SpotifyMatch.SUGGESTED, 0)},
+        {"value": "all", "label": "All", "count": progress["total"]},
+    ] + [
+        {"value": value, "label": label, "count": counts.get(value, 0)}
+        for value, label in SpotifyMatch.STATUS_CHOICES
+    ]
+    querystring = urlencode({k: v for k, v in {
+        **filters, "page": page.number if page else "",
+    }.items() if v})
+
+    return render(request, "charts/spotify_queue.html", {
+        "rows": rows,
+        "page": page,
+        "batch": batch,
+        "batch_default": batch or SPOTIFY_DEFAULT_BATCH,
+        "filters": filters,
+        "status_options": status_options,
+        "progress": progress,
+        "playlists": Playlist.objects.order_by("name"),
+        "has_credentials": bool(spotify_api.get_credentials()),
+        "market": spotify_api.get_market(),
+        "unmatched_count": counts.get(SpotifyMatch.UNMATCHED, 0),
+        # What the bulk button would really confirm on this page (the
+        # same function the action uses, so its number can't lie).
+        "strong_ids": [m.id for m in rows if spotify_workflow.bulk_confirmable_candidate(m)],
+        "querystring": querystring,
+        "messages": request.session.pop("spotify_messages", []),
+    })
+
+
+def _render_spotify_row(request, match, error=None):
+    # Every per-row action answers with the same row fragment, so a row
+    # looks the same however it got to its current state. `batch` carries
+    # through so a batch row keeps its marker (the progress count reads it).
+    match = SpotifyMatch.objects.prefetch_related("candidates").select_related(
+        "recording__song", "recording__label", "recording__discogs"
+    ).get(pk=match.pk)
+    return render(request, "charts/_spotify_row.html", {
+        "match": match,
+        "error": error,
+        "in_batch": bool(request.POST.get("batch")),
+        "querystring": request.POST.get("querystring", ""),
+    })
+
+
+@require_POST
+def spotify_search(request, recording_id):
+    # A row's "Search Spotify" (or a batch row searching itself). Live call;
+    # a failure is shown on the row, never as an error page.
+    match, _ = SpotifyMatch.objects.get_or_create(recording_id=recording_id)
+    try:
+        spotify_workflow.search(match)
+    except spotify_api.SpotifyError as exc:
+        return _render_spotify_row(request, match, error=str(exc))
+    return _render_spotify_row(request, match)
+
+
+@require_POST
+def spotify_confirm(request, recording_id):
+    # A candidate's "Match" or "Stand-in" button. No network call: the
+    # candidate already holds the full snapshot.
+    match = get_object_or_404(SpotifyMatch, recording_id=recording_id)
+    candidate = SpotifyCandidate.objects.filter(match=match, pk=request.POST.get("candidate_id") or 0).first()
+    if candidate is None:
+        return _render_spotify_row(request, match, error="That suggestion is gone -- search again.")
+    spotify_workflow.confirm(match, candidate, stand_in=bool(request.POST.get("stand_in")))
+    return _render_spotify_row(request, match)
+
+
+@require_POST
+def spotify_manual(request, recording_id):
+    # A pasted Spotify link / URI / id. One call, to cache what it points at.
+    match, _ = SpotifyMatch.objects.get_or_create(recording_id=recording_id)
+    error = spotify_workflow.link_manually(
+        match, request.POST.get("spotify_ref", ""), stand_in=bool(request.POST.get("stand_in")),
+    )
+    return _render_spotify_row(request, match, error=error)
+
+
+@require_POST
+def spotify_set_status(request, recording_id):
+    # "Not on Spotify" or "Reset".
+    match = get_object_or_404(SpotifyMatch, recording_id=recording_id)
+    spotify_workflow.set_status(match, request.POST.get("status", ""))
+    return _render_spotify_row(request, match)
+
+
+@require_POST
+def spotify_bulk(request):
+    # "Confirm N strong matches on this page". Full POST + redirect, since
+    # it changes many rows. Only rows whose top candidate is strong and not
+    # flagged as a possible re-recording are touched.
+    ids = request.POST.getlist("match_id")
+    confirmed = spotify_workflow.confirm_strong_batch(
+        SpotifyMatch.objects.filter(id__in=ids, status=SpotifyMatch.SUGGESTED).prefetch_related("candidates")
+    )
+    plural = "" if confirmed == 1 else "es"
+    request.session["spotify_messages"] = [f"Confirmed {confirmed} strong match{plural}."]
+    return redirect(reverse("charts:spotify_queue") + "?" + request.POST.get("querystring", ""))
+
+
+def spotify_audit(request):
+    # Read-only: what's already linked, newest first, next to our data with
+    # disagreements highlighted -- plus Spotify tracks shared by recordings
+    # that aren't known reissues of each other.
+    linked = (
+        SpotifyMatch.objects.filter(status__in=SpotifyMatch.LINKED_STATUSES)
+        .select_related("recording__song", "recording__label", "recording__discogs")
+        .order_by("-linked_at", "-id")
+    )
+    page = Paginator(linked, 50).get_page(request.GET.get("page"))
+    return render(request, "charts/spotify_audit.html", {
+        "page": page,
+        "rows": [spotify_workflow.audit_row(m) for m in page],
+        "shared": spotify_workflow.shared_tracks_not_reissues(),
+    })

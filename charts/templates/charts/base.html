@@ -856,6 +856,21 @@ through each page's subtitle, styled nine slightly different ways.
         .playlist-create input[name="name"] { min-width: 18rem; }
         .playlist-edit { margin: 0 0 1rem; }
         .playlist-edit form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; margin-top: 0.5rem; }
+
+        /* ---- Spotify matching (added 2026-11-19) ---- */
+        /* Reuses the Discogs queue's row/badge classes; only what differs is here. */
+        .status-badge.status-stand_in { color: var(--tie); }
+        /* A candidate: text, then its Match / Stand-in / listen buttons. */
+        .candidate-list .candidate-text { flex: 1; min-width: 0; }
+        .candidate-list .candidate-buttons { display: flex; gap: 0.25rem; align-items: flex-start; white-space: nowrap; }
+        .candidate-list .confidence-badge { align-self: flex-start; }
+        .batch-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+        /* The audit's point: a value that disagrees with ours (the Discogs
+           audit's colour, as inline text rather than a whole cell). */
+        .disagree { color: var(--down); font-weight: 600; }
+        /* The Spotify cell on the recordings matrix and the playlist page. */
+        .spotify-cell a { white-space: nowrap; }
+        .spotify-readiness { margin: 0 0 1rem; }
     </style>
     {% block extra_head %}{% endblock %}
 </head>
@@ -891,6 +906,8 @@ Set once here rather than repeated on each button.
                    class="{% if n == 'playlist_list' or n == 'playlist_detail' or n == 'playlist_pick' %}active{% endif %}">Playlists</a>
                 <a href="{% url 'charts:discogs_queue' %}"
                    class="{% if n == 'discogs_queue' or n == 'discogs_audit' %}active{% endif %}">Discogs</a>
+                <a href="{% url 'charts:spotify_queue' %}"
+                   class="{% if n == 'spotify_queue' or n == 'spotify_audit' %}active{% endif %}">Spotify</a>
                 <a href="{% url 'charts:credit_queue' %}"
                    class="{% if n == 'credit_queue' %}active{% endif %}">Credits</a>
             </nav>

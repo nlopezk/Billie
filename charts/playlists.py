@@ -30,7 +30,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Max
 
 from . import recordings_matrix as recordings_matrix_lib
-from .models import Playlist, PlaylistItem, Recording, discogs_url_for, format_catalog
+from .models import Playlist, PlaylistItem, Recording, SpotifyMatch, discogs_url_for, format_catalog, spotify_url_for
 
 
 def create(name, description=""):
@@ -172,17 +172,51 @@ def rows(playlist):
             "recording__song__title": rec.song.title,
             "recording__credit_text": rec.credit_text,
             "catalog_display": format_catalog(rec.label.name, rec.catalog_number, rec.side),
+            "recording__catalog_number": rec.catalog_number,
             "no_entries": True,
+            **_spotify_fields(rec),
         }
         result.append({**row, "is_first": index == 0, "is_last": index == len(items) - 1})
     return result
+
+
+def _spotify_fields(recording):
+    # The Spotify keys a matrix row carries, for a recording that has no
+    # matrix row (see rows() above).
+    match = getattr(recording, "spotify", None)
+    status = match.status if match else None
+    linked = bool(match and match.status in SpotifyMatch.LINKED_STATUSES)
+    return {
+        "recording__spotify__status": status,
+        "spotify_url": spotify_url_for(match.spotify_track_id) if linked else "",
+    }
+
+
+def spotify_readiness(playlist):
+    """How ready the playlist is to be pushed to Spotify (GitHub issue #5):
+    how many recordings are matched (a copy of the same performance), how
+    many have only a stand-in, how many aren't on Spotify, and how many
+    are still to be decided (never searched, or a shortlist waiting)."""
+    counts = {"matched": 0, "stand_in": 0, "not_on_spotify": 0, "to_do": 0}
+    statuses = playlist.items.values_list("recording__spotify__status", flat=True)
+    for status in statuses:
+        if status in (SpotifyMatch.CONFIRMED, SpotifyMatch.MANUAL):
+            counts["matched"] += 1
+        elif status == SpotifyMatch.STAND_IN:
+            counts["stand_in"] += 1
+        elif status == SpotifyMatch.NO_MATCH:
+            counts["not_on_spotify"] += 1
+        else:
+            counts["to_do"] += 1  # unmatched, suggested, or no match row yet
+    counts["total"] = sum(counts.values())
+    return counts
 
 
 # The export columns, in order -- one list so the CSV header and every row
 # can't drift apart.
 EXPORT_COLUMNS = [
     "#", "Song", "Artist (as printed)", "Label", "Catalog #", "Side",
-    "Best peak", "Weeks", "First entry", "Last entry", "Discogs",
+    "Best peak", "Weeks", "First entry", "Last entry", "Discogs", "Spotify",
 ]
 
 
@@ -191,7 +225,9 @@ def _export_records(playlist):
     # than from the HTML table's dicts, so an export carries plain fields
     # (label and catalog # separately, not the combined display string).
     numbers = {r["recording_id"]: r for r in rows(playlist)}
-    items = playlist.items.select_related("recording__song", "recording__label", "recording__discogs")
+    items = playlist.items.select_related(
+        "recording__song", "recording__label", "recording__discogs", "recording__spotify",
+    )
     for n, item in enumerate(items, start=1):
         rec = item.recording
         row = numbers.get(rec.id, {})
@@ -208,6 +244,8 @@ def _export_records(playlist):
             "First entry": row["first_entry"].isoformat() if row.get("first_entry") else "",
             "Last entry": row["last_entry"].isoformat() if row.get("last_entry") else "",
             "Discogs": discogs_url_for(match.discogs_release_id, match.discogs_master_id) if match else "",
+            # Only a linked match (a stand-in included) -- never a suggestion.
+            "Spotify": _spotify_fields(rec)["spotify_url"],
         }
 
 

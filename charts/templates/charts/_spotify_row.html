@@ -1,0 +1,136 @@
+{% comment %}
+charts/templates/charts/_spotify_row.html
+
+One recording's row in the Spotify review queue. Rendered by the queue page
+and returned by every per-row action, so a row looks the same however it
+reached its state (the Discogs row's pattern). Each button targets
+#spotify-row-<recording id> with outerHTML: one row updates in place.
+
+Batch rows (`in_batch`) carry data-batch, and a not-yet-searched one carries
+an .auto-search element: the page's script fires those one at a time and
+counts how many are done for the "n / N" progress line. The swapped-in row
+has no .auto-search, so it can never fire twice -- and an error row has none
+either, so a dead connection can't loop.
+{% endcomment %}
+<tr id="spotify-row-{{ match.recording_id }}" class="discogs-row status-{{ match.status }}"{% if in_batch %} data-batch="1"{% endif %}>
+    <td class="discogs-recording">
+        <strong>{{ match.recording.song }}</strong><br>
+        <span class="muted">{{ match.recording.credit_text }}</span><br>
+        <span class="catalog-hint">{{ match.recording.catalog_display }}</span>
+        {% include "charts/_spotify_discogs_ref.html" with d=match.recording.discogs %}
+    </td>
+
+    <td class="discogs-state">
+        <span class="status-badge status-{{ match.status }}">{{ match.get_status_display }}</span>
+        {% if match.note %}<span class="discogs-note">{{ match.note }}</span>{% endif %}
+    </td>
+
+    <td class="discogs-detail">
+        {% if error %}<p class="discogs-error">{{ error }}</p>{% endif %}
+
+        {% if in_batch and match.status == "unmatched" and not error %}
+            <span class="auto-search muted"
+                  hx-post="{% url 'charts:spotify_search' match.recording_id %}"
+                  hx-trigger="spotify-next"
+                  hx-vals='{"batch": "1", "querystring": "{{ querystring }}"}'
+                  hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">waiting to search&hellip;</span>
+        {% endif %}
+
+        {% if match.is_linked %}
+            <div class="discogs-linked">
+                <a class="discogs-title" href="{{ match.spotify_url }}" target="_blank" rel="noopener">
+                    &#9654; {{ match.track_artists }} &mdash; {{ match.track_name }} &nearr;
+                </a>
+                <div class="credit-line"><span class="credit-label">Album</span> {{ match.album_name }}
+                    <span class="catalog-hint">({{ match.album_type }}{% if match.release_date %}, {{ match.release_date }}{% endif %}{% if match.duration_display %} &middot; {{ match.duration_display }}{% endif %})</span></div>
+                {% if match.status == "stand_in" %}<div class="credit-line"><span class="release-level-tag">stand-in</span> a later re-recording, not this performance</div>{% endif %}
+            </div>
+
+        {% elif match.candidates.all %}
+            {% comment %}
+            The shortlist, best first: confidence, then not flagged, then the
+            owner's order among copies (own album, Spotify's search order,
+            earliest). "Match" = a copy of this performance; "Stand-in" = a
+            same-artist re-recording, accepted only when no copy exists.
+            {% endcomment %}
+            <ul class="candidate-list">
+                {% for c in match.candidates.all %}
+                <li>
+                    <span class="confidence-badge confidence-{% if c.confidence == 'strong' %}exact{% elif c.confidence == 'possible' %}strong{% else %}weak{% endif %}">{{ c.get_confidence_display }}</span>
+                    <span class="candidate-text">
+                        {{ c.track_artists }} &mdash; {{ c.track_name }}
+                        <span class="catalog-hint">({{ c.album_name }} &middot; {{ c.album_type }}{% if c.release_date %}, {{ c.release_date }}{% endif %}{% if c.duration_display %} &middot; {{ c.duration_display }}{% endif %})</span>
+                        {% comment %}
+                        Two rules can flag a candidate (charts/spotify.py): the
+                        artist's own album released 5+ years after the chart
+                        run, or a length far from the other copies'. The
+                        stored reason says which.
+                        {% endcomment %}
+                        {% if c.possible_rerecording %}<span class="release-level-tag" title="Flagged by a release date long after the chart run, or a length unlike the other copies'">possibly a re-recording ({{ c.flag_reason|default:c.release_year }})</span>{% endif %}
+                    </span>
+                    <span class="candidate-buttons">
+                        <button type="button" class="btn btn-sm"
+                            hx-post="{% url 'charts:spotify_confirm' match.recording_id %}"
+                            hx-vals='{"candidate_id": "{{ c.id }}", "querystring": "{{ querystring }}"}'
+                            hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                            title="A copy of this same performance">Match</button>
+                        <button type="button" class="btn btn-sm btn-ghost"
+                            hx-post="{% url 'charts:spotify_confirm' match.recording_id %}"
+                            hx-vals='{"candidate_id": "{{ c.id }}", "stand_in": "1", "querystring": "{{ querystring }}"}'
+                            hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                            title="A later re-recording by the same artist, used because the original isn't on Spotify">Stand-in</button>
+                        <a class="btn btn-icon btn-sm" href="{{ c.spotify_url }}" target="_blank" rel="noopener"
+                           title="Listen on Spotify before picking" aria-label="Open on Spotify">&#9654;</a>
+                    </span>
+                </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% comment %} Always available: find it yourself and paste the link. {% endcomment %}
+        {% if not match.is_linked %}
+        <div class="manual-entry">
+            <input type="text" name="spotify_ref" placeholder="Or paste a Spotify track link / URI / id"
+                   id="spotify-manual-{{ match.recording_id }}">
+            <button type="button" class="btn-sm"
+                hx-post="{% url 'charts:spotify_manual' match.recording_id %}"
+                hx-include="#spotify-manual-{{ match.recording_id }}"
+                hx-vals='{"querystring": "{{ querystring }}"}'
+                hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">Use this</button>
+            <button type="button" class="btn-sm btn-ghost"
+                hx-post="{% url 'charts:spotify_manual' match.recording_id %}"
+                hx-include="#spotify-manual-{{ match.recording_id }}"
+                hx-vals='{"stand_in": "1", "querystring": "{{ querystring }}"}'
+                hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">As stand-in</button>
+        </div>
+        {% endif %}
+    </td>
+
+    <td class="discogs-actions">
+        <div class="row-actions">
+        {% if not match.is_linked %}
+            <button type="button" class="btn-primary btn-sm"
+                hx-post="{% url 'charts:spotify_search' match.recording_id %}"
+                hx-vals='{"querystring": "{{ querystring }}"}'
+                hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                hx-indicator="#spotify-spinner-{{ match.recording_id }}">
+                {% if match.searched_at %}Search again{% else %}Search Spotify{% endif %}
+            </button>
+            <span id="spotify-spinner-{{ match.recording_id }}" class="htmx-indicator spinner">searching&hellip;</span>
+        {% endif %}
+        {% if not match.is_linked and match.status != "no_match" %}
+            <button type="button" class="btn-sm"
+                hx-post="{% url 'charts:spotify_set_status' match.recording_id %}"
+                hx-vals='{"status": "no_match", "querystring": "{{ querystring }}"}'
+                hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">Not on Spotify</button>
+        {% endif %}
+        {% if match.status != "unmatched" %}
+            <button type="button" class="btn-sm btn-ghost"
+                hx-post="{% url 'charts:spotify_set_status' match.recording_id %}"
+                hx-vals='{"status": "unmatched", "querystring": "{{ querystring }}"}'
+                hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                title="Clear this match and everything cached about it">Reset</button>
+        {% endif %}
+        </div>
+    </td>
+</tr>

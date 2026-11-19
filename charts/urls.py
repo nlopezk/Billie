@@ -36,6 +36,15 @@ urlpatterns = [
     # Playlists (GLOSSARY.md): hand-picked lists of recordings, for export.
     # The picker is the recordings matrix with tick boxes; every write
     # below is POST-only.
+    # Spotify matching (GLOSSARY.md: Spotify match, stand-in). The only
+    # section besides /discogs/ that talks to the network.
+    path("spotify/", views.spotify_queue, name="spotify_queue"),
+    path("spotify/audit/", views.spotify_audit, name="spotify_audit"),
+    path("spotify/bulk/", views.spotify_bulk, name="spotify_bulk"),
+    path("spotify/<int:recording_id>/search/", views.spotify_search, name="spotify_search"),
+    path("spotify/<int:recording_id>/confirm/", views.spotify_confirm, name="spotify_confirm"),
+    path("spotify/<int:recording_id>/manual/", views.spotify_manual, name="spotify_manual"),
+    path("spotify/<int:recording_id>/status/", views.spotify_set_status, name="spotify_set_status"),
     path("playlists/", views.playlist_list, name="playlist_list"),
     path("playlists/<int:playlist_id>/", views.playlist_detail, name="playlist_detail"),
     path("playlists/<int:playlist_id>/pick/", views.playlist_pick, name="playlist_pick"),

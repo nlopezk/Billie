@@ -25,11 +25,14 @@ from . import recordings_matrix as recordings_matrix_lib
 from . import search as search_lib
 from . import discogs as discogs_api
 from . import discogs_workflow
+from . import spotify as spotify_api
+from . import spotify_workflow
 from . import views
 from . import week_submission
 from .models import (
     Artist, ArtistAlias, Chart, ChartEntry, DiscogsCandidate, DiscogsMatch,
     Label, Playlist, PlaylistItem, Recording, RecordingCredit, Song,
+    SpotifyCandidate, SpotifyMatch,
 )
 
 
@@ -3368,3 +3371,345 @@ class PlaylistTests(TestCase):
     def test_create_view_goes_to_the_picker(self):
         response = self.client.post(reverse("charts:playlist_list"), {"name": "Fresh"})
         self.assertRedirects(response, reverse("charts:playlist_pick", args=[Playlist.objects.get(name="Fresh").id]))
+
+
+# =============================================================================
+# Spotify matching. Nothing here talks to Spotify: the matching rules are
+# tested with canned search results, and the workflow with a fake client.
+# =============================================================================
+
+def _sp_item(track_id, name, artists, album="An Album", album_type="album",
+             album_artists=None, date="1948-01-01", ms=170_000, isrc=""):
+    # A Spotify track object, shaped like the Web API's search results.
+    return {
+        "id": track_id, "name": name, "duration_ms": ms,
+        "artists": [{"name": a} for a in artists],
+        "external_ids": {"isrc": isrc} if isrc else {},
+        "album": {
+            "name": album, "album_type": album_type, "release_date": date,
+            "artists": [{"name": a} for a in (album_artists if album_artists is not None else artists)],
+            "images": [{"url": "x"}],
+        },
+    }
+
+
+class FakeSpotifyClient:
+    """A stand-in for charts.spotify at spotify_workflow's seam: canned
+    answers, a record of what was asked, no network."""
+
+    def __init__(self, candidates=(), track=None, error=None):
+        self.candidates = list(candidates)
+        self.track = track
+        self.error = error
+        self.calls = []
+
+    def search_candidates(self, recording):
+        self.calls.append(("search", recording.id))
+        if self.error:
+            raise spotify_api.SpotifyError(self.error)
+        return self.candidates
+
+    def fetch_track(self, track_id):
+        self.calls.append(("track", track_id))
+        if self.error:
+            raise spotify_api.SpotifyError(self.error)
+        return dict(self.track)
+
+
+class SpotifyTextRuleTests(TestCase):
+    # charts/spotify.py's "do these agree?" rules -- used by scoring AND the audit.
+
+    def test_titles_ignore_streaming_decoration(self):
+        self.assertEqual(normalize := spotify_api.normalize_title("Choo Choo Ch'Boogie - Remastered 2003"), "choo choo ch boogie")
+        self.assertTrue(spotify_api.titles_agree("Choo Choo Ch'Boogie", "Choo Choo Ch'Boogie (Single Version)"))
+        self.assertTrue(spotify_api.titles_agree("Caldonia", "Caldonia Boogie"))
+        self.assertFalse(spotify_api.titles_agree("Someday", "Sometime"))
+        self.assertTrue(normalize)
+
+    def test_artists_agree_across_billing_styles(self):
+        self.assertTrue(spotify_api.artists_agree(["Bob Wills and His Texas Playboys"], ["Bob Wills & His Texas Playboys"]))
+        self.assertTrue(spotify_api.artists_agree(["Louis Jordan"], ["Louis Jordan & His Tympany Five"]))
+        # A collaboration billed on two Spotify artists.
+        self.assertTrue(spotify_api.artists_agree(["Harry James", "Frank Sinatra"], ["Frank Sinatra", "Harry James"]))
+        self.assertFalse(spotify_api.artists_agree(["Louis Jordan"], ["Jazz Gillum"]))
+        # "His Orchestra" alone is no evidence.
+        self.assertFalse(spotify_api.artists_agree(["Andy Kirk and His Orchestra"], ["Glenn Miller and His Orchestra"]))
+
+    def test_duration_plausible_for_a_78_side(self):
+        self.assertTrue(spotify_api.duration_plausible(165_000))
+        self.assertFalse(spotify_api.duration_plausible(420_000))
+        self.assertTrue(spotify_api.duration_plausible(None))
+
+    def test_parse_track_reference(self):
+        tid = "4uLU6hMCjMI75M1A2tKUQC"
+        self.assertEqual(spotify_api.parse_track_reference(f"https://open.spotify.com/intl-es/track/{tid}?si=abc"), tid)
+        self.assertEqual(spotify_api.parse_track_reference(f"spotify:track:{tid}"), tid)
+        self.assertEqual(spotify_api.parse_track_reference(tid), tid)
+        self.assertIsNone(spotify_api.parse_track_reference("https://open.spotify.com/album/xyz"))
+        self.assertIsNone(spotify_api.parse_track_reference(""))
+
+
+class SpotifyMatchingTests(TestCase):
+    # spotify.search_candidates: queries, scoring, the re-recording flag and
+    # the owner's order among copies of one performance.
+
+    def setUp(self):
+        self.chart = Chart.objects.create(category="rnb", method="jukebox", publication_weekday=5)
+        self.recording = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="18734", side="A",
+            song=Song.objects.create(title="Caldonia"), credit_text="Louis Jordan",
+        )
+        artist = Artist.objects.create(canonical_name="Louis Jordan")
+        RecordingCredit.objects.create(recording=self.recording, artist=artist, credit_order=0)
+        ChartEntry.objects.create(chart=self.chart, week_date=date(1945, 6, 2), position=1, recording=self.recording)
+        self.queries = []
+
+    def _search(self, results_by_query):
+        # A fake one-query search: answers by the query's position.
+        def search(query):
+            self.queries.append(query)
+            return results_by_query[len(self.queries) - 1] if len(self.queries) <= len(results_by_query) else []
+        return search
+
+    def test_copies_ranked_own_album_then_search_order_then_earliest(self):
+        results = [[
+            _sp_item("comp", "Caldonia", ["Louis Jordan"], album="Jump Blues Hits", album_type="compilation",
+                     album_artists=["Various Artists"], date="1995"),
+            # The artist's own album from the era (an "album" dated within 5
+            # years of the chart run, so not flagged as a re-recording).
+            _sp_item("own2", "Caldonia - Remastered", ["Louis Jordan & His Tympany Five"], album="Jordan Jumps", date="1950"),
+            _sp_item("own1", "Caldonia", ["Louis Jordan"], album="Let The Good Times Roll", album_type="compilation",
+                     album_artists=["Louis Jordan"], date="1950"),
+        ]]
+        found = spotify_api.search_candidates(self.recording, search=self._search(results))
+        # own2 is the artist's own album (album, not compilation); own1 is a
+        # compilation even though it's the artist's -- so it ranks with comp,
+        # by search order.
+        self.assertEqual([c["spotify_track_id"] for c in found], ["own2", "comp", "own1"])
+        self.assertTrue(all(c["confidence"] == "strong" for c in found))
+        # A strong match was found, so the loose query never ran.
+        self.assertEqual(len(self.queries), 1)
+        self.assertEqual(self.queries[0], 'track:"Caldonia" artist:"Louis Jordan"')
+
+    def test_scoring_tiers_and_unrelated_results_dropped(self):
+        results = [[
+            _sp_item("long", "Caldonia", ["Louis Jordan"], ms=420_000),
+            _sp_item("cover", "Caldonia", ["Woody Herman"]),
+            _sp_item("other", "Let The Good Times Roll", ["Louis Jordan"]),
+            _sp_item("junk", "Something Else", ["Nobody"]),
+        ], []]
+        found = {c["spotify_track_id"]: c for c in spotify_api.search_candidates(self.recording, search=self._search(results))}
+        self.assertEqual(found["long"]["confidence"], "possible")
+        self.assertEqual(found["cover"]["confidence"], "weak")
+        self.assertEqual(found["other"]["confidence"], "weak")
+        self.assertNotIn("junk", found)
+        # No strong result: the loose query ran too.
+        self.assertEqual(self.queries[-1], "Caldonia Louis Jordan")
+
+    def test_rerecording_flag_only_on_a_late_non_compilation_album(self):
+        results = [[
+            _sp_item("recut", "Caldonia", ["Louis Jordan"], album="Man, We're Wailin'", date="1958"),
+            _sp_item("comp", "Caldonia", ["Louis Jordan"], album_type="compilation", date="2004"),
+        ]]
+        found = spotify_api.search_candidates(self.recording, search=self._search(results))
+        by_id = {c["spotify_track_id"]: c for c in found}
+        self.assertTrue(by_id["recut"]["possible_rerecording"])
+        self.assertFalse(by_id["comp"]["possible_rerecording"])
+        # A flagged copy ranks below an unflagged one of equal confidence.
+        self.assertEqual(found[0]["spotify_track_id"], "comp")
+
+    def test_a_length_unlike_the_other_copies_is_flagged(self):
+        # The real case from the first live test: Floyd Tillman's "Slipping
+        # Around" -- a Crazy Cajun re-recording (2:06) listed FIRST by
+        # Spotify, above three Columbia copies of the original (2:43-2:47).
+        results = [[
+            _sp_item("cajun", "Caldonia", ["Louis Jordan"], album_type="compilation", date="2026", ms=126_000),
+            _sp_item("c1", "Caldonia", ["Louis Jordan"], album_type="compilation", date="2010", ms=167_000),
+            _sp_item("c2", "Caldonia", ["Louis Jordan"], album_type="compilation", date="1991", ms=163_000),
+            _sp_item("c3", "Caldonia", ["Louis Jordan"], album_type="compilation", date="1999", ms=163_000),
+        ]]
+        found = spotify_api.search_candidates(self.recording, search=self._search(results))
+        by_id = {c["spotify_track_id"]: c for c in found}
+        self.assertTrue(by_id["cajun"]["possible_rerecording"])
+        self.assertEqual(by_id["cajun"]["flag_reason"], "2:06, other copies ~2:43")
+        self.assertFalse(any(by_id[k]["possible_rerecording"] for k in ("c1", "c2", "c3")))
+        # It drops below the real copies, so bulk confirm can't take it.
+        self.assertEqual(found[-1]["spotify_track_id"], "cajun")
+
+    def test_too_few_copies_means_no_length_flag(self):
+        results = [[
+            _sp_item("a", "Caldonia", ["Louis Jordan"], ms=126_000),
+            _sp_item("b", "Caldonia", ["Louis Jordan"], ms=167_000),
+        ]]
+        found = spotify_api.search_candidates(self.recording, search=self._search(results))
+        self.assertFalse(any(c["possible_rerecording"] for c in found))
+
+    def test_discogs_spelling_adds_a_query_and_counts_when_scoring(self):
+        DiscogsMatch.objects.create(
+            recording=self.recording, status=DiscogsMatch.CONFIRMED, discogs_release_id=1,
+            matched_track_title="Caldonia Boogie", matched_track_artist="Louis Jordan And His Tympany Five",
+        )
+        spotify_api.search_candidates(self.recording, search=self._search([[], [], []]))
+        self.assertEqual(self.queries[1], 'track:"Caldonia Boogie" artist:"Louis Jordan And His Tympany Five"')
+        self.assertEqual(len(self.queries), 3)
+
+    def test_snapshot_drops_artwork_from_the_raw_copy(self):
+        snap = spotify_api.track_snapshot(_sp_item("t", "Caldonia", ["Louis Jordan"], isrc="USMC14512345"))
+        self.assertEqual(snap["isrc"], "USMC14512345")
+        self.assertNotIn("images", snap["raw_data"]["album"])
+        self.assertEqual(snap["album_artists"], "Louis Jordan")
+
+
+class SpotifyWorkflowTests(TestCase):
+    # charts/spotify_workflow.py with a fake client.
+
+    def setUp(self):
+        label = Label.objects.create(name="Decca")
+        self.recording = Recording.objects.create(
+            label=label, catalog_number="18734", side="A",
+            song=Song.objects.create(title="Caldonia"), credit_text="Louis Jordan",
+        )
+        spotify_workflow.ensure_matches()
+        self.match = SpotifyMatch.objects.get(recording=self.recording)
+
+    def _candidate(self, track_id="t1", confidence="strong", flagged=False, **extra):
+        snap = spotify_api.track_snapshot(_sp_item(track_id, extra.pop("name", "Caldonia"), ["Louis Jordan"]))
+        return {**snap, "confidence": confidence, "possible_rerecording": flagged, "search_order": 0, **extra}
+
+    def test_search_stores_a_shortlist_or_marks_not_on_spotify(self):
+        spotify_workflow.search(self.match, client=FakeSpotifyClient([self._candidate("a"), self._candidate("b", "weak")]))
+        self.assertEqual(self.match.status, SpotifyMatch.SUGGESTED)
+        self.assertEqual(list(self.match.candidates.values_list("spotify_track_id", flat=True)), ["a", "b"])
+        spotify_workflow.search(self.match, client=FakeSpotifyClient([]))
+        self.assertEqual(self.match.status, SpotifyMatch.NO_MATCH)
+        self.assertEqual(self.match.candidates.count(), 0)
+
+    def test_a_failed_search_leaves_the_row_alone(self):
+        with self.assertRaises(spotify_api.SpotifyError):
+            spotify_workflow.search(self.match, client=FakeSpotifyClient(error="offline"))
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, SpotifyMatch.UNMATCHED)
+
+    def test_confirm_and_stand_in_copy_the_snapshot_and_clear_the_shortlist(self):
+        spotify_workflow.store_shortlist(self.match, [self._candidate("a"), self._candidate("b")])
+        spotify_workflow.confirm(self.match, self.match.candidates.get(spotify_track_id="b"), stand_in=True)
+        self.match.refresh_from_db()
+        self.assertEqual((self.match.status, self.match.spotify_track_id), (SpotifyMatch.STAND_IN, "b"))
+        self.assertTrue(self.match.is_linked)
+        self.assertIsNotNone(self.match.linked_at)
+        self.assertEqual(self.match.candidates.count(), 0)
+
+    def test_link_manually(self):
+        tid = "4uLU6hMCjMI75M1A2tKUQC"
+        self.assertIsNotNone(spotify_workflow.link_manually(self.match, "not a link", client=FakeSpotifyClient()))
+        self.assertIsNotNone(spotify_workflow.link_manually(self.match, tid, client=FakeSpotifyClient(error="offline")))
+        self.match.refresh_from_db()
+        self.assertEqual(self.match.status, SpotifyMatch.UNMATCHED)
+        track = spotify_api.track_snapshot(_sp_item(tid, "Caldonia", ["Louis Jordan"]))
+        error = spotify_workflow.link_manually(self.match, f"spotify:track:{tid}", client=FakeSpotifyClient(track=track))
+        self.assertIsNone(error)
+        self.match.refresh_from_db()
+        self.assertEqual((self.match.status, self.match.spotify_track_id), (SpotifyMatch.MANUAL, tid))
+
+    def test_reset_clears_everything_cached(self):
+        spotify_workflow.store_shortlist(self.match, [self._candidate("a")])
+        spotify_workflow.confirm(self.match, self.match.candidates.get())
+        spotify_workflow.set_status(self.match, SpotifyMatch.UNMATCHED)
+        self.match.refresh_from_db()
+        self.assertEqual((self.match.status, self.match.spotify_track_id, self.match.track_name), ("unmatched", "", ""))
+        self.assertIsNone(self.match.linked_at)
+        self.assertIsNone(self.match.searched_at)
+
+    def test_bulk_confirm_takes_only_a_strong_unflagged_top_candidate(self):
+        cases = [
+            ([self._candidate("a"), self._candidate("b", "weak")], "a"),
+            ([self._candidate("a", flagged=True), self._candidate("b")], None),
+            ([self._candidate("a", "possible")], None),
+        ]
+        for candidates, expected in cases:
+            spotify_workflow.store_shortlist(self.match, candidates)
+            self.match = SpotifyMatch.objects.prefetch_related("candidates").get(pk=self.match.pk)
+            chosen = spotify_workflow.bulk_confirmable_candidate(self.match)
+            self.assertEqual(chosen.spotify_track_id if chosen else None, expected)
+        self.assertEqual(spotify_workflow.confirm_strong_batch(SpotifyMatch.objects.prefetch_related("candidates")), 0)
+
+    def test_shared_tracks_listed_unless_known_reissues(self):
+        other = Recording.objects.create(
+            label=self.recording.label, catalog_number="99", side="A",
+            song=self.recording.song, credit_text="Louis Jordan",
+        )
+        spotify_workflow.ensure_matches()
+        for rec in (self.recording, other):
+            m = SpotifyMatch.objects.get(recording=rec)
+            spotify_workflow.store_shortlist(m, [self._candidate("same")])
+            spotify_workflow.confirm(m, m.candidates.get())
+        self.assertEqual([g["track_id"] for g in spotify_workflow.shared_tracks_not_reissues()], ["same"])
+        other.reissue_of = self.recording
+        other.save()
+        self.assertEqual(spotify_workflow.shared_tracks_not_reissues(), [])
+
+
+class SpotifyPageTests(TestCase):
+    # The views are thin; these pin what the pages promise.
+
+    def setUp(self):
+        chart = Chart.objects.create(category="country", method="retail", publication_weekday=5)
+        self.recording = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="46173", side="A",
+            song=Song.objects.create(title="Shot Gun Boogie"), credit_text="Tennessee Ernie",
+        )
+        ChartEntry.objects.create(chart=chart, week_date=date(1951, 1, 6), position=1, recording=self.recording)
+        self.playlist, _ = playlists_lib.create("Boogies")
+        playlists_lib.set_member(self.playlist, self.recording.id, True)
+
+    def test_queue_shows_setup_without_credentials_and_batch_rows_wait_to_search(self):
+        with mock.patch.object(spotify_api, "get_credentials", return_value=None):
+            page = self.client.get(reverse("charts:spotify_queue"))
+        self.assertContains(page, "No Spotify credentials configured")
+        with mock.patch.object(spotify_api, "get_credentials", return_value=("id", "secret")):
+            batch = self.client.get(reverse("charts:spotify_queue"), {"batch": "50", "playlist": self.playlist.id})
+        self.assertContains(batch, 'class="auto-search')
+        self.assertContains(batch, "Searching 0 / 1")
+
+    def test_row_actions_are_post_only_and_confirm_works(self):
+        url = reverse("charts:spotify_search", args=[self.recording.id])
+        self.assertEqual(self.client.get(url).status_code, 405)
+        candidate = {**spotify_api.track_snapshot(_sp_item("abc", "Shot Gun Boogie", ["Tennessee Ernie Ford"])),
+                     "confidence": "strong", "possible_rerecording": False, "search_order": 0}
+        with mock.patch.object(spotify_api, "search_candidates", return_value=[candidate]):
+            self.assertContains(self.client.post(url), "Shot Gun Boogie")
+        match = SpotifyMatch.objects.get(recording=self.recording)
+        self.client.post(reverse("charts:spotify_confirm", args=[self.recording.id]),
+                         {"candidate_id": match.candidates.get().id})
+        match.refresh_from_db()
+        self.assertEqual(match.status, SpotifyMatch.CONFIRMED)
+
+        # The matrix, the playlist page and the export all show the link.
+        matrix = self.client.get(reverse("charts:recordings_matrix"))
+        self.assertContains(matrix, "https://open.spotify.com/track/abc")
+        detail = self.client.get(reverse("charts:playlist_detail", args=[self.playlist.id]))
+        self.assertContains(detail, "matched on Spotify")
+        self.assertEqual(detail.context["spotify"]["matched"], 1)
+        csv_text = playlists_lib.export_csv(self.playlist)
+        self.assertIn("https://open.spotify.com/track/abc", csv_text)
+
+        # The audit lists it, newest first.
+        self.assertContains(self.client.get(reverse("charts:spotify_audit")), "Shot Gun Boogie")
+
+    def test_queue_and_audit_show_the_linked_discogs_release(self):
+        DiscogsMatch.objects.create(
+            recording=self.recording, status=DiscogsMatch.CONFIRMED, discogs_release_id=4242,
+            matched_label="Capitol", matched_catalog_number="1295", matched_year=1950,
+        )
+        page = self.client.get(reverse("charts:spotify_queue"), {"status": "all"})
+        self.assertContains(page, "https://www.discogs.com/release/4242")
+        # A suggestion isn't a link: nothing shown.
+        DiscogsMatch.objects.filter(recording=self.recording).update(status=DiscogsMatch.SUGGESTED)
+        page = self.client.get(reverse("charts:spotify_queue"), {"status": "all"})
+        self.assertNotContains(page, "discogs.com/release/4242")
+
+    def test_readiness_counts_every_state(self):
+        spotify_workflow.ensure_matches()
+        self.assertEqual(playlists_lib.spotify_readiness(self.playlist)["to_do"], 1)
+        SpotifyMatch.objects.filter(recording=self.recording).update(status=SpotifyMatch.NO_MATCH)
+        self.assertEqual(playlists_lib.spotify_readiness(self.playlist)["not_on_spotify"], 1)

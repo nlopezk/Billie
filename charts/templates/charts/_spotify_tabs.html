@@ -1,0 +1,11 @@
+{% comment %}
+charts/templates/charts/_spotify_tabs.html
+
+The two views of the Spotify section, as tabs -- the same pair as Discogs:
+the review queue ("what still needs deciding") and the audit ("which of the
+ones I linked are wrong"). `active` comes from the including page.
+{% endcomment %}
+<nav class="tabs" aria-label="Spotify views">
+    <a href="{% url 'charts:spotify_queue' %}" class="{% if active == 'queue' %}active{% endif %}">Review queue</a>
+    <a href="{% url 'charts:spotify_audit' %}" class="{% if active == 'audit' %}active{% endif %}">Audit what's linked</a>
+</nav>

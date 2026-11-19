@@ -20,7 +20,9 @@ from django.db.models import Count, Max, Min
 from . import search as search_lib
 from datetime import date
 
-from .models import Chart, ChartEntry, discogs_url_for, format_catalog, sole_credited_artist_ids
+from .models import (
+    Chart, ChartEntry, SpotifyMatch, discogs_url_for, format_catalog, sole_credited_artist_ids, spotify_url_for,
+)
 
 
 def build(params):
@@ -183,6 +185,11 @@ def _query(params):
         "recording__discogs__matched_artist",
         "recording__discogs__matched_catalog_number",
         "recording__discogs__songwriters",
+        # Spotify link state (added 2026-11-19), for the Spotify column --
+        # also from our own cache, so the matrix still makes no API call.
+        # Per-recording, so valid in both grouping modes.
+        "recording__spotify__status",
+        "recording__spotify__spotify_track_id",
     ]
     if not collapsed:
         group_fields = ["chart_id", "chart__category", "chart__method"] + group_fields
@@ -318,6 +325,12 @@ def _query(params):
         if row["recording__discogs__songwriters"]:
             tooltip_lines.append(f"Written by: {row['recording__discogs__songwriters']}")
         row["discogs_tooltip"] = "\n".join(tooltip_lines) or "No details cached yet"
+        # Outbound open.spotify.com link, only for a linked match (confirmed,
+        # manual or stand-in) -- a suggestion's track id is never set.
+        row["spotify_url"] = (
+            spotify_url_for(row["recording__spotify__spotify_track_id"])
+            if row["recording__spotify__status"] in SpotifyMatch.LINKED_STATUSES else ""
+        )
 
     # Each row's printed credit links to its artist's profile when exactly
     # ONE artist is credited; collaborations stay plain text.

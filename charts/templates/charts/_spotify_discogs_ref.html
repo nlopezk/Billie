@@ -1,0 +1,17 @@
+{% comment %}
+charts/templates/charts/_spotify_discogs_ref.html
+
+A recording's Discogs link, shown under it on the Spotify queue and audit so
+the two can be compared at a glance (owner's request, 2026-11-19). Only for a
+LINKED Discogs match (confirmed or manual); a suggestion or no match shows
+nothing. From the cache, no API call. Hover for what Discogs has for this
+side -- the same spelling the Spotify lookup uses as its second search.
+
+Context: d (the recording's DiscogsMatch, or nothing -- a missing related
+row renders as empty, Django templates swallow that lookup).
+{% endcomment %}
+{% if d.is_linked %}
+<br><span class="catalog-hint" title="{% if d.display_artist %}Artist: {{ d.display_artist }}&#10;{% endif %}{% if d.display_title %}Song: {{ d.display_title }}&#10;{% endif %}{% if d.songwriters %}Written by: {{ d.songwriters }}{% endif %}">
+    Discogs <a href="{{ d.discogs_url }}" target="_blank" rel="noopener">{{ d.reference_type|slice:":1" }}{{ d.reference_id }} &nearr;</a>{% if d.matched_label or d.matched_catalog_number %} {{ d.matched_label }} {{ d.matched_catalog_number }}{% endif %}{% if d.matched_year %}, {{ d.matched_year }}{% endif %}
+</span>
+{% endif %}

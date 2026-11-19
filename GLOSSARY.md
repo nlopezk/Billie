@@ -115,6 +115,22 @@ what was picked: it is not a saved filter and does not change as more chart week
 entered.
 _Avoid_: Saved search, collection, tracklist
 
+**Spotify track**:
+One track on one Spotify album. The same performance is often several Spotify tracks:
+on an original-era album, on compilations, on a "best of".
+_Avoid_: Song, recording (for the Spotify side)
+
+**Spotify match**:
+The Spotify track chosen for a recording: a copy of the same performance, on whichever
+album is the most official one available. A reissue's recordings may share one.
+_Avoid_: Spotify link (for an unconfirmed suggestion)
+
+**Stand-in**:
+A Spotify track of a later re-recording of the same song by the same artist, accepted
+when no copy of the original performance is on Spotify. It is never treated as the
+recording itself. A cover by another act is never a stand-in.
+_Avoid_: Substitute, alternate version
+
 **Printed anomaly**:
 A chart entry the magazine printed in a way the data can't otherwise represent, kept as
 printed with a note.
