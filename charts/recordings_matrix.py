@@ -21,7 +21,7 @@ from . import search as search_lib
 from datetime import date
 
 from .models import (
-    Chart, ChartEntry, SpotifyMatch, discogs_url_for, format_catalog, sole_credited_artist_ids, spotify_url_for,
+    Chart, ChartEntry, SpotifyExtraTrack, SpotifyMatch, discogs_url_for, format_catalog, sole_credited_artist_ids, spotify_url_for,
 )
 
 
@@ -335,8 +335,13 @@ def _query(params):
     # Each row's printed credit links to its artist's profile when exactly
     # ONE artist is credited; collaborations stay plain text.
     sole_artist = sole_credited_artist_ids([row["recording_id"] for row in rows])
+    # How many extra Spotify PARTS each linked recording has (a recording
+    # split over several tracks), for the Spotify cell's "+1 part" badge.
+    # One grouped query for the whole page, not one per row.
+    spotify_parts = spotify_part_counts([row["recording_id"] for row in rows if row["spotify_url"]])
     for row in rows:
         row["artist_id"] = sole_artist.get(row["recording_id"])
+        row["spotify_parts"] = spotify_parts.get(row["recording_id"], 0)
 
     state = {
         "genre": genre, "chart": chart_id, "q": q, "sort": sort, "dir": direction, "group": group,
@@ -391,6 +396,17 @@ def _columns(state):
             "arrow": ("▲" if state["dir"] == "asc" else "▼") if is_active else "",
         }
     return columns
+
+
+def spotify_part_counts(recording_ids):
+    """{recording_id: number of extra Spotify parts} for the given
+    recordings, leaving out those with none. Shared with the playlist page."""
+    if not recording_ids:
+        return {}
+    return dict(
+        SpotifyExtraTrack.objects.filter(match__recording_id__in=recording_ids, kind=SpotifyExtraTrack.PART)
+        .values_list("match__recording_id").annotate(n=Count("id")).values_list("match__recording_id", "n")
+    )
 
 
 def _parse_positive_int(value):

@@ -15,6 +15,9 @@ db.sqlite3
 # which var-loading approach ends up used.
 .env
 *.env
+# The owner's Spotify login (refresh token) for pushing playlists. A secret:
+# kept out of git AND out of billboard.db (which is committed and pushed).
+.spotify_token.json
 
 # Python
 __pycache__/

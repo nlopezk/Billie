@@ -871,6 +871,15 @@ through each page's subtitle, styled nine slightly different ways.
         /* The Spotify cell on the recordings matrix and the playlist page. */
         .spotify-cell a { white-space: nowrap; }
         .spotify-readiness { margin: 0 0 1rem; }
+        /* Extra tracks (parts / alternates) under a linked Spotify match. */
+        .extra-track { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+        .extra-add { margin-top: 0.35rem; }
+        .extra-add summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+        .extra-add .candidate-list { margin-top: 0.35rem; }
+        /* Pushing playlists: who's connected, and the inline buttons. */
+        .spotify-account { margin: 0 0 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+        .inline-form { display: inline; margin: 0; }
+        .push-list li { margin-bottom: 0.2rem; }
     </style>
     {% block extra_head %}{% endblock %}
 </head>

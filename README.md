@@ -149,6 +149,12 @@ Committing after each real session is the point — code commits happen on their
 schedule and will not reliably carry your data with them. If you enter ten weeks and
 don't commit, ten weeks is what's at risk.
 
+### Working on more than one PC
+
+See **[docs/working-on-two-pcs.md](docs/working-on-two-pcs.md)**: set up a second
+clone, the pull → work → commit → push routine, what to do if both PCs changed the
+database, and the alternatives (one PC serving the other over the network).
+
 ### Restoring
 
 ```bash

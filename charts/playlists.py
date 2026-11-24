@@ -189,6 +189,7 @@ def _spotify_fields(recording):
     return {
         "recording__spotify__status": status,
         "spotify_url": spotify_url_for(match.spotify_track_id) if linked else "",
+        "spotify_parts": match.extra_tracks.filter(kind="part").count() if linked else 0,
     }
 
 
@@ -216,7 +217,7 @@ def spotify_readiness(playlist):
 # can't drift apart.
 EXPORT_COLUMNS = [
     "#", "Song", "Artist (as printed)", "Label", "Catalog #", "Side",
-    "Best peak", "Weeks", "First entry", "Last entry", "Discogs", "Spotify",
+    "Best peak", "Weeks", "First entry", "Last entry", "Discogs", "Spotify", "Spotify more parts",
 ]
 
 
@@ -246,6 +247,11 @@ def _export_records(playlist):
             "Discogs": discogs_url_for(match.discogs_release_id, match.discogs_master_id) if match else "",
             # Only a linked match (a stand-in included) -- never a suggestion.
             "Spotify": _spotify_fields(rec)["spotify_url"],
+            # A recording split over several Spotify tracks: parts 2, 3...
+            # in order, space-separated (the match above is part 1).
+            "Spotify more parts": " ".join(
+                x.spotify_url for x in rec.spotify.extra_tracks.filter(kind="part").order_by("order")
+            ) if _spotify_fields(rec)["spotify_url"] else "",
         }
 
 

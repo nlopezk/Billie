@@ -12,7 +12,7 @@ counts how many are done for the "n / N" progress line. The swapped-in row
 has no .auto-search, so it can never fire twice -- and an error row has none
 either, so a dead connection can't loop.
 {% endcomment %}
-<tr id="spotify-row-{{ match.recording_id }}" class="discogs-row status-{{ match.status }}"{% if in_batch %} data-batch="1"{% endif %}>
+<tr id="spotify-row-{{ match.recording_id }}" class="discogs-row status-{{ match.status }}"{% if in_batch %} data-batch="1"{% endif %}{% if retry_after %} data-retry-after="{{ retry_after }}"{% endif %}>
     <td class="discogs-recording">
         <strong>{{ match.recording.song }}</strong><br>
         <span class="muted">{{ match.recording.credit_text }}</span><br>
@@ -28,7 +28,12 @@ either, so a dead connection can't loop.
     <td class="discogs-detail">
         {% if error %}<p class="discogs-error">{{ error }}</p>{% endif %}
 
-        {% if in_batch and match.status == "unmatched" and not error %}
+        {% comment %}
+        A rate-limited batch row (retry_after set) keeps its .auto-search, so
+        the script retries it once Spotify's wait is over; any other error
+        doesn't, so it can't loop.
+        {% endcomment %}
+        {% if in_batch and match.status == "unmatched" and not error or in_batch and match.status == "unmatched" and retry_after %}
             <span class="auto-search muted"
                   hx-post="{% url 'charts:spotify_search' match.recording_id %}"
                   hx-trigger="spotify-next"
@@ -44,6 +49,70 @@ either, so a dead connection can't loop.
                 <div class="credit-line"><span class="credit-label">Album</span> {{ match.album_name }}
                     <span class="catalog-hint">({{ match.album_type }}{% if match.release_date %}, {{ match.release_date }}{% endif %}{% if match.duration_display %} &middot; {{ match.duration_display }}{% endif %})</span></div>
                 {% if match.status == "stand_in" %}<div class="credit-line"><span class="release-level-tag">stand-in</span> a later re-recording, not this performance</div>{% endif %}
+
+                {% comment %}
+                Extra tracks (SpotifyExtraTrack, GLOSSARY.md): the rare recording
+                split over several Spotify tracks ("Part 2", "Part 3"... -- the
+                link above is part 1), or another rendition kept as an
+                "Alternate". Each can be removed on its own.
+                {% endcomment %}
+                {% for x in match.extra_tracks.all %}
+                <div class="credit-line extra-track">
+                    <span class="credit-label">{{ x.label }}</span>
+                    <a href="{{ x.spotify_url }}" target="_blank" rel="noopener">&#9654; {{ x.track_artists }} &mdash; {{ x.track_name }} &nearr;</a>
+                    <span class="catalog-hint">({{ x.album_name }}{% if x.release_date %}, {{ x.release_date }}{% endif %}{% if x.duration_display %} &middot; {{ x.duration_display }}{% endif %})</span>
+                    <button type="button" class="btn btn-sm btn-icon btn-ghost" title="Remove this {{ x.get_kind_display|lower }}" aria-label="Remove"
+                        hx-post="{% url 'charts:spotify_remove_extra' match.recording_id %}"
+                        hx-vals='{"extra_id": "{{ x.id }}", "querystring": "{{ querystring }}"}'
+                        hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">&times;</button>
+                </div>
+                {% endfor %}
+
+                {% comment %}
+                "+ Part / + Alternate": folded away, since it's rarely needed.
+                The remaining search suggestions come first (a recording's Part II
+                is usually among them), then a paste box for anything else.
+                {% endcomment %}
+                <details class="extra-add">
+                    <summary>+ Add a part or alternate</summary>
+                    {% if match.candidates.all %}
+                    <ul class="candidate-list">
+                        {% for c in match.candidates.all %}{% if c.spotify_track_id != match.spotify_track_id %}
+                        <li>
+                            <span class="candidate-text">{{ c.track_artists }} &mdash; {{ c.track_name }}
+                                <span class="catalog-hint">({{ c.album_name }}{% if c.release_date %}, {{ c.release_date }}{% endif %}{% if c.duration_display %} &middot; {{ c.duration_display }}{% endif %})</span></span>
+                            <span class="candidate-buttons">
+                                <button type="button" class="btn btn-sm"
+                                    hx-post="{% url 'charts:spotify_add_extra' match.recording_id %}"
+                                    hx-vals='{"candidate_id": "{{ c.id }}", "kind": "part", "querystring": "{{ querystring }}"}'
+                                    hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                                    title="The recording continues on this track">+ Part</button>
+                                <button type="button" class="btn btn-sm btn-ghost"
+                                    hx-post="{% url 'charts:spotify_add_extra' match.recording_id %}"
+                                    hx-vals='{"candidate_id": "{{ c.id }}", "kind": "alternate", "querystring": "{{ querystring }}"}'
+                                    hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML"
+                                    title="Another copy or rendition of the same recording">+ Alternate</button>
+                                <a class="btn btn-icon btn-sm" href="{{ c.spotify_url }}" target="_blank" rel="noopener" aria-label="Open on Spotify">&#9654;</a>
+                            </span>
+                        </li>
+                        {% endif %}{% endfor %}
+                    </ul>
+                    {% endif %}
+                    <div class="manual-entry">
+                        <input type="text" name="spotify_ref" placeholder="Paste a Spotify track link / URI / id"
+                               id="spotify-extra-{{ match.recording_id }}">
+                        <button type="button" class="btn-sm"
+                            hx-post="{% url 'charts:spotify_add_extra' match.recording_id %}"
+                            hx-include="#spotify-extra-{{ match.recording_id }}"
+                            hx-vals='{"kind": "part", "querystring": "{{ querystring }}"}'
+                            hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">+ Part</button>
+                        <button type="button" class="btn-sm btn-ghost"
+                            hx-post="{% url 'charts:spotify_add_extra' match.recording_id %}"
+                            hx-include="#spotify-extra-{{ match.recording_id }}"
+                            hx-vals='{"kind": "alternate", "querystring": "{{ querystring }}"}'
+                            hx-target="#spotify-row-{{ match.recording_id }}" hx-swap="outerHTML">+ Alternate</button>
+                    </div>
+                </details>
             </div>
 
         {% elif match.candidates.all %}

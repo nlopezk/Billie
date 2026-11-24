@@ -473,8 +473,25 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     "searching…". It now starts on DOMContentLoaded, with a 3-second watchdog that
     re-fires a row whose request never went out. Verified in Edge (Playwright) against a
     second server on a database copy.
+  - **Rate limit (429 hit on 2026-11-19 at 0.35 s/call):** now 1 call/s
+    (`MIN_SECONDS_BETWEEN_REQUESTS`). On a 429, `Retry-After` is stored module-wide
+    (`_blocked_until`) and every call before then raises `SpotifyRateLimited` locally,
+    never reaching Spotify — calling during a block extends it. The batch row comes back
+    still waiting (`data-retry-after`), and the page pauses with a countdown, then
+    retries that row and carries on; the command sleeps up to 5 min, else stops. The
+    block lives in the server process's memory (a restart forgets it; Spotify doesn't).
   - **Each row shows its Discogs link** (`_spotify_discogs_ref.html`, queue and audit)
     when the recording has a linked Discogs match, for comparing at a glance.
+  - **Parts and alternates** (`SpotifyExtraTrack`, migration `0012`; GLOSSARY: Spotify
+    part, Spotify alternate). Rare: a listing Spotify splits over tracks (Edgar Hayes's
+    "Blues At Dawn (Parts I and II)") — the match is part 1, parts 2, 3… follow — or
+    another rendition kept as an alternate. Added on a linked row via "+ Add a part or
+    alternate": from the remaining shortlist (**confirming no longer clears the
+    shortlist**, for exactly this) or a pasted link. Removing a part renumbers the rest;
+    any new link / reset / not-on-Spotify deletes them. Matrix and playlist cells show
+    "+1 part"; the CSV has a "Spotify more parts" column. What a pushed playlist does
+    with parts vs alternates is **deliberately undecided until issue #5** (owner's
+    call). The shared-track audit looks at main links only.
   - **Queue:** "Search next [50]" (editable, max 200) reloads in batch mode, where rows
     search themselves ONE AT A TIME in the browser with an "n / N" bar (sequential on
     purpose: gentle on the rate limit and on SQLite). Optional playlist filter. "Confirm
@@ -488,8 +505,31 @@ Where things actually stand right now, so a fresh session doesn't have to re-der
     and a "Match them" button into the queue filtered to that playlist. The CSV export
     gained a Spotify column. Tests: `SpotifyTextRuleTests`, `SpotifyMatchingTests`,
     `SpotifyWorkflowTests` (with `FakeSpotifyClient`), `SpotifyPageTests`.
-  - **Never run against the real API yet** — first step when resuming: create the app,
-    fill `.env`, search one playlist's recordings, and check the flag and the ranking.
+  - **Pushing playlists to Spotify, built 2026-11-23** (issue #5) —
+    `charts/spotify_push.py` (`plan`, `changes`, `push`), the owner-login half of
+    `charts/spotify.py` (Authorization Code flow: `authorize_url`, `exchange_code`,
+    `_user_token` with refresh, `create_playlist`, `update_playlist_details`,
+    `replace_playlist_tracks` 100 per request), views `spotify_connect` /
+    `spotify_callback` / `spotify_disconnect` / `playlist_spotify` (confirmation page),
+    migration `0013` (Playlist gains `spotify_playlist_id`, `spotify_pushed_at`,
+    `spotify_pushed_tracks`). Owner's decisions:
+    - **What's sent:** match, then its parts in order; stand-ins in; alternates out;
+      unmatched recordings skipped and listed (with why) on the confirmation page.
+    - **Kept linked:** first push creates a **private** playlist; later "Update on
+      Spotify" rebuilds the same one (tracks, order, name, description) — the local
+      playlist is the master, Spotify-side edits are overwritten (the page warns).
+      "Up to date / N changes" is computed locally from `spotify_pushed_tracks`.
+    - **Never deletes** anything in the Spotify account: a deleted-on-Spotify playlist
+      makes the update stop and ask before creating a new one (`PlaylistGone`);
+      deleting a local playlist leaves the Spotify one alone.
+    - **The login token** lives in git-ignored `.spotify_token.json` (with the account
+      name, so /spotify/ shows who's connected without a call) — never in
+      `billboard.db`, which is pushed to GitHub. Redirect URI must be registered as
+      `http://127.0.0.1:8000/spotify/callback/` (Spotify allows plain http only on a
+      loopback IP); `spotify_connect` hops from localhost to 127.0.0.1 first because the
+      session holding `state` is per-host. A 403 usually means the account isn't under
+      the app's User Management (Development Mode).
+    - Tests: `SpotifyPushTests` (with `FakePushClient`), `SpotifyAccountTests`.
 - **Movement comes from the data, not from typed last-week numbers (fixed 2026-10-18).**
   The chart browser used to decide NEW/up/down purely from `printed_last_week_position`,
   which is only filled when a last-week number is *typed* — so a week entered by search

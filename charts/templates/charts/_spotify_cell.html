@@ -6,11 +6,13 @@ matrix (and so the playlist picker) and the playlist page. Entirely from
 our own cache -- rendering it makes no API call.
 
 Context: status (SpotifyMatch.status, or None when never set up), url (the
-open.spotify.com link, blank unless linked), catalog (for the queue link).
+open.spotify.com link, blank unless linked), catalog (for the queue link),
+parts (how many extra Spotify parts it has -- usually 0).
 {% endcomment %}
 <td class="spotify-cell">
     {% if url %}
         <a href="{{ url }}" target="_blank" rel="noopener" title="Open on Spotify">&#9654; listen</a>
+        {% if parts %}<span class="release-level-tag" title="Split over several Spotify tracks: {{ parts|add:1 }} parts in all">+{{ parts }} part{{ parts|pluralize }}</span>{% endif %}
         {% if status == "stand_in" %}<span class="release-level-tag" title="A later re-recording by the same artist, not this performance">stand-in</span>{% endif %}
     {% elif status == "no_match" %}
         <span class="muted" title="Searched, nothing on Spotify">not on Spotify</span>

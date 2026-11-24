@@ -27,11 +27,11 @@ candidate is STRONG and not flagged as a possible re-recording.
 from collections import defaultdict
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Max
 from django.utils import timezone
 
 from . import spotify as spotify_api
-from .models import Recording, SpotifyCandidate, SpotifyMatch
+from .models import Recording, SpotifyCandidate, SpotifyExtraTrack, SpotifyMatch
 
 # The snapshot fields a match and a candidate share (SpotifyTrackFieldsMixin).
 SNAPSHOT_FIELDS = [
@@ -114,14 +114,21 @@ def bulk_confirmable_candidate(match):
 
 # ------------------------------------------------------------ linking
 
-def _clear(match):
+def _clear(match, keep_shortlist=False):
     # Forget everything cached about the previous link -- every snapshot
-    # field, the raw JSON and the shortlist -- so a new link can never show
-    # the old track's details (the bug discogs_workflow._clear_cached fixed).
+    # field, the raw JSON, any extra tracks (parts / alternates) and, unless
+    # asked to keep it, the shortlist -- so a new link can never show the
+    # old track's details (the bug discogs_workflow._clear_cached fixed).
+    #
+    # keep_shortlist: confirming a candidate or pasting a link KEEPS the
+    # search results (changed 2026-11-19), because the rest of the shortlist
+    # is where a recording's Part II usually is ("+ Part" picks from it).
     for field in SNAPSHOT_FIELDS:
         setattr(match, field, None if field == "duration_ms" else "")
     match.raw_data = None
-    match.candidates.all().delete()
+    match.extra_tracks.all().delete()
+    if not keep_shortlist:
+        match.candidates.all().delete()
 
 
 @transaction.atomic
@@ -129,7 +136,7 @@ def confirm(match, candidate, *, stand_in=False):
     """Take a shortlist candidate as the match -- or, with stand_in=True, as
     a stand-in (a same-artist re-recording; GLOSSARY.md). No network call."""
     snapshot = {f: getattr(candidate, f) for f in SNAPSHOT_FIELDS}
-    _clear(match)
+    _clear(match, keep_shortlist=True)
     for field, value in snapshot.items():
         setattr(match, field, value)
     match.status = SpotifyMatch.STAND_IN if stand_in else SpotifyMatch.CONFIRMED
@@ -151,7 +158,7 @@ def link_manually(match, raw_reference, *, stand_in=False, client=spotify_api):
     except spotify_api.SpotifyError as exc:
         return str(exc)
     with transaction.atomic():
-        _clear(match)
+        _clear(match, keep_shortlist=True)
         for field in SNAPSHOT_FIELDS:
             setattr(match, field, snapshot.get(field) if field == "duration_ms" else (snapshot.get(field) or ""))
         match.raw_data = snapshot.get("raw_data")
@@ -159,6 +166,60 @@ def link_manually(match, raw_reference, *, stand_in=False, client=spotify_api):
         match.linked_at = timezone.now()
         match.save()
     return None
+
+
+# ------------------------------------------------------------ extra tracks
+
+def _add_extra(match, snapshot, kind):
+    # Attach one more Spotify track (a part or an alternate) to a LINKED
+    # match. Returns an error message, or None. Parts are numbered after
+    # the ones already there (the match itself is part 1).
+    if not match.is_linked:
+        return "Link the recording to its main Spotify track first."
+    if kind not in (SpotifyExtraTrack.PART, SpotifyExtraTrack.ALTERNATE):
+        return "Choose Part or Alternate."
+    track_id = snapshot.get("spotify_track_id")
+    if track_id == match.spotify_track_id or match.extra_tracks.filter(spotify_track_id=track_id).exists():
+        return "That track is already linked to this recording."
+    order = (match.extra_tracks.filter(kind=kind).aggregate(m=Max("order"))["m"] or 0) + 1
+    SpotifyExtraTrack.objects.create(
+        match=match, kind=kind, order=order,
+        **{f: snapshot.get(f) if f == "duration_ms" else (snapshot.get(f) or "") for f in SNAPSHOT_FIELDS},
+    )
+    return None
+
+
+def add_extra_from_candidate(match, candidate, kind):
+    """"+ Part" / "+ Alternate" on a remaining shortlist suggestion. No
+    network call: the candidate holds the snapshot."""
+    return _add_extra(match, {f: getattr(candidate, f) for f in SNAPSHOT_FIELDS}, kind)
+
+
+def add_extra_manually(match, raw_reference, kind, client=spotify_api):
+    """A pasted link / URI / id as a further part or alternate. Fetches the
+    track once, before changing anything. Returns an error message or None."""
+    track_id = spotify_api.parse_track_reference(raw_reference)
+    if not track_id:
+        return "That isn't a Spotify track link, URI or id."
+    if not match.is_linked:
+        return "Link the recording to its main Spotify track first."
+    try:
+        snapshot = client.fetch_track(track_id)
+    except spotify_api.SpotifyError as exc:
+        return str(exc)
+    return _add_extra(match, snapshot, kind)
+
+
+@transaction.atomic
+def remove_extra(match, extra_id):
+    """Detach one extra track, then renumber the remaining parts so they
+    stay 2, 3, ... with no gaps."""
+    match.extra_tracks.filter(pk=extra_id).delete()
+    for kind in (SpotifyExtraTrack.PART, SpotifyExtraTrack.ALTERNATE):
+        for number, extra in enumerate(match.extra_tracks.filter(kind=kind).order_by("order"), start=1):
+            if extra.order != number:
+                extra.order = number
+                extra.save(update_fields=["order"])
 
 
 def set_status(match, status):

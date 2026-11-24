@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from unittest import mock
 
 from django.http import QueryDict
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -27,6 +27,7 @@ from . import discogs as discogs_api
 from . import discogs_workflow
 from . import spotify as spotify_api
 from . import spotify_workflow
+from . import spotify_push
 from . import views
 from . import week_submission
 from .models import (
@@ -3449,6 +3450,47 @@ class SpotifyTextRuleTests(TestCase):
         self.assertIsNone(spotify_api.parse_track_reference(""))
 
 
+class SpotifyRateLimitTests(TestCase):
+    # A 429 must stop EVERY further call until Spotify's Retry-After has
+    # passed -- calling during the block extends it (seen 2026-11-19).
+
+    def setUp(self):
+        spotify_api._blocked_until = 0.0
+
+    def tearDown(self):
+        spotify_api._blocked_until = 0.0
+
+    def test_429_blocks_further_calls_without_touching_spotify(self):
+        import email.message
+        import urllib.error
+        headers = email.message.Message()
+        headers["Retry-After"] = "42"
+        error = urllib.error.HTTPError("https://api.spotify.com/v1/search", 429, "Too Many", headers, None)
+        with mock.patch.object(spotify_api, "_access_token", return_value="tok"), \
+                mock.patch.object(spotify_api, "_throttle"), \
+                mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
+            with self.assertRaises(spotify_api.SpotifyRateLimited) as caught:
+                spotify_api.search_tracks("anything")
+            self.assertEqual(caught.exception.retry_after, 42)
+            # The next call is refused locally: urlopen is not called again.
+            with self.assertRaises(spotify_api.SpotifyRateLimited) as again:
+                spotify_api.search_tracks("anything else")
+            self.assertLessEqual(again.exception.retry_after, 42)
+            self.assertEqual(urlopen.call_count, 1)
+
+    def test_a_rate_limited_batch_row_waits_to_be_retried(self):
+        recording = Recording.objects.create(
+            label=Label.objects.create(name="Decca"), catalog_number="1", side="A",
+            song=Song.objects.create(title="Caldonia"), credit_text="Louis Jordan",
+        )
+        with mock.patch.object(spotify_api, "search_candidates", side_effect=spotify_api.SpotifyRateLimited(30)):
+            row = self.client.post(reverse("charts:spotify_search", args=[recording.id]), {"batch": "1"})
+        self.assertContains(row, 'data-retry-after="30"')
+        # Still waiting to search, so the batch retries it after the pause.
+        self.assertContains(row, 'class="auto-search')
+        self.assertEqual(SpotifyMatch.objects.get(recording=recording).status, SpotifyMatch.UNMATCHED)
+
+
 class SpotifyMatchingTests(TestCase):
     # spotify.search_candidates: queries, scoring, the re-recording flag and
     # the owner's order among copies of one performance.
@@ -3597,7 +3639,8 @@ class SpotifyWorkflowTests(TestCase):
         self.assertEqual((self.match.status, self.match.spotify_track_id), (SpotifyMatch.STAND_IN, "b"))
         self.assertTrue(self.match.is_linked)
         self.assertIsNotNone(self.match.linked_at)
-        self.assertEqual(self.match.candidates.count(), 0)
+        # The shortlist is KEPT (since 2026-11-19): "+ Part" picks from it.
+        self.assertEqual(self.match.candidates.count(), 2)
 
     def test_link_manually(self):
         tid = "4uLU6hMCjMI75M1A2tKUQC"
@@ -3632,6 +3675,42 @@ class SpotifyWorkflowTests(TestCase):
             chosen = spotify_workflow.bulk_confirmable_candidate(self.match)
             self.assertEqual(chosen.spotify_track_id if chosen else None, expected)
         self.assertEqual(spotify_workflow.confirm_strong_batch(SpotifyMatch.objects.prefetch_related("candidates")), 0)
+
+    def test_parts_and_alternates(self):
+        # Edgar Hayes's "Blues At Dawn (Parts I and II)": one listing, two
+        # Spotify tracks. The match is part 1; Part II is added from the
+        # shortlist that confirming now keeps.
+        spotify_workflow.store_shortlist(self.match, [
+            self._candidate("p1", name="Blues At Dawn Part 1"),
+            self._candidate("p2", name="Blues At Dawn Part 2"),
+            self._candidate("rm", name="Blues At Dawn (Remastered)"),
+        ])
+        # Nothing can be added before the main link exists.
+        p2 = self.match.candidates.get(spotify_track_id="p2")
+        self.assertIsNotNone(spotify_workflow.add_extra_from_candidate(self.match, p2, "part"))
+        spotify_workflow.confirm(self.match, self.match.candidates.get(spotify_track_id="p1"))
+
+        self.assertIsNone(spotify_workflow.add_extra_from_candidate(self.match, p2, "part"))
+        rm = self.match.candidates.get(spotify_track_id="rm")
+        self.assertIsNone(spotify_workflow.add_extra_from_candidate(self.match, rm, "alternate"))
+        # The same track twice, or the main track again, is refused.
+        self.assertIsNotNone(spotify_workflow.add_extra_from_candidate(self.match, p2, "alternate"))
+        p1 = self.match.candidates.get(spotify_track_id="p1")
+        self.assertIsNotNone(spotify_workflow.add_extra_from_candidate(self.match, p1, "part"))
+        labels = [(x.label, x.spotify_track_id) for x in self.match.extra_tracks.all()]
+        self.assertEqual(labels, [("Alternate", "rm"), ("Part 2", "p2")])
+
+        # A pasted part 3, then removing part 2 renumbers part 3 to 2.
+        tid = "4uLU6hMCjMI75M1A2tKUQC"
+        track = spotify_api.track_snapshot(_sp_item(tid, "Blues At Dawn Part 3", ["Edgar Hayes"]))
+        self.assertIsNone(spotify_workflow.add_extra_manually(self.match, tid, "part", client=FakeSpotifyClient(track=track)))
+        part2 = self.match.extra_tracks.get(spotify_track_id="p2")
+        spotify_workflow.remove_extra(self.match, part2.id)
+        self.assertEqual(self.match.extra_tracks.get(spotify_track_id=tid).label, "Part 2")
+
+        # Any new link clears them, like everything else cached.
+        spotify_workflow.confirm(self.match, self.match.candidates.get(spotify_track_id="rm"))
+        self.assertEqual(self.match.extra_tracks.count(), 0)
 
     def test_shared_tracks_listed_unless_known_reissues(self):
         other = Recording.objects.create(
@@ -3696,6 +3775,16 @@ class SpotifyPageTests(TestCase):
         # The audit lists it, newest first.
         self.assertContains(self.client.get(reverse("charts:spotify_audit")), "Shot Gun Boogie")
 
+        # A second part, through the view: the row shows it, the matrix
+        # badges it, the CSV lists its link.
+        url = reverse("charts:spotify_add_extra", args=[self.recording.id])
+        part = spotify_api.track_snapshot(_sp_item("4uLU6hMCjMI75M1A2tKUQC", "Shot Gun Boogie Pt 2", ["Tennessee Ernie Ford"]))
+        with mock.patch.object(spotify_api, "fetch_track", return_value=part):
+            row = self.client.post(url, {"kind": "part", "spotify_ref": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"})
+        self.assertContains(row, "Part 2")
+        self.assertContains(self.client.get(reverse("charts:recordings_matrix")), "+1 part")
+        self.assertIn("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", playlists_lib.export_csv(self.playlist))
+
     def test_queue_and_audit_show_the_linked_discogs_release(self):
         DiscogsMatch.objects.create(
             recording=self.recording, status=DiscogsMatch.CONFIRMED, discogs_release_id=4242,
@@ -3713,3 +3802,173 @@ class SpotifyPageTests(TestCase):
         self.assertEqual(playlists_lib.spotify_readiness(self.playlist)["to_do"], 1)
         SpotifyMatch.objects.filter(recording=self.recording).update(status=SpotifyMatch.NO_MATCH)
         self.assertEqual(playlists_lib.spotify_readiness(self.playlist)["not_on_spotify"], 1)
+
+
+# =============================================================================
+# Pushing playlists to Spotify (charts/spotify_push.py) and the owner's
+# login (charts/spotify.py). No test talks to Spotify; token-file tests use a
+# temporary folder as the project root.
+# =============================================================================
+
+class FakePushClient:
+    """Stands in for charts.spotify at spotify_push's seam."""
+
+    def __init__(self, gone=False):
+        self.gone = gone
+        self.calls = []
+
+    def create_playlist(self, name, description, public=False):
+        self.calls.append(("create", name, description, public))
+        return f"pl{len([c for c in self.calls if c[0] == 'create'])}"
+
+    def update_playlist_details(self, playlist_id, name, description):
+        self.calls.append(("details", playlist_id, name))
+        if self.gone:
+            raise spotify_api.SpotifyNotFound("gone")
+
+    def replace_playlist_tracks(self, playlist_id, track_ids):
+        self.calls.append(("tracks", playlist_id, list(track_ids)))
+
+
+class SpotifyPushTests(TestCase):
+
+    def setUp(self):
+        label = Label.objects.create(name="Decca")
+
+        def rec(title, cat):
+            return Recording.objects.create(label=label, catalog_number=cat, side="A",
+                                            song=Song.objects.create(title=title), credit_text="Edgar Hayes")
+        self.a, self.b, self.c, self.d = rec("Blues At Dawn", "1"), rec("Stardust", "2"), rec("Lost", "3"), rec("Never", "4")
+        self.playlist, _ = playlists_lib.create("Late Night")
+        playlists_lib.add_all(self.playlist, [self.a.id, self.b.id, self.c.id, self.d.id])
+        # a: matched, with Part 2 and an alternate; b: a stand-in; c: not on
+        # Spotify; d: never set up at all.
+        ma = SpotifyMatch.objects.create(recording=self.a, status=SpotifyMatch.CONFIRMED, spotify_track_id="A1")
+        ma.extra_tracks.create(kind="part", order=1, spotify_track_id="A2")
+        ma.extra_tracks.create(kind="alternate", order=1, spotify_track_id="ALT")
+        SpotifyMatch.objects.create(recording=self.b, status=SpotifyMatch.STAND_IN, spotify_track_id="B1")
+        SpotifyMatch.objects.create(recording=self.c, status=SpotifyMatch.NO_MATCH)
+
+    def test_plan_parts_follow_alternates_stay_out_unmatched_listed(self):
+        plan = spotify_push.plan(self.playlist)
+        self.assertEqual([(t["track_id"], t["label"]) for t in plan["tracks"]],
+                         [("A1", ""), ("A2", "Part 2"), ("B1", "stand-in")])
+        self.assertEqual([(m["recording"].id, m["reason"]) for m in plan["missing"]],
+                         [(self.c.id, "not on Spotify"), (self.d.id, "not searched yet")])
+
+    def test_create_then_update_and_changes(self):
+        self.assertIsNone(spotify_push.changes(self.playlist))
+        client = FakePushClient()
+        result = spotify_push.push(self.playlist, client=client)
+        self.assertEqual((result["created"], result["sent"], result["missing"]), (True, 3, 2))
+        self.assertEqual(client.calls[0], ("create", "Late Night", spotify_push.DESCRIPTION_SUFFIX, False))
+        self.assertEqual(client.calls[1], ("tracks", "pl1", ["A1", "A2", "B1"]))
+        self.playlist.refresh_from_db()
+        self.assertTrue(spotify_push.changes(self.playlist)["up_to_date"])
+
+        # Reorder locally (b before a), and match d: added + order changed.
+        playlists_lib.move(self.playlist, self.b.id, "up")
+        SpotifyMatch.objects.create(recording=self.d, status=SpotifyMatch.MANUAL, spotify_track_id="D1")
+        changes = spotify_push.changes(self.playlist)
+        self.assertEqual((changes["added"], changes["removed"], changes["reordered"]), (1, 0, True))
+
+        # The update rebuilds the SAME Spotify playlist, never a new one.
+        spotify_push.push(self.playlist, client=client)
+        self.assertEqual(client.calls[2], ("details", "pl1", "Late Night"))
+        self.assertEqual(client.calls[3], ("tracks", "pl1", ["B1", "A1", "A2", "D1"]))
+
+    def test_deleted_on_spotify_asks_before_creating_a_new_one(self):
+        spotify_push.push(self.playlist, client=FakePushClient())
+        self.playlist.refresh_from_db()
+        pushed_at = self.playlist.spotify_pushed_at
+        with self.assertRaises(spotify_push.PlaylistGone):
+            spotify_push.push(self.playlist, client=FakePushClient(gone=True))
+        self.playlist.refresh_from_db()
+        self.assertEqual((self.playlist.spotify_playlist_id, self.playlist.spotify_pushed_at), ("pl1", pushed_at))
+        client = FakePushClient(gone=True)
+        result = spotify_push.push(self.playlist, create_new=True, client=client)
+        self.assertTrue(result["created"])
+        self.assertEqual(client.calls[0][0], "create")
+
+    def test_description_keeps_the_local_one_and_the_limit(self):
+        self.assertEqual(spotify_push.description_for(self.playlist), spotify_push.DESCRIPTION_SUFFIX)
+        self.playlist.description = "x" * 400
+        self.assertEqual(len(spotify_push.description_for(self.playlist)), spotify_push.DESCRIPTION_MAX)
+
+    def test_pages(self):
+        with mock.patch.object(spotify_api, "connected_account", return_value={"id": "me", "display_name": "Nico"}):
+            page = self.client.get(reverse("charts:playlist_spotify", args=[self.playlist.id]))
+            self.assertContains(page, "not searched yet")
+            self.assertContains(page, "Create on Spotify")
+            with mock.patch.object(spotify_api, "create_playlist", return_value="xyz") as create, \
+                    mock.patch.object(spotify_api, "replace_playlist_tracks") as replace:
+                done = self.client.post(reverse("charts:playlist_spotify", args=[self.playlist.id]))
+            # fetch_redirect_response=False: loading the page here would use
+            # up the one-time success message checked below.
+            self.assertRedirects(done, reverse("charts:playlist_detail", args=[self.playlist.id]),
+                                 fetch_redirect_response=False)
+            self.assertEqual(create.call_args.kwargs["public"], False)
+            replace.assert_called_once_with("xyz", ["A1", "A2", "B1"])
+        detail = self.client.get(reverse("charts:playlist_detail", args=[self.playlist.id]))
+        self.assertContains(detail, "https://open.spotify.com/playlist/xyz")
+        self.assertContains(detail, "Spotify copy is up to date")
+        self.assertContains(detail, "Created on Spotify: 3 track(s), 2 recording(s) not on it.")
+
+
+class SpotifyAccountTests(TestCase):
+    # The owner's login: token file handling and the connect/callback views.
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        # The connect view must be reachable as localhost and 127.0.0.1
+        # (the test runner's DEBUG=False rejects any host not listed).
+        self.override = override_settings(BASE_DIR=self.tmp.name, ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+        self.override.enable()
+        spotify_api._blocked_until = 0.0
+
+    def tearDown(self):
+        self.override.disable()
+        self.tmp.cleanup()
+
+    def test_exchange_refresh_and_disconnect(self):
+        with mock.patch.object(spotify_api, "_token_request",
+                               return_value={"access_token": "a1", "refresh_token": "r1", "expires_in": 3600}), \
+                mock.patch.object(spotify_api, "current_user", return_value={"id": "nico", "display_name": "Nico"}):
+            spotify_api.exchange_code("code", "http://127.0.0.1:8000/spotify/callback/")
+        self.assertEqual(spotify_api.connected_account()["display_name"], "Nico")
+        self.assertEqual(spotify_api._user_token(), "a1")
+
+        # Expired: refreshed; Spotify didn't send a new refresh token, so the
+        # old one is kept, and so is the account name.
+        import json as _json
+        data = _json.loads(spotify_api.token_path().read_text())
+        data["expires_at"] = 0
+        spotify_api.token_path().write_text(_json.dumps(data))
+        with mock.patch.object(spotify_api, "_token_request", return_value={"access_token": "a2", "expires_in": 3600}) as refresh:
+            self.assertEqual(spotify_api._user_token(), "a2")
+        self.assertEqual(refresh.call_args.args[0], {"grant_type": "refresh_token", "refresh_token": "r1"})
+        saved = _json.loads(spotify_api.token_path().read_text())
+        self.assertEqual((saved["refresh_token"], saved["account"]["id"]), ("r1", "nico"))
+
+        spotify_api.disconnect()
+        self.assertIsNone(spotify_api.connected_account())
+        with self.assertRaises(spotify_api.SpotifyNotConnected):
+            spotify_api._user_token()
+
+    def test_tracks_are_sent_100_at_a_time_first_replacing(self):
+        with mock.patch.object(spotify_api, "_user_request") as call:
+            spotify_api.replace_playlist_tracks("pl", [f"t{i}" for i in range(250)])
+        sizes = [(c.args[0], len(c.args[2]["uris"])) for c in call.call_args_list]
+        self.assertEqual(sizes, [("PUT", 100), ("POST", 100), ("POST", 50)])
+
+    def test_connect_uses_127_0_0_1_and_callback_checks_state(self):
+        hop = self.client.get(reverse("charts:spotify_connect"), HTTP_HOST="localhost:8000")
+        self.assertEqual(hop["Location"], "http://127.0.0.1:8000/spotify/connect/")
+        with mock.patch.object(spotify_api, "get_credentials", return_value=("cid", "secret")):
+            go = self.client.get(reverse("charts:spotify_connect"), HTTP_HOST="127.0.0.1:8000")
+        self.assertIn("accounts.spotify.com/authorize", go["Location"])
+        self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A8000%2Fspotify%2Fcallback%2F", go["Location"])
+        # A callback whose state doesn't match is refused and saves nothing.
+        self.client.get(reverse("charts:spotify_callback"), {"code": "x", "state": "forged"}, HTTP_HOST="127.0.0.1:8000")
+        self.assertFalse(spotify_api.is_connected())

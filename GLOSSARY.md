@@ -131,6 +131,17 @@ when no copy of the original performance is on Spotify. It is never treated as t
 recording itself. A cover by another act is never a stand-in.
 _Avoid_: Substitute, alternate version
 
+**Spotify part**:
+A further Spotify track a recording continues onto, when Spotify splits one listing
+across tracks ("Blues At Dawn (Parts I and II)" as two tracks). The Spotify match is
+part 1; parts follow in order.
+_Avoid_: Extra track, second link
+
+**Spotify alternate**:
+Another Spotify copy or rendition of the same recording (a remaster, a remix, a
+near-identical take), kept for reference alongside the Spotify match.
+_Avoid_: Backup, duplicate
+
 **Printed anomaly**:
 A chart entry the magazine printed in a way the data can't otherwise represent, kept as
 printed with a note.

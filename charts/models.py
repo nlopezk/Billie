@@ -613,6 +613,16 @@ class Playlist(models.Model):
     description = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # --- its copy on Spotify (added 2026-11-23; see charts/spotify_push.py) ---
+    # The Spotify playlist this one is linked to: created by the first push,
+    # rebuilt by every later "Update on Spotify". Blank = never pushed.
+    spotify_playlist_id = models.CharField(max_length=40, blank=True)
+    spotify_pushed_at = models.DateTimeField(null=True, blank=True)
+    # The exact track ids sent last time, in order -- what the page compares
+    # with "what would be sent now" to say "3 changes since last push"
+    # without asking Spotify anything.
+    spotify_pushed_tracks = models.JSONField(default=list, blank=True)
+
     class Meta:
         ordering = ["name"]
 
@@ -794,3 +804,43 @@ class SpotifyCandidate(SpotifyTrackFieldsMixin):
 
     def __str__(self):
         return f"{self.track_name} -- {self.track_artists} ({self.album_name})"
+
+
+class SpotifyExtraTrack(SpotifyTrackFieldsMixin):
+    """A further Spotify track linked to a recording, beyond its match
+    (added 2026-11-19, owner's request). Rare. Two kinds (GLOSSARY.md):
+
+    * PART -- the recording is split across Spotify tracks: Edgar Hayes's
+      "Blues At Dawn (Parts I and II)" is one 78 listing but two tracks.
+      The match itself is part 1; parts here continue it, in `order`.
+    * ALTERNATE -- another copy or rendition of the same recording (a
+      remaster, a remix, a near-identical take), kept for reference.
+
+    What a pushed playlist does with either kind is deliberately undecided
+    until GitHub issue #5 (owner's decision). Any new link, a reset or "not
+    on Spotify" deletes these, like everything else cached about a link."""
+
+    PART = "part"
+    ALTERNATE = "alternate"
+    KIND_CHOICES = [(PART, "Part"), (ALTERNATE, "Alternate")]
+
+    match = models.ForeignKey(SpotifyMatch, on_delete=models.CASCADE, related_name="extra_tracks")
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    # Order within its kind: parts play 2, 3, ... after the match (part 1).
+    order = models.PositiveSmallIntegerField(default=0)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["kind", "order"]
+        constraints = [
+            # One Spotify track is attached to a recording once at most.
+            models.UniqueConstraint(fields=["match", "spotify_track_id"], name="unique_spotify_extra_track"),
+        ]
+
+    @property
+    def label(self):
+        # "Part 2", "Part 3"... (the match is part 1), or "Alternate".
+        return f"Part {self.order + 1}" if self.kind == self.PART else "Alternate"
+
+    def __str__(self):
+        return f"{self.match.recording} + {self.label}: {self.track_name}"

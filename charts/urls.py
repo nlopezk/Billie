@@ -40,11 +40,18 @@ urlpatterns = [
     # section besides /discogs/ that talks to the network.
     path("spotify/", views.spotify_queue, name="spotify_queue"),
     path("spotify/audit/", views.spotify_audit, name="spotify_audit"),
+    # The owner's login, for pushing playlists. The callback's address must
+    # be registered in the Spotify app as http://127.0.0.1:8000/spotify/callback/
+    path("spotify/connect/", views.spotify_connect, name="spotify_connect"),
+    path("spotify/callback/", views.spotify_callback, name="spotify_callback"),
+    path("spotify/disconnect/", views.spotify_disconnect, name="spotify_disconnect"),
     path("spotify/bulk/", views.spotify_bulk, name="spotify_bulk"),
     path("spotify/<int:recording_id>/search/", views.spotify_search, name="spotify_search"),
     path("spotify/<int:recording_id>/confirm/", views.spotify_confirm, name="spotify_confirm"),
     path("spotify/<int:recording_id>/manual/", views.spotify_manual, name="spotify_manual"),
     path("spotify/<int:recording_id>/status/", views.spotify_set_status, name="spotify_set_status"),
+    path("spotify/<int:recording_id>/extra/", views.spotify_add_extra, name="spotify_add_extra"),
+    path("spotify/<int:recording_id>/extra/remove/", views.spotify_remove_extra, name="spotify_remove_extra"),
     path("playlists/", views.playlist_list, name="playlist_list"),
     path("playlists/<int:playlist_id>/", views.playlist_detail, name="playlist_detail"),
     path("playlists/<int:playlist_id>/pick/", views.playlist_pick, name="playlist_pick"),
@@ -54,6 +61,7 @@ urlpatterns = [
     path("playlists/<int:playlist_id>/remove/<int:recording_id>/", views.playlist_remove, name="playlist_remove"),
     path("playlists/<int:playlist_id>/rename/", views.playlist_rename, name="playlist_rename"),
     path("playlists/<int:playlist_id>/delete/", views.playlist_delete, name="playlist_delete"),
+    path("playlists/<int:playlist_id>/spotify/", views.playlist_spotify, name="playlist_spotify"),
     path("playlists/<int:playlist_id>/export.<str:fmt>", views.playlist_export, name="playlist_export"),
     # Artist browser (search + sortable table) and one artist's profile.
     path("artists/", views.artist_list, name="artist_list"),

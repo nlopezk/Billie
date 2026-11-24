@@ -27,10 +27,11 @@ is fine for a one-click action and needs no script. Delete asks first
         </div>
     </div>
 
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
     {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
     {% comment %}
-    How ready this playlist is for Spotify (pushing it is GitHub issue #5):
+    How ready this playlist is for Spotify:
     matched, stand-ins, not on Spotify, still to decide -- with a shortcut
     to the Spotify queue filtered to this playlist's undecided recordings.
     {% endcomment %}
@@ -44,6 +45,32 @@ is fine for a one-click action and needs no script. Delete asks first
     </p>
     {% endif %}
 
+    {% comment %}
+    Its copy on Spotify (charts/spotify_push.py). Push goes to a confirmation
+    page first. After the first push the playlist stays linked: "Update"
+    rebuilds the Spotify copy to match this one, and the line says whether
+    that's needed -- worked out locally from what the last push sent.
+    {% endcomment %}
+    {% if spotify.total %}
+    <p class="spotify-readiness">
+        {% if playlist.spotify_playlist_id %}
+            <a href="{{ spotify_playlist_url }}" target="_blank" rel="noopener">Open in Spotify &nearr;</a>
+            <span class="muted">&middot; last pushed {{ playlist.spotify_pushed_at|date:"Y-m-d H:i" }}</span>
+            &middot;
+            {% if spotify_changes.up_to_date %}
+                Spotify copy is up to date
+            {% else %}
+                <strong>changes since last push:</strong>
+                {% if spotify_changes.added %}{{ spotify_changes.added }} added{% endif %}{% if spotify_changes.added and spotify_changes.removed %}, {% endif %}{% if spotify_changes.removed %}{{ spotify_changes.removed }} removed{% endif %}{% if spotify_changes.reordered %}{% if spotify_changes.added or spotify_changes.removed %}, {% endif %}order changed{% endif %}
+            {% endif %}
+            <a class="btn btn-sm" href="{% url 'charts:playlist_spotify' playlist.id %}">Update on Spotify</a>
+        {% else %}
+            <a class="btn btn-sm" href="{% url 'charts:playlist_spotify' playlist.id %}">Push to Spotify</a>
+            <span class="muted">creates a private playlist in your Spotify account</span>
+        {% endif %}
+    </p>
+    {% endif %}
+
     <details class="playlist-edit">
         <summary>Rename or delete</summary>
         <form method="post" action="{% url 'charts:playlist_rename' playlist.id %}">
@@ -53,7 +80,7 @@ is fine for a one-click action and needs no script. Delete asks first
             <button type="submit" class="btn">Save</button>
         </form>
         <form method="post" action="{% url 'charts:playlist_delete' playlist.id %}"
-              onsubmit="return confirm('Delete the playlist &ldquo;{{ playlist.name|escapejs }}&rdquo;? The recordings themselves are not touched.');">
+              onsubmit="return confirm('Delete the playlist &ldquo;{{ playlist.name|escapejs }}&rdquo;? The recordings themselves are not touched{% if playlist.spotify_playlist_id %}, and its copy on Spotify stays as it is{% endif %}.');">
             {% csrf_token %}
             <button type="submit" class="btn btn-danger">Delete playlist</button>
         </form>
@@ -94,7 +121,7 @@ is fine for a one-click action and needs no script. Delete asks first
                 <td class="num">{{ r.weeks_charted|default:"" }}</td>
                 <td>{% if r.first_entry %}<a href="{% url 'charts:chart_week' r.first_chart_id r.first_entry|date:'Y-m-d' %}">{{ r.first_entry|date:"y-m-d" }}</a>{% endif %}</td>
                 <td>{% if r.last_entry %}<a href="{% url 'charts:chart_week' r.last_chart_id r.last_entry|date:'Y-m-d' %}">{{ r.last_entry|date:"y-m-d" }}</a>{% endif %}</td>
-                {% include "charts/_spotify_cell.html" with status=r.recording__spotify__status url=r.spotify_url catalog=r.recording__catalog_number %}
+                {% include "charts/_spotify_cell.html" with status=r.recording__spotify__status url=r.spotify_url catalog=r.recording__catalog_number parts=r.spotify_parts %}
                 <td>
                     <div class="playlist-row-actions">
                         <form method="post" action="{% url 'charts:playlist_move' playlist.id r.recording_id %}">

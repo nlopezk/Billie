@@ -37,6 +37,7 @@ from . import discogs as discogs_api
 from . import discogs_workflow
 from . import spotify as spotify_api
 from . import spotify_workflow
+from . import spotify_push
 from .models import (
     Artist, ChartEntry, Chart, DiscogsCandidate, DiscogsMatch, Label,
     Playlist, Recording, Song, SpotifyCandidate, SpotifyMatch, sole_credited_artist_ids,
@@ -283,6 +284,11 @@ def playlist_detail(request, playlist_id):
         "playlist": playlist,
         "rows": playlists_lib.rows(playlist),
         "spotify": playlists_lib.spotify_readiness(playlist),
+        # Its copy on Spotify: changes since the last push (None = never
+        # pushed), worked out locally -- no Spotify call on this page.
+        "spotify_changes": spotify_push.changes(playlist),
+        "spotify_playlist_url": spotify_api.playlist_url(playlist.spotify_playlist_id),
+        "message": request.session.pop("playlist_message", None),
         "error": request.session.pop("playlist_error", None),
     })
 
@@ -1457,12 +1463,12 @@ def spotify_queue(request):
     if batch:
         rows = list(
             scope.filter(status=SpotifyMatch.UNMATCHED)
-            .prefetch_related("candidates")
+            .prefetch_related("candidates", "extra_tracks")
             .order_by("recording__song__title", "recording__catalog_number")[:batch]
         )
         page = None
     else:
-        matches = scope.prefetch_related("candidates")
+        matches = scope.prefetch_related("candidates", "extra_tracks")
         if filters["status"] == "todo":
             matches = matches.filter(status__in=[SpotifyMatch.UNMATCHED, SpotifyMatch.SUGGESTED])
         elif filters["status"] != "all":
@@ -1509,19 +1515,25 @@ def spotify_queue(request):
         "strong_ids": [m.id for m in rows if spotify_workflow.bulk_confirmable_candidate(m)],
         "querystring": querystring,
         "messages": request.session.pop("spotify_messages", []),
+        # Who's connected for pushing playlists (from the token file, no
+        # API call); None = not connected.
+        "spotify_account": spotify_api.connected_account(),
     })
 
 
-def _render_spotify_row(request, match, error=None):
+def _render_spotify_row(request, match, error=None, retry_after=None):
     # Every per-row action answers with the same row fragment, so a row
     # looks the same however it got to its current state. `batch` carries
     # through so a batch row keeps its marker (the progress count reads it).
-    match = SpotifyMatch.objects.prefetch_related("candidates").select_related(
+    match = SpotifyMatch.objects.prefetch_related("candidates", "extra_tracks").select_related(
         "recording__song", "recording__label", "recording__discogs"
     ).get(pk=match.pk)
     return render(request, "charts/_spotify_row.html", {
         "match": match,
         "error": error,
+        # Seconds Spotify asked us to wait (a 429). The row carries it, so
+        # the batch script pauses that long and then retries this row.
+        "retry_after": retry_after,
         "in_batch": bool(request.POST.get("batch")),
         "querystring": request.POST.get("querystring", ""),
     })
@@ -1534,6 +1546,8 @@ def spotify_search(request, recording_id):
     match, _ = SpotifyMatch.objects.get_or_create(recording_id=recording_id)
     try:
         spotify_workflow.search(match)
+    except spotify_api.SpotifyRateLimited as exc:
+        return _render_spotify_row(request, match, error=str(exc), retry_after=exc.retry_after)
     except spotify_api.SpotifyError as exc:
         return _render_spotify_row(request, match, error=str(exc))
     return _render_spotify_row(request, match)
@@ -1559,6 +1573,30 @@ def spotify_manual(request, recording_id):
         match, request.POST.get("spotify_ref", ""), stand_in=bool(request.POST.get("stand_in")),
     )
     return _render_spotify_row(request, match, error=error)
+
+
+@require_POST
+def spotify_add_extra(request, recording_id):
+    # "+ Part" / "+ Alternate" on a linked row: from a remaining shortlist
+    # suggestion (candidate_id, no network) or a pasted link (spotify_ref,
+    # one fetch). The rare recording split over several Spotify tracks.
+    match = get_object_or_404(SpotifyMatch, recording_id=recording_id)
+    kind = request.POST.get("kind", "")
+    candidate_id = request.POST.get("candidate_id")
+    if candidate_id:
+        candidate = SpotifyCandidate.objects.filter(match=match, pk=candidate_id).first()
+        error = (spotify_workflow.add_extra_from_candidate(match, candidate, kind)
+                 if candidate else "That suggestion is gone -- search again.")
+    else:
+        error = spotify_workflow.add_extra_manually(match, request.POST.get("spotify_ref", ""), kind)
+    return _render_spotify_row(request, match, error=error)
+
+
+@require_POST
+def spotify_remove_extra(request, recording_id):
+    match = get_object_or_404(SpotifyMatch, recording_id=recording_id)
+    spotify_workflow.remove_extra(match, request.POST.get("extra_id") or 0)
+    return _render_spotify_row(request, match)
 
 
 @require_POST
@@ -1598,3 +1636,100 @@ def spotify_audit(request):
         "rows": [spotify_workflow.audit_row(m) for m in page],
         "shared": spotify_workflow.shared_tracks_not_reissues(),
     })
+
+
+# -----------------------------------------------------------------------------
+# Connecting the owner's Spotify account, and pushing playlists to it
+# (charts/spotify_push.py has the rules; see the comment block above
+# spotify.authorize_url for how the login works).
+# -----------------------------------------------------------------------------
+
+# The host Spotify accepts for a plain-http return address: a loopback IP,
+# never "localhost" (Spotify's 2025 rules).
+SPOTIFY_LOOPBACK_HOST = "127.0.0.1"
+
+
+def _spotify_redirect_uri(request):
+    # Must match, character for character, the Redirect URI registered in
+    # the app's dashboard: http://127.0.0.1:<port>/spotify/callback/
+    return f"http://{request.get_host()}{reverse('charts:spotify_callback')}"
+
+
+def spotify_connect(request):
+    # Step 1: send the browser to Spotify's consent page.
+    host = request.get_host()
+    if not host.startswith(SPOTIFY_LOOPBACK_HOST):
+        # Opened as http://localhost:8000: hop to the same page on
+        # 127.0.0.1 first. The session (which holds `state`) is per-host, so
+        # the whole round trip must happen on the address Spotify returns to.
+        port = host.rsplit(":", 1)[1] if ":" in host else "80"
+        return redirect(f"http://{SPOTIFY_LOOPBACK_HOST}:{port}{reverse('charts:spotify_connect')}")
+    import secrets
+    state = secrets.token_urlsafe(24)
+    request.session["spotify_oauth_state"] = state
+    try:
+        return redirect(spotify_api.authorize_url(state, _spotify_redirect_uri(request)))
+    except spotify_api.SpotifyError as exc:
+        request.session["spotify_messages"] = [str(exc)]
+        return redirect("charts:spotify_queue")
+
+
+def spotify_callback(request):
+    # Step 2-3: Spotify sends the browser back here with a one-time code.
+    expected = request.session.pop("spotify_oauth_state", None)
+    if request.GET.get("error"):
+        # The owner pressed Cancel, or Spotify refused (e.g. account not
+        # added under the app's User Management).
+        message = f"Spotify didn't connect: {request.GET['error']}."
+    elif not expected or request.GET.get("state") != expected:
+        message = "That Spotify sign-in link didn't come from this app (state mismatch) -- press Connect Spotify again."
+    else:
+        try:
+            account = spotify_api.exchange_code(request.GET.get("code", ""), _spotify_redirect_uri(request))
+            message = f"Connected to Spotify as {account['display_name']}."
+        except spotify_api.SpotifyError as exc:
+            spotify_api.disconnect()  # never leave a half-written login behind
+            message = f"Spotify didn't connect: {exc}"
+    request.session["spotify_messages"] = [message]
+    return redirect("charts:spotify_queue")
+
+
+@require_POST
+def spotify_disconnect(request):
+    # Forget the login (delete .spotify_token.json). Pushed playlists stay
+    # on Spotify untouched.
+    spotify_api.disconnect()
+    request.session["spotify_messages"] = ["Disconnected from Spotify. Playlists already pushed are untouched."]
+    return redirect("charts:spotify_queue")
+
+
+def playlist_spotify(request, playlist_id):
+    # GET: the confirmation page -- what will be sent, what's missing and
+    # why, and (for an update) the warning that Spotify-side edits are
+    # replaced. POST: do it.
+    playlist = get_object_or_404(Playlist, pk=playlist_id)
+    plan = spotify_push.plan(playlist)
+    context = {
+        "playlist": playlist,
+        "plan": plan,
+        "changes": spotify_push.changes(playlist, plan),
+        "spotify_account": spotify_api.connected_account(),
+        "spotify_playlist_url": spotify_api.playlist_url(playlist.spotify_playlist_id),
+        "error": None,
+        "gone": False,
+    }
+    if request.method == "POST":
+        try:
+            result = spotify_push.push(playlist, create_new=bool(request.POST.get("create_new")))
+        except spotify_push.PlaylistGone:
+            # Ask before creating a new one -- never silently.
+            context["gone"] = True
+            return render(request, "charts/playlist_spotify.html", context)
+        except spotify_api.SpotifyError as exc:
+            context["error"] = str(exc)
+            return render(request, "charts/playlist_spotify.html", context)
+        verb = "Created" if result["created"] else "Updated"
+        skipped = f", {result['missing']} recording(s) not on it" if result["missing"] else ""
+        request.session["playlist_message"] = f"{verb} on Spotify: {result['sent']} track(s){skipped}."
+        return redirect("charts:playlist_detail", playlist_id=playlist.pk)
+    return render(request, "charts/playlist_spotify.html", context)

@@ -43,6 +43,26 @@ SPOTIFY_MARKET=CL</pre>
 
     {% for message in messages %}<div class="alert alert-success">{{ message }}</div>{% endfor %}
 
+    {% comment %}
+    The owner's login, needed only for PUSHING playlists (matching below
+    works without it). See the comment block above spotify.authorize_url.
+    {% endcomment %}
+    {% if has_credentials %}
+    <div class="spotify-account">
+        {% if spotify_account %}
+            Playlists push to the Spotify account <strong>{{ spotify_account.display_name }}</strong>.
+            <form method="post" action="{% url 'charts:spotify_disconnect' %}" class="inline-form">
+                {% csrf_token %}<button type="submit" class="btn btn-sm btn-ghost">Disconnect</button>
+            </form>
+        {% else %}
+            <a class="btn btn-sm" href="{% url 'charts:spotify_connect' %}">Connect Spotify</a>
+            <span class="muted">to push playlists to your account. First add
+                <code>http://127.0.0.1:8000/spotify/callback/</code> as a Redirect URI in your app's settings on the
+                <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">dashboard</a>.</span>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <div class="discogs-progress">
         <div class="progress-bar"><div class="progress-fill" style="width: {{ progress.percent }}%"></div></div>
         <span class="progress-label">{{ progress.settled }} of {{ progress.total }} recordings settled ({{ progress.percent }}%){% if filters.playlist %} in this playlist{% endif %}</span>
@@ -178,6 +198,7 @@ SPOTIFY_MARKET=CL</pre>
         }
 
         function next() {
+            if (pausedUntil) return;  // waiting out a rate limit (see pause)
             update();
             if (running) return;
             const el = table.querySelector("tr[data-batch] .auto-search");
@@ -202,10 +223,40 @@ SPOTIFY_MARKET=CL</pre>
         document.body.addEventListener("htmx:afterSettle", function () {
             if (running) {
                 const row = document.getElementById(running);
+                if (row && row.dataset.retryAfter) {
+                    // Spotify's rate limit (429). The row came back still
+                    // waiting to search (it keeps its .auto-search), so
+                    // pause for as long as Spotify asked and then carry on
+                    // -- with this same row first. Firing the next rows
+                    // meanwhile would only extend the block.
+                    running = null;
+                    pause(Number(row.dataset.retryAfter));
+                    return;
+                }
                 if (!row || !row.querySelector("[hx-trigger='spotify-next']")) running = null;
             }
             next();
         });
+
+        // ---- pausing for Spotify's rate limit ----
+        let pausedUntil = 0;
+        let countdown = null;
+
+        function pause(seconds) {
+            // One extra second of margin over what Spotify asked for.
+            pausedUntil = Date.now() + (seconds + 1) * 1000;
+            clearInterval(countdown);
+            countdown = setInterval(function () {
+                const left = Math.ceil((pausedUntil - Date.now()) / 1000);
+                if (left > 0) {
+                    label.textContent = "Paused by Spotify's rate limit -- resuming in " + left + " s (keep this tab open)";
+                } else {
+                    clearInterval(countdown);
+                    pausedUntil = 0;
+                    next();
+                }
+            }, 1000);
+        }
         // The server couldn't be reached at all: mark the row failed and move on.
         function failed(e) {
             const row = e.detail.elt && e.detail.elt.closest ? e.detail.elt.closest("tr") : null;

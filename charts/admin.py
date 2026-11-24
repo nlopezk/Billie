@@ -30,6 +30,7 @@ from .models import (
     PlaylistItem,
     SpotifyMatch,
     SpotifyCandidate,
+    SpotifyExtraTrack,
 )
 
 
@@ -43,13 +44,21 @@ class SpotifyCandidateInline(admin.TabularInline):
     readonly_fields = fields
 
 
+class SpotifyExtraTrackInline(admin.TabularInline):
+    # Parts / alternates beyond the main link (rare). Managed from /spotify/.
+    model = SpotifyExtraTrack
+    extra = 0
+    fields = ("kind", "order", "track_name", "track_artists", "album_name", "spotify_track_id")
+    readonly_fields = fields
+
+
 @admin.register(SpotifyMatch)
 class SpotifyMatchAdmin(admin.ModelAdmin):
     list_display = ("recording", "status", "track_name", "track_artists", "album_name", "linked_at")
     list_filter = ("status",)
     search_fields = ("recording__song__title", "recording__credit_text", "track_name", "track_artists")
     autocomplete_fields = ["recording"]
-    inlines = [SpotifyCandidateInline]
+    inlines = [SpotifyExtraTrackInline, SpotifyCandidateInline]
 
 
 class PlaylistItemInline(admin.TabularInline):

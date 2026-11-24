@@ -1,0 +1,89 @@
+{% extends "charts/base.html" %}
+{% comment %}
+charts/templates/charts/playlist_spotify.html -- /playlists/<id>/spotify/
+
+The confirmation page before anything is sent to the owner's Spotify
+(charts/spotify_push.py). Shows exactly what will be sent, what will be
+missing and why, and for an update, that edits made inside Spotify will be
+replaced. Nothing happens until the button is pressed.
+{% endcomment %}
+{% block title %}Spotify: {{ playlist.name }}{% endblock %}
+{% block main_class %}page-narrow{% endblock %}
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>{% if playlist.spotify_playlist_id %}Update{% else %}Push{% endif %} &ldquo;{{ playlist.name }}&rdquo; on Spotify</h1>
+            <p class="subtitle">
+                {% if spotify_account %}Into the Spotify account <strong>{{ spotify_account.display_name }}</strong>, as a private playlist.{% endif %}
+            </p>
+        </div>
+        <a class="btn btn-ghost" href="{% url 'charts:playlist_detail' playlist.id %}">Back to the playlist</a>
+    </div>
+
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+    {% if not spotify_account %}
+        <div class="alert alert-warning">
+            Spotify isn't connected yet. Connect your account first, on the Spotify page.
+            <a class="btn btn-sm" href="{% url 'charts:spotify_queue' %}">Go to the Spotify page</a>
+        </div>
+    {% elif gone %}
+        {% comment %} The linked playlist was deleted inside Spotify: ask first. {% endcomment %}
+        <div class="alert alert-warning">
+            <strong>That playlist no longer exists on Spotify.</strong> It was probably deleted in the Spotify app.
+            Create a new one with these {{ plan.tracks|length }} track{{ plan.tracks|length|pluralize }}?
+            <form method="post" action="{% url 'charts:playlist_spotify' playlist.id %}" class="inline-form">
+                {% csrf_token %}<input type="hidden" name="create_new" value="1">
+                <button type="submit" class="btn btn-primary">Create a new Spotify playlist</button>
+            </form>
+        </div>
+    {% else %}
+        <p>
+            <strong>{{ plan.tracks|length }}</strong> track{{ plan.tracks|length|pluralize }} will be sent{% if plan.missing %}; <strong>{{ plan.missing|length }}</strong> recording{{ plan.missing|length|pluralize }} will be missing (listed below){% endif %}.
+        </p>
+        {% if playlist.spotify_playlist_id %}
+            <div class="alert alert-warning">
+                This <strong>replaces</strong> the tracks of the existing <a href="{{ spotify_playlist_url }}" target="_blank" rel="noopener">Spotify playlist &nearr;</a>
+                with the list below, and refreshes its name and description. Anything you changed directly inside Spotify will be overwritten.
+                {% if changes.up_to_date %}<br>It's already up to date, so this changes nothing.{% endif %}
+            </div>
+        {% endif %}
+        <form method="post" action="{% url 'charts:playlist_spotify' playlist.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" {% if not plan.tracks %}disabled{% endif %}>
+                {% if playlist.spotify_playlist_id %}Update on Spotify{% else %}Create on Spotify{% endif %}
+            </button>
+        </form>
+    {% endif %}
+
+    {% if plan.missing %}
+    <h2>Not included</h2>
+    <div class="table-wrap">
+    <table class="dense-table">
+        <thead><tr><th>Recording</th><th>Why</th><th></th></tr></thead>
+        <tbody>
+        {% for m in plan.missing %}
+            <tr>
+                <td>{{ m.recording.song }} <span class="muted">&middot; {{ m.recording.credit_text }} &middot; {{ m.recording.catalog_display }}</span></td>
+                <td>{{ m.reason }}</td>
+                <td><a class="btn btn-sm btn-ghost" href="{% url 'charts:spotify_queue' %}?status=all&amp;q={{ m.recording.catalog_number|urlencode }}">match</a></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+
+    <h2>Will be sent, in this order</h2>
+    <ol class="push-list">
+        {% for t in plan.tracks %}
+        <li>
+            {{ t.recording.song }} <span class="muted">&middot; {{ t.recording.credit_text }}</span>
+            {% if t.label %}<span class="release-level-tag">{{ t.label }}</span>{% endif %}
+            <a href="https://open.spotify.com/track/{{ t.track_id }}" target="_blank" rel="noopener" aria-label="Open on Spotify">&#9654;</a>
+        </li>
+        {% empty %}
+        <li class="muted">Nothing matched yet.</li>
+        {% endfor %}
+    </ol>
+{% endblock %}

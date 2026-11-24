@@ -31,6 +31,7 @@
 
 import base64
 import json
+import math
 import os
 import re
 import threading
@@ -51,13 +52,12 @@ SEARCH_LIMIT = 10
 # How many candidates are kept on a recording's shortlist.
 SHORTLIST_SIZE = 8
 
-# Spotify doesn't publish an exact rate limit (it's a rolling 30-second
-# window). A small gap between calls keeps a 50-row batch well inside it;
-# a 429 is still handled, by waiting the Retry-After it sends.
-MIN_SECONDS_BETWEEN_REQUESTS = 0.35
-# Never sleep longer than this on a 429 inside a web request; past it the
-# error is shown instead, and the row can be retried later.
-MAX_RETRY_AFTER_SECONDS = 30
+# Spotify's rate limit is counted over a rolling 30-second window and its
+# number isn't published -- only that a Development Mode app's is "much
+# lower" than an approved app's. 0.35 s between calls (~85 per window) DID
+# hit it (a 429 on 2026-11-19), so: one call per second, ~30 per window. A
+# 50-row batch takes about a minute (most rows need a single search).
+MIN_SECONDS_BETWEEN_REQUESTS = 1.0
 
 # A 78 rpm side runs roughly 2:20-3:30 (a 12-inch disc up to ~4:30). A
 # Spotify track far outside this is probably an edit, a medley or a live
@@ -95,6 +95,19 @@ _token_lock = threading.Lock()
 
 class SpotifyError(Exception):
     """Anything that went wrong talking to Spotify, as a readable message."""
+
+
+class SpotifyRateLimited(SpotifyError):
+    """Spotify answered 429 (or we're still inside the wait it asked for).
+    `retry_after` is how many seconds remain before calling again."""
+
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__(f"Spotify's rate limit: it asked us to wait {retry_after} s before the next call.")
+
+
+# When the current Retry-After block ends (time.monotonic seconds); 0 = none.
+_blocked_until = 0.0
 
 
 # ------------------------------------------------------------ configuration
@@ -188,9 +201,15 @@ def _throttle():
 
 def _request(path, params=None, _retried=False):
     """GET one Web API endpoint and return the decoded JSON."""
+    global _blocked_until  # set on a 429, read on every call
     url = f"{API_ROOT}{path}"
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
+    # Still inside a Retry-After block from an earlier 429: refuse without
+    # touching Spotify at all.
+    remaining = _blocked_until - time.monotonic()
+    if remaining > 0:
+        raise SpotifyRateLimited(math.ceil(remaining))
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {_access_token()}"})
     _throttle()
     try:
@@ -202,13 +221,17 @@ def _request(path, params=None, _retried=False):
             _token["value"] = None
             return _request(path, params, _retried=True)
         if exc.code == 429:
-            # Spotify says how long to wait. Wait that long once, if it's
-            # short enough for a web request; otherwise report it.
-            wait = int(exc.headers.get("Retry-After", "5") or 5)
-            if not _retried and wait <= MAX_RETRY_AFTER_SECONDS:
-                time.sleep(wait)
-                return _request(path, params, _retried=True)
-            raise SpotifyError(f"Spotify rate limit hit -- wait {wait} seconds and try again.") from exc
+            # Spotify says how long to wait (Retry-After, seconds). Remember
+            # it for EVERY caller, so nothing calls again before then --
+            # calling during the block counts against the window and keeps
+            # it going. The caller decides what waiting looks like: the
+            # queue's batch pauses and resumes, the command sleeps.
+            try:
+                wait = max(1, int(exc.headers.get("Retry-After") or 30))
+            except ValueError:
+                wait = 30
+            _blocked_until = time.monotonic() + wait
+            raise SpotifyRateLimited(wait) from exc
         if exc.code == 403:
             raise SpotifyError(
                 "Spotify refused the request (403). A Development Mode app stops working "
@@ -554,3 +577,238 @@ def parse_track_reference(raw):
     if match:
         return match.group(1)
     return raw if _ID.match(raw) else None
+
+
+# =============================================================================
+# Acting AS the owner: creating and updating playlists (added 2026-11-23)
+# =============================================================================
+#
+# Everything above reads the public catalogue with the app's own token.
+# Creating a playlist in the owner's account needs the owner's permission,
+# given once through Spotify's "Authorization Code" flow:
+#
+#   1. /spotify/connect/ sends the browser to Spotify's consent page
+#      (authorize_url), with a random `state` kept in the session.
+#   2. The owner clicks Agree; Spotify sends the browser back to
+#      /spotify/callback/?code=...&state=...
+#   3. exchange_code() trades that one-time code for an access token (about
+#      an hour) and a REFRESH token (long-lived), saved to
+#      .spotify_token.json next to .env -- git-ignored, and deliberately NOT
+#      in billboard.db, which is pushed to GitHub.
+#   4. Later calls use the access token, renewing it from the refresh token
+#      when it runs out (_user_token). "Disconnect" deletes the file.
+#
+# Spotify's redirect rules (2025): a plain-http return address is accepted
+# only on a loopback IP -- http://127.0.0.1:8000/spotify/callback/, never
+# "localhost" -- and it must be registered, exactly, in the app's settings.
+
+AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
+# Only what pushing playlists needs: create and change the owner's
+# playlists, private or public. Nothing that reads listening history.
+USER_SCOPES = "playlist-modify-private playlist-modify-public"
+# Spotify accepts at most 100 track URIs per add/replace request.
+PLAYLIST_CHUNK = 100
+
+
+class SpotifyNotConnected(SpotifyError):
+    """No owner login on file (or it was revoked): press Connect Spotify."""
+
+
+class SpotifyNotFound(SpotifyError):
+    """The thing asked for doesn't exist -- e.g. a playlist deleted in the
+    Spotify app. The playlist push offers to create a new one."""
+
+
+def token_path():
+    # Next to .env, at the project root. Listed in .gitignore.
+    return Path(settings.BASE_DIR) / ".spotify_token.json"
+
+
+def is_connected():
+    return token_path().exists()
+
+
+def disconnect():
+    """Forget the owner's login (delete the token file). Spotify-side, the
+    app's access can also be removed at spotify.com/account/apps."""
+    try:
+        token_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def authorize_url(state, redirect_uri):
+    """Where to send the browser for the owner's consent."""
+    credentials = get_credentials()
+    if not credentials:
+        raise SpotifyError("No Spotify credentials configured (SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in .env).")
+    return AUTHORIZE_URL + "?" + urllib.parse.urlencode({
+        "client_id": credentials[0],
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": USER_SCOPES,
+        # Echoed back by Spotify; the callback refuses a mismatch, so a
+        # forged link can't attach someone else's account.
+        "state": state,
+    })
+
+
+def _token_request(form):
+    # POST to Spotify's token endpoint with the app's own credentials, for
+    # both the first code exchange and later refreshes.
+    credentials = get_credentials()
+    if not credentials:
+        raise SpotifyError("No Spotify credentials configured.")
+    basic = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode()
+    request = urllib.request.Request(
+        TOKEN_URL, data=urllib.parse.urlencode(form).encode(),
+        headers={"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            # invalid_grant: the code was used/expired, or the refresh token
+            # was revoked (the owner removed the app at spotify.com).
+            raise SpotifyNotConnected("Spotify no longer accepts this login -- press Connect Spotify again.") from exc
+        raise SpotifyError(f"Spotify's login service returned HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise SpotifyError(f"Couldn't reach Spotify ({exc.reason}). Check your connection.") from exc
+
+
+def _save_token(data, previous_refresh=None):
+    # Write the token file. A refresh response may omit refresh_token, in
+    # which case the old one stays valid and is kept.
+    # Keep the stored account name across refreshes.
+    account = None
+    if token_path().exists():
+        try:
+            account = json.loads(token_path().read_text(encoding="utf-8")).get("account")
+        except (OSError, ValueError):
+            account = None
+    token = {
+        "account": account,
+        "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token") or previous_refresh,
+        # Wall-clock (epoch) time, since the file outlives the process.
+        "expires_at": time.time() + int(data.get("expires_in", 3600)),
+        "scope": data.get("scope", ""),
+    }
+    token_path().write_text(json.dumps(token, indent=2), encoding="utf-8")
+    return token
+
+
+def exchange_code(code, redirect_uri):
+    """Step 3 above: the one-time code -> a saved token, plus the account's
+    name (one /me call, once), so the Spotify page can say who's connected
+    without calling Spotify on every page load."""
+    _save_token(_token_request({"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri}))
+    account = current_user()
+    token = json.loads(token_path().read_text(encoding="utf-8"))
+    token["account"] = account
+    token_path().write_text(json.dumps(token, indent=2), encoding="utf-8")
+    return account
+
+
+def connected_account():
+    """{"id", "display_name"} of the connected account, from the token file
+    (no API call), or None when not connected."""
+    if not token_path().exists():
+        return None
+    try:
+        token = json.loads(token_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return token.get("account") or {"id": "", "display_name": "(connected)"}
+
+
+def _user_token():
+    # A valid access token for the owner, refreshed when it's (nearly) out.
+    path = token_path()
+    if not path.exists():
+        raise SpotifyNotConnected("Spotify isn't connected -- press Connect Spotify on the Spotify page.")
+    token = json.loads(path.read_text(encoding="utf-8"))
+    if time.time() < token.get("expires_at", 0) - 60:
+        return token["access_token"]
+    if not token.get("refresh_token"):
+        raise SpotifyNotConnected("The Spotify login has expired -- press Connect Spotify again.")
+    fresh = _token_request({"grant_type": "refresh_token", "refresh_token": token["refresh_token"]})
+    return _save_token(fresh, previous_refresh=token["refresh_token"])["access_token"]
+
+
+def _user_request(method, path, body=None, _retried=False):
+    """One Web API call AS the owner (GET/POST/PUT, JSON body). Shares the
+    pacing and the 429 block with the catalogue calls above."""
+    global _blocked_until
+    remaining = _blocked_until - time.monotonic()
+    if remaining > 0:
+        raise SpotifyRateLimited(math.ceil(remaining))
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(f"{API_ROOT}{path}", data=data, method=method, headers={
+        "Authorization": f"Bearer {_user_token()}",
+        "Content-Type": "application/json",
+    })
+    _throttle()
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 and not _retried:
+            # The access token was rejected early: force a refresh, once.
+            token = json.loads(token_path().read_text(encoding="utf-8"))
+            token["expires_at"] = 0
+            token_path().write_text(json.dumps(token), encoding="utf-8")
+            return _user_request(method, path, body, _retried=True)
+        if exc.code == 401:
+            raise SpotifyNotConnected("Spotify rejected the login -- press Connect Spotify again.") from exc
+        if exc.code == 429:
+            try:
+                wait = max(1, int(exc.headers.get("Retry-After") or 30))
+            except ValueError:
+                wait = 30
+            _blocked_until = time.monotonic() + wait
+            raise SpotifyRateLimited(wait) from exc
+        if exc.code == 403:
+            raise SpotifyError(
+                "Spotify refused (403). For a Development Mode app, add your Spotify account under "
+                "User Management in the app's dashboard; also check the owner still has Premium."
+            ) from exc
+        if exc.code == 404:
+            raise SpotifyNotFound("Spotify says that no longer exists (404).") from exc
+        raise SpotifyError(f"Spotify returned HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise SpotifyError(f"Couldn't reach Spotify ({exc.reason}). Check your connection.") from exc
+
+
+def current_user():
+    """The connected account: {"id", "display_name"} -- shown on /spotify/."""
+    me = _user_request("GET", "/me")
+    return {"id": me.get("id", ""), "display_name": me.get("display_name") or me.get("id", "")}
+
+
+def create_playlist(name, description, public=False):
+    """A new, empty playlist in the owner's account. Returns its id."""
+    created = _user_request("POST", "/me/playlists", {"name": name, "description": description, "public": public})
+    return created["id"]
+
+
+def update_playlist_details(playlist_id, name, description):
+    """Refresh name and description (a local rename carries over)."""
+    _user_request("PUT", f"/playlists/{playlist_id}", {"name": name, "description": description})
+
+
+def replace_playlist_tracks(playlist_id, track_ids):
+    """Make the playlist hold exactly these tracks, in this order. The
+    first 100 REPLACE whatever is there; the rest are appended 100 at a
+    time (Spotify's per-request cap)."""
+    uris = [f"spotify:track:{tid}" for tid in track_ids]
+    _user_request("PUT", f"/playlists/{playlist_id}/items", {"uris": uris[:PLAYLIST_CHUNK]})
+    for start in range(PLAYLIST_CHUNK, len(uris), PLAYLIST_CHUNK):
+        _user_request("POST", f"/playlists/{playlist_id}/items", {"uris": uris[start:start + PLAYLIST_CHUNK]})
+
+
+def playlist_url(playlist_id):
+    # Plain outbound link; not a request.
+    return f"https://open.spotify.com/playlist/{playlist_id}" if playlist_id else ""

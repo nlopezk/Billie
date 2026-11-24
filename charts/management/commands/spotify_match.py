@@ -60,7 +60,7 @@ class Command(BaseCommand):
         for n, match in enumerate(matches, start=1):
             label = f"[{n}/{len(matches)}] {match.recording.song.title} -- {match.recording.credit_text}"
             try:
-                spotify_workflow.search(match)
+                self._search_waiting_out_rate_limits(match, label)
             except spotify_api.SpotifyError as exc:
                 # Stop rather than burn through the list failing: a token,
                 # Premium or rate-limit problem affects every row alike.
@@ -75,3 +75,21 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Done: {suggested} with suggestions, {not_found} not found. Review them at /spotify/."
         ))
+
+    # Longest Retry-After this command will sit out before giving up. A
+    # terminal run can afford to wait; a much longer block usually means
+    # the app's quota is spent for a while, and stopping says so plainly.
+    MAX_WAIT_SECONDS = 300
+
+    def _search_waiting_out_rate_limits(self, match, label):
+        # Search one recording; on Spotify's rate limit, sleep the time it
+        # asked for (if reasonable) and try the same recording again.
+        import time
+        while True:
+            try:
+                return spotify_workflow.search(match)
+            except spotify_api.SpotifyRateLimited as exc:
+                if exc.retry_after > self.MAX_WAIT_SECONDS:
+                    raise
+                self.stdout.write(f"{label}: rate limited, waiting {exc.retry_after} s...")
+                time.sleep(exc.retry_after + 1)
